@@ -403,12 +403,270 @@ def test_resume():
     check("a different ASR engine invalidates the cache", parakeet != whisper)
 
 
+# ============================== 6. a preset change re-derives the audio
+def _tone(hz: float, seconds: float, rate: int) -> np.ndarray:
+    t = np.linspace(0, seconds, int(seconds * rate), endpoint=False)
+    return (0.4 * np.sin(2 * np.pi * hz * t)).astype(np.float32)
+
+
+def _dominant_hz(path: Path) -> float:
+    data, rate = sf.read(path, dtype="float32")
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    spec = np.abs(np.fft.rfft(data))
+    return float(np.fft.rfftfreq(len(data), 1 / rate)[int(np.argmax(spec))])
+
+
+def test_preset_change_reseparates():
+    """Running a link on Fast and then on Balanced must not reuse the downmix.
+
+    The job folder is keyed off the link, so the second run finds the first
+    run's speech16k.wav — a downmix of the *whole* soundtrack — already in
+    place. Guarded by existence alone it was skipped, so Demucs ran and was
+    paid for, the report said separation had happened, and the transcript was
+    rebuilt from the music-contaminated mix anyway.
+
+    The mix is a 200 Hz tone and the stubbed stem is an 800 Hz one, so which
+    audio reached the recogniser is a fact rather than an impression.
+    """
+    print("\n[6] A preset change re-derives the audio it feeds on")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.config import Settings, JOBS
+
+    MIX_HZ, STEM_HZ, RATE = 200.0, 800.0, 44100
+    work = WORK / "preset"
+    work.mkdir(parents=True, exist_ok=True)
+    clip = work / "clip.mp4"
+    if not clip.exists():
+        mix = work / "mix.wav"
+        sf.write(mix, _tone(MIX_HZ, 8.0, RATE), RATE)
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-i", str(mix), "-map", "0:v", "-map", "1:a", "-t", "8",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(clip)], check=True)
+
+    def fake_download(url, workdir, quality="best", progress=None):
+        import shutil
+        workdir.mkdir(parents=True, exist_ok=True)
+        dest = workdir / "source.mp4"
+        if not dest.exists():
+            shutil.copy(clip, dest)
+        if progress:
+            progress(1.0, "Downloaded")
+        return dest, {"title": "Preset Change", "duration": 8.0,
+                      "uploader": "t", "thumbnail": ""}
+
+    def fake_separate(audio, workdir, prefer_gpu=True, progress=None):
+        stems = Path(workdir) / "stems" / "stub"
+        stems.mkdir(parents=True, exist_ok=True)
+        vocals, bed = stems / "vocals.wav", stems / "no_vocals.wav"
+        sf.write(vocals, _tone(STEM_HZ, 8.0, RATE), RATE)
+        sf.write(bed, _tone(120.0, 8.0, RATE), RATE)
+        if progress:
+            progress(1.0, "Separated")
+        return vocals, bed
+
+    heard: list[int] = []
+
+    def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
+        hz = int(round(_dominant_hz(Path(audio_wav)) / 10.0) * 10)
+        heard.append(hz)
+        if progress:
+            progress(1.0, "Heard 1 line")
+        return [{"start": 0.5, "end": 3.0, "text": f"tono de {hz} hercios"}]
+
+    def fake_llm(prompt, model=None, host=None, key=None):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        return "\n".join(f"{i}|A tone, and then some more words to say." for i in ids)
+
+    real_download = pipeline.download.download
+    real_separate = pipeline.separate_backend.separate
+    real_transcribe = pipeline.asr_backend.transcribe
+    pipeline.download.download = fake_download
+    pipeline.separate_backend.separate = fake_separate
+    pipeline.asr_backend.transcribe = fake_transcribe
+    T._call_ollama = fake_llm
+
+    def run(preset: str):
+        s = Settings().apply_preset(preset)
+        s.translator = "ollama"
+        s.voice = "bf_emma"
+        job = pipeline.runner.submit("https://example.com/preset-change", s)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < 600:
+            time.sleep(1)
+        return job
+
+    try:
+        fast = run("fast")
+        check("the Fast run completed", fast.status == "done",
+              f"{fast.status}: {fast.error}")
+        check("Fast transcribed the full mix", heard[:1] == [int(MIX_HZ)], str(heard))
+
+        balanced = run("balanced")
+        check("the Balanced run completed", balanced.status == "done",
+              f"{balanced.status}: {balanced.error}")
+        check("the same link reused the same job folder", balanced.id == fast.id)
+        check("Balanced reported that it separated",
+              balanced.stats.get("separated") is True, str(balanced.stats.get("separated")))
+        check("Balanced transcribed the separated stem, not the stale mix",
+              len(heard) == 2 and heard[1] == int(STEM_HZ),
+              f"heard {heard}, wanted [{int(MIX_HZ)}, {int(STEM_HZ)}]")
+
+        # The two runs must not be sharing derived audio at all.
+        derived = sorted((JOBS / fast.id / "derived").iterdir())
+        check("each set of settings got its own derived audio folder",
+              len(derived) >= 3, f"{len(derived)} folders")
+        rates = {_dominant_hz(p): p for p in
+                 (JOBS / fast.id / "derived").glob("*/speech16k.wav")}
+        check("both the mix and the stem survive as separate files",
+              any(abs(hz - MIX_HZ) < 15 for hz in rates) and
+              any(abs(hz - STEM_HZ) < 15 for hz in rates),
+              str(sorted(round(h) for h in rates)))
+    finally:
+        pipeline.download.download = real_download
+        pipeline.separate_backend.separate = real_separate
+        pipeline.asr_backend.transcribe = real_transcribe
+
+
+# ================================ 7. one sample rate across the whole track
+def test_mixed_sample_rates():
+    """A voice that dies mid-job must not leave two rates in one track.
+
+    sample_rate used to be a single variable reassigned per line and handed to
+    assemble() once, for all of them. The mid-job fallback swaps a cloning
+    engine for the portable one partway through the loop, so lines synthesised
+    before the swap were timed against the rate of the engine that replaced
+    them — a timing error, which is the one failure the design exists to stop.
+    """
+    print("\n[7] One sample rate across the whole track")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.backends import tts as tts_backend
+    from app.config import Settings
+    from app.steps import align
+
+    # Directly: assemble() is told one rate, so a line that declares another is
+    # refused rather than placed against the wrong clock.
+    sr = 24000
+    lines = [{"start": 0.0, "end": 1.0, "samples": _tone(440, 0.5, sr), "rate": 24000},
+             {"start": 2.0, "end": 3.0, "samples": _tone(440, 0.5, sr), "rate": 32000}]
+    try:
+        align.assemble(lines, 6.0, sr)
+        check("assemble refuses a line recorded at another rate", False, "it accepted it")
+    except ValueError as exc:
+        check("assemble refuses a line recorded at another rate", True, str(exc)[:60])
+
+    # And through the pipeline: an engine that reports 32 kHz and then fails,
+    # forcing the real mid-job fallback to the 24 kHz portable voice.
+    STARTS = [(1.0, 3.0), (5.0, 7.0)]
+    work = WORK / "rates"
+    work.mkdir(parents=True, exist_ok=True)
+    clip = work / "clip.mp4"
+    if not clip.exists():
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+                        "-map", "0:v", "-map", "1:a", "-t", "10",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(clip)], check=True)
+
+    class RateSwitchingEngine:
+        """32 kHz for the first line, then broken — exactly the fallback path."""
+        name = "Stub (32 kHz)"
+        sample_rate = 32000
+
+        def __init__(self):
+            self.calls = 0
+
+        def say(self, text, voice="", speed=1.0, speaker=0):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("the cloning model fell over")
+            return _tone(300, 1.2, 32000), 32000
+
+    def fake_download(url, workdir, quality="best", progress=None):
+        import shutil
+        workdir.mkdir(parents=True, exist_ok=True)
+        dest = workdir / "source.mp4"
+        if not dest.exists():
+            shutil.copy(clip, dest)
+        if progress:
+            progress(1.0, "Downloaded")
+        return dest, {"title": "Rate Switch", "duration": 10.0,
+                      "uploader": "t", "thumbnail": ""}
+
+    def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
+        if progress:
+            progress(1.0, "Heard 2 lines")
+        return [{"start": a, "end": b, "text": f"linea {n}"}
+                for n, (a, b) in enumerate(STARTS)]
+
+    def fake_llm(prompt, model=None, host=None, key=None):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        return "\n".join(f"{i}|This is line number {i} speaking." for i in ids)
+
+    real_download = pipeline.download.download
+    real_transcribe = pipeline.asr_backend.transcribe
+    real_make = pipeline.JobRunner._make_engine
+    pipeline.download.download = fake_download
+    pipeline.asr_backend.transcribe = fake_transcribe
+    pipeline.JobRunner._make_engine = lambda *a, **k: (RateSwitchingEngine(), False)
+    T._call_ollama = fake_llm
+
+    try:
+        s = Settings().apply_preset("fast")
+        s.translator = "ollama"
+        job = pipeline.runner.submit("https://example.com/rate-switch", s)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < 600:
+            time.sleep(1)
+
+        check("the job survived the mid-job voice failure", job.status == "done",
+              f"{job.status}: {job.error}")
+        if job.status != "done":
+            return
+        check("the fallback was reported", "fell back" in str(job.stats.get("voices", "")),
+              str(job.stats.get("voices")))
+        check("the track was assembled at the engine's rate",
+              job.stats.get("sample_rate") == 32000, str(job.stats.get("sample_rate")))
+        check("both lines were spoken", job.stats.get("lines_spoken") == 2,
+              str(job.stats.get("lines_spoken")))
+        check("nothing was pushed off its mark", job.stats.get("max_drift", 99) == 0.0,
+              f"{job.stats.get('max_drift')}s")
+
+        # Both lines must actually be where the original speaker was.
+        from app.config import JOBS
+        track, rate = sf.read(JOBS / job.id / "dubbed.wav", dtype="float32")
+        check("the rendered track is at one rate", rate == 32000, str(rate))
+
+        def loud_between(a, b):
+            seg = track[int(a * rate):int(b * rate)]
+            return float(np.sqrt((seg ** 2).mean())) if seg.size else 0.0
+
+        for n, (a, b) in enumerate(STARTS):
+            check(f"line {n} lands in its slot", loud_between(a, b + 1.0) > 0.02,
+                  f"rms {loud_between(a, b + 1.0):.3f}")
+        check("the gap between the lines stayed quiet",
+              loud_between(3.6, 4.8) < 0.01, f"rms {loud_between(3.6, 4.8):.4f}")
+    finally:
+        pipeline.download.download = real_download
+        pipeline.asr_backend.transcribe = real_transcribe
+        pipeline.JobRunner._make_engine = real_make
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
     test_server()
     test_end_to_end()
     test_resume()
+    test_preset_change_reseparates()
+    test_mixed_sample_rates()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

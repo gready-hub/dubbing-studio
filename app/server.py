@@ -6,6 +6,7 @@ import json
 import platform
 import subprocess
 import sys
+import threading
 import webbrowser
 from dataclasses import asdict
 from pathlib import Path
@@ -14,8 +15,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from .config import (BUILTIN_GLOSSARIES, OUTPUT_DIR, PRESETS, Settings, VOICES,
-                     detect_machine, suggest_ollama_model)
+from .config import (BUILTIN_GLOSSARIES, OUTPUT_DIR, PRESETS, SETTINGS_FILE,
+                     Settings, VOICES, detect_machine, suggest_ollama_model)
 from .pipeline import runner
 
 STATIC = Path(__file__).parent / "static"
@@ -55,8 +56,8 @@ def state() -> dict:
         "features": _feature_status(),
         "glossaries": {k: v["label"] for k, v in BUILTIN_GLOSSARIES.items()},
         "output_dir": str(OUTPUT_DIR),
-        "jobs": [j.public() for j in sorted(runner.jobs.values(),
-                                            key=lambda j: j.started, reverse=True)],
+        "settings_path": str(SETTINGS_FILE),
+        "jobs": runner.public_jobs(),
     }
 
 
@@ -190,6 +191,98 @@ def cancel_job(job_id: str) -> dict:
         raise HTTPException(404, "No such job.")
     runner.cancel(job_id)
     return {"ok": True}
+
+
+# A line long enough to judge a voice by, and in the register the app is
+# actually used for.
+PREVIEW_TEXT = "Right, let's carry on with the next round of the pattern."
+_preview_lock = threading.Lock()
+_preview_engine = None
+
+
+@app.get("/api/voice-preview")
+def voice_preview(voice: str, speed: float = 1.0):
+    """Speak one line in a voice, so choosing one isn't a guess that costs a run.
+
+    Rendered once per voice and speed and then kept, so the second listen is
+    instant and flicking between voices is quick enough to actually compare
+    them.
+    """
+    global _preview_engine
+    from .config import BASE, MODELS, VOICES
+    if not any(v["id"] == voice for v in VOICES):
+        raise HTTPException(404, "No such voice.")
+
+    speed = max(0.5, min(2.0, float(speed)))
+    out = BASE / "previews" / f"{voice}-{speed:.2f}.wav"
+    if not out.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        import soundfile as sf
+        from .backends import tts as tts_backend
+        # Serialised and reused: loading Kokoro costs seconds, and two clicks in
+        # quick succession would otherwise load it twice at once.
+        with _preview_lock:
+            if _preview_engine is None:
+                _preview_engine = tts_backend.load_tts(detect_machine().fast_path)
+            audio, rate = _preview_engine.say(PREVIEW_TEXT, voice, speed)
+        if not getattr(audio, "size", 0):
+            raise HTTPException(500, "The voice produced no sound.")
+        sf.write(out, audio, rate)
+    return FileResponse(out, media_type="audio/wav")
+
+
+@app.get("/api/job/{job_id}/reference/{index}")
+def job_reference(job_id: str, index: int):
+    """The clip captured from the original speaker and used as the clone prompt.
+
+    Hearing it is the quickest way to catch a bad reference — one with music
+    under it, or the wrong person — before it colours every line of the dub.
+    """
+    from .config import JOBS
+    job = runner.jobs.get(job_id)
+    if not job or index < 0 or index >= len(job.references):
+        raise HTTPException(404, "No such reference.")
+    path = Path(job.references[index]).resolve()
+    # Paths come from the job's own folder, but this is a filesystem read served
+    # over HTTP, so confirm rather than assume.
+    if not path.is_file() or JOBS.resolve() not in path.parents:
+        raise HTTPException(404, "No such reference.")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.get("/api/storage")
+def storage() -> dict:
+    """How much disk the job working files are holding.
+
+    Nobody goes looking in Application Support, so without this the folder just
+    grows until something else runs out of room.
+    """
+    from .config import JOBS
+    from .pipeline import dir_size
+    folders = [p for p in JOBS.iterdir() if p.is_dir()] if JOBS.is_dir() else []
+    return {"bytes": dir_size(JOBS) if JOBS.is_dir() else 0,
+            "jobs": len(folders),
+            "path": str(JOBS)}
+
+
+@app.post("/api/storage/clear")
+def clear_storage() -> dict:
+    """Delete every job's working files. Finished videos are not touched.
+
+    Refused while something is running, since the job being cleared out from
+    under itself would fail in a way that looks like a bug in the pipeline.
+    """
+    import shutil
+    from .config import JOBS
+    from .pipeline import dir_size
+
+    if any(j.status in ("queued", "running") for j in runner.jobs.values()):
+        raise HTTPException(409, "Something is still running — wait for it to finish.")
+
+    freed = dir_size(JOBS) if JOBS.is_dir() else 0
+    for folder in (p for p in JOBS.iterdir() if p.is_dir()):
+        shutil.rmtree(folder, ignore_errors=True)
+    return {"freed": freed}
 
 
 @app.get("/api/job/{job_id}/video")

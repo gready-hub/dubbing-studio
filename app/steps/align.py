@@ -57,6 +57,15 @@ def assemble(lines: list[dict], total_duration: float, sample_rate: int,
 
     cursor = 0.0
     for n, line in enumerate(lines):
+        # One rate is applied to every line, so a line recorded at a different
+        # one would be placed and stretched against the wrong clock — a timing
+        # error, which is the failure this whole module exists to prevent. Lines
+        # that declare their rate are checked rather than trusted.
+        rate = line.get("rate")
+        if rate is not None and int(rate) != int(sample_rate):
+            raise ValueError(
+                f"line {n} was synthesised at {int(rate)} Hz but the track is "
+                f"being assembled at {int(sample_rate)} Hz")
         audio = np.asarray(line["samples"], dtype=np.float32).reshape(-1)
         if audio.size == 0:
             continue

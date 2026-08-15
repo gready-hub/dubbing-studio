@@ -12,6 +12,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -22,7 +23,7 @@ from typing import Callable
 import numpy as np
 import soundfile as sf
 
-from .config import JOBS, OUTPUT_DIR, Settings, detect_machine
+from .config import HISTORY_FILE, JOBS, OUTPUT_DIR, Settings, detect_machine
 from .backends import asr as asr_backend
 from .backends import clone as clone_backend
 from .backends import diarize as diarize_backend
@@ -86,6 +87,50 @@ def _cache_stamp(workdir: Path, key: str, fingerprint: str) -> None:
     path.write_text(json.dumps(meta, indent=1))
 
 
+def _derived_dir(workdir: Path, *parts) -> Path:
+    """A folder named after the fingerprint of everything that determines it.
+
+    The JSON artefacts are fingerprinted, but the audio they derive from used to
+    be guarded by existence alone. Since a job id is now a stable hash of the
+    link, running the same link on Fast and then on Balanced found the Fast
+    run's downmix of the *whole* soundtrack already sitting at speech16k.wav and
+    skipped it: Demucs ran and was paid for, the report said separation had
+    happened, and transcription, diarization and the cloning references were all
+    still taken from the music-contaminated mix.
+
+    Keying the folder rather than stamping the files makes a stale artefact
+    unreachable instead of merely unlikely — there is no path by which the wrong
+    settings can name the right folder.
+    """
+    path = workdir / "derived" / _fingerprint(*parts)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _match_rate(audio, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Bring one engine's output to the project rate.
+
+    The rate used to be a single variable reassigned per line and then handed to
+    assemble() once for all of them, so a mid-job fallback from a cloning engine
+    to the portable one could leave two rates in the same list and time every
+    line of one of them wrongly. Resampling on the way in makes a single rate an
+    invariant rather than an observation. Costs an ffmpeg pass, but only on the
+    lines that actually disagree, which on a healthy run is none of them.
+    """
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    audio = audio.reshape(-1)
+    if int(src_rate) == int(dst_rate) or audio.size == 0:
+        return audio
+    with tempfile.TemporaryDirectory() as td:
+        src, dst = Path(td) / "in.wav", Path(td) / "out.wav"
+        sf.write(src, audio, int(src_rate))
+        _resample_to(src, dst, int(dst_rate), mono=True)
+        out, _ = sf.read(dst, dtype="float32")
+    return np.asarray(out, dtype=np.float32).reshape(-1)
+
+
 def _safe_name(text: str) -> str:
     text = re.sub(r"[^\w\s-]", "", text).strip()
     text = re.sub(r"\s+", "-", text)
@@ -121,11 +166,99 @@ class Job:
     engine: str = ""
     preset: str = ""
     speakers: int = 0
+    cancelling: bool = False
+    references: list[str] = field(default_factory=list)
 
     def public(self) -> dict:
         d = asdict(self)
         d["elapsed"] = round((self.finished or time.time()) - self.started)
         return d
+
+
+HISTORY_LIMIT = 50
+
+# What a job folder keeps once the job has succeeded. Everything else in there
+# is bulk that can be rebuilt.
+KEEP_SUFFIXES = {".json", ".srt", ".log"}
+
+
+def dir_size(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def prune_workdir(workdir: Path) -> int:
+    """Drop a finished job's bulky intermediates. Returns the bytes reclaimed.
+
+    A job folder held source.mp4, full.wav, speech16k.wav, speech24k.wav, the
+    Demucs stems, dubbed.wav, mixed.wav and dubbed.m4a — roughly 1.5 GB for an
+    hour of video, kept for ever under Application Support where nobody would
+    think to look for it.
+
+    The JSON artefacts stay, and so do the rendered per-line WAVs. Those cover
+    transcription, translation and synthesis, which are 63% of a job between
+    them and a small share of the bulk; everything removed here is either a
+    plain ffmpeg conversion or the download, and the pipeline already rebuilds
+    whatever it finds missing.
+
+    Only called after a job succeeds. A failed or cancelled job keeps
+    everything, because that is precisely when the link gets run again.
+    """
+    freed = 0
+    for path in workdir.rglob("*"):
+        if path.is_dir() or path.suffix in KEEP_SUFFIXES or "lines" in path.parts:
+            continue
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            freed += size
+        except OSError:
+            pass
+    # Deepest first, so a directory emptied by the pass above goes too.
+    for path in sorted(workdir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_dir():
+            try:
+                path.rmdir()
+            except OSError:
+                pass                      # not empty; something is still wanted
+    return freed
+
+
+def _load_history() -> list[dict]:
+    try:
+        data = json.loads(HISTORY_FILE.read_text())
+    except Exception:                                            # noqa: BLE001
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _record_history(job: Job) -> None:
+    """Keep a finished run once its in-memory record has been replaced.
+
+    A job id is a stable hash of the link, so re-running a link built a fresh
+    Job over the top of the old one and the previous run vanished from the
+    history panel — and the whole panel emptied on restart regardless, since it
+    was only ever an in-memory dict. One entry per file produced, which is the
+    distinction the -2 suffix on the output name already makes.
+    """
+    entry = job.public()
+    # Distinct from the live job id, so a re-run of the same link lists as its
+    # own row rather than collapsing onto the previous one.
+    entry["id"] = f"{job.id}-{int(job.finished)}"
+    entry["job_id"] = job.id
+    history = [h for h in _load_history() if h.get("output") != entry["output"]]
+    history.append(entry)
+    history.sort(key=lambda h: h.get("finished", 0))
+    try:
+        HISTORY_FILE.write_text(json.dumps(history[-HISTORY_LIMIT:], indent=1))
+    except Exception:                                            # noqa: BLE001
+        pass                      # history is a convenience, never worth a job
 
 
 class JobRunner:
@@ -164,8 +297,37 @@ class JobRunner:
         threading.Thread(target=self._run, args=(job, settings), daemon=True).start()
         return job
 
+    def public_jobs(self) -> list[dict]:
+        """Live jobs plus previously finished ones, newest first.
+
+        A finished run is dropped if its file has since been deleted or moved,
+        so the panel never offers to reveal something that isn't there.
+        """
+        live = [j.public() for j in self.jobs.values()]
+        seen = {j["output"] for j in live if j.get("output")}
+        past = [h for h in _load_history()
+                if h.get("output") and h["output"] not in seen
+                and Path(h["output"]).exists()]
+        return sorted(live + past, key=lambda j: j.get("started", 0), reverse=True)
+
     def cancel(self, job_id: str) -> None:
+        """Ask a job to stop, and say so straight away.
+
+        The flag is only tested between stages and inside the synthesis loop, so
+        a cancel during Demucs or a long Whisper pass genuinely does sit there
+        until that stage finishes — minutes, on a long video. Those stages are
+        subprocesses and model calls with no interruption point to offer, so
+        rather than pretend otherwise, acknowledge the request immediately and
+        name the stage being waited on.
+        """
         self._cancel.add(job_id)
+        job = self.jobs.get(job_id)
+        if job and job.status in ("queued", "running") and not job.cancelling:
+            job.cancelling = True
+            stage = job.stage_label or "the current step"
+            job.message = (f"Stopping — waiting for “{stage}” to finish first. "
+                           "That step can't be interrupted part way.")
+            self._emit(job)
 
     def _check_cancel(self, job: Job) -> None:
         if job.id in self._cancel:
@@ -220,36 +382,58 @@ class JobRunner:
         self._emit(job)
 
         stats: dict = {"preset": settings.preset}
+        # Things the user should know happened but which are not failures. The
+        # progress messages that carry them scroll past while a job runs, so a
+        # fallback that changed the result was only visible to whoever happened
+        # to be watching at the time; these survive into the finished report.
+        notes: list[str] = []
 
         try:
             # ---------------------------------------------------- download
+            # The downloaded video is keyed on the quality that fetched it too:
+            # yt-dlp skips a file that is already there, so keying only the audio
+            # derived from it would have re-derived everything downstream from
+            # the previous quality's video and looked like a fix without being
+            # one.
+            source_dir = _derived_dir(workdir, "source", settings.keep_video_quality)
             report = self._stage(job, plan, "download")
-            video, info = download.download(job.url, workdir, settings.keep_video_quality, report)
+            video, info = download.download(job.url, source_dir,
+                                            settings.keep_video_quality, report)
             job.title = info["title"]
             job.duration = info["duration"] or download.media_duration(video)
             self._emit(job)
 
             # Full-band stereo copy is what Demucs wants; ASR wants 16k mono.
-            full_wav = workdir / "full.wav"
+            full_wav = source_dir / "full.wav"
             if not full_wav.exists():
                 _resample_to(video, full_wav, 44100, mono=False)
 
             speech_wav = full_wav
             background: Path | None = None
+            separated = False
 
             # ---------------------------------------------------- separate
             if settings.separate_audio:
                 report = self._stage(job, plan, "separate")
-                stems = separate_backend.separate(full_wav, workdir,
+                # Stems live beside the audio they were cut from: they are cached
+                # by existence too, and would otherwise outlive a quality change.
+                stems = separate_backend.separate(full_wav, source_dir,
                                                   prefer_gpu=machine.fast_path,
                                                   progress=report)
                 if stems:
                     speech_wav, background = stems
-                    stats["separated"] = True
+                    separated = True
                 else:
-                    stats["separated"] = False
+                    notes.append("Speech and music could not be separated, so the "
+                                 "original soundtrack was replaced rather than kept.")
+                stats["separated"] = separated
 
-            speech16 = workdir / "speech16k.wav"
+            # Keyed on whether separation actually succeeded, not on whether it
+            # was asked for: separation that was requested and then failed must
+            # not be indistinguishable from separation that worked.
+            audio_dir = _derived_dir(workdir, "speech", settings.keep_video_quality,
+                                     settings.separate_audio, separated)
+            speech16 = audio_dir / "speech16k.wav"
             if not speech16.exists():
                 _resample_to(speech_wav, speech16, 16000, mono=True)
 
@@ -261,12 +445,25 @@ class JobRunner:
                                                 progress=report)
                 cache = workdir / "speakers.json"
                 cache.write_text(json.dumps(turns, indent=1))
+                if not turns:
+                    # Falling back to one voice is right, but silence about it
+                    # makes a two-person interview come back single-voiced and
+                    # look like a bug in the app rather than a model that
+                    # struggled.
+                    stats["diarization_failed"] = True
+                    notes.append("Speakers could not be told apart, so the whole "
+                                 "video is dubbed in one voice. If you know how many "
+                                 "people speak, set it in Settings and run it again.")
+                    report(1.0, "Couldn't tell the speakers apart — using a single voice")
 
             # -------------------------------------------------- transcribe
             report = self._stage(job, plan, "transcribe")
             cache = workdir / "segments.json"
-            asr_print = _fingerprint(settings.asr_model, settings.separate_audio,
-                                     machine.fast_path)
+            # Identify the audio by the folder it came out of rather than by the
+            # separation *setting*: that also invalidates the transcript when
+            # separation was requested but silently fell back to the full mix.
+            asr_print = _fingerprint(settings.asr_model, machine.fast_path,
+                                     audio_dir.name)
             if cache.exists() and _cache_valid(workdir, "segments", asr_print):
                 segments = json.loads(cache.read_text())
                 report(1.0, "Reusing the transcription from last time")
@@ -301,16 +498,29 @@ class JobRunner:
             # -------------------------------------------------- synthesize
             report = self._stage(job, plan, "synthesize")
             engine, cloning = self._make_engine(settings, machine, segments,
-                                                speech_wav, workdir, speaker_ids, report)
+                                                speech_wav, audio_dir, speaker_ids, report)
             stats["voices"] = engine.name
+            # Offered for playback while the job runs: a reference with music
+            # under it, or of the wrong person, colours every line that follows,
+            # and this is the only moment it can still be caught cheaply.
+            job.references = [str(p) for p in sorted((audio_dir / "refs").glob("*.wav"))]
+            if job.references:
+                self._emit(job)
+            if settings.voice_mode == "clone" and not cloning:
+                notes.append("The original speakers could not be cloned, so a "
+                             "built-in voice was used instead.")
 
-            # Keyed by voice: changing the voice and re-running must not replay
-            # the previous voice's cached lines.
-            segdir = workdir / "lines" / _fingerprint(settings.voice_mode, settings.voice,
-                                                      settings.speed)
+            # Keyed by voice, and by the translation the lines were spoken from:
+            # changing the voice and re-running must not replay the previous
+            # voice's cached lines, and neither must a re-transcription that
+            # moved the words behind an index leave the old audio in place.
+            segdir = workdir / "lines" / _fingerprint(trans_print, settings.voice_mode,
+                                                      settings.voice, settings.speed)
             segdir.mkdir(parents=True, exist_ok=True)
             spoken: list[dict] = []
-            sample_rate = getattr(engine, "sample_rate", tts_backend.SAMPLE_RATE)
+            # One rate for the whole track, fixed before the first line is spoken.
+            project_rate = int(getattr(engine, "sample_rate", tts_backend.SAMPLE_RATE))
+            stats["sample_rate"] = project_rate
             total = len(segments)
             t0 = time.time()
             degraded = False          # already dropped to the portable voice
@@ -324,10 +534,10 @@ class JobRunner:
                 speaker = int(seg.get("speaker", 0))
                 path = segdir / f"{n:05d}.wav"
                 if path.exists():
-                    audio, sample_rate = sf.read(path, dtype="float32")
+                    audio, rate = sf.read(path, dtype="float32")
                 else:
                     try:
-                        audio, sample_rate = engine.say(
+                        audio, rate = engine.say(
                             text, settings.voice_for(speaker), settings.speed, speaker=speaker)
                     except Exception as exc:                     # noqa: BLE001
                         # A voice that breaks part way through must not cost the
@@ -341,7 +551,7 @@ class JobRunner:
                                 engine = tts_backend.OnnxTTS()
                                 degraded = True
                                 stats["voices"] = f"{engine.name} (fell back mid-job)"
-                                audio, sample_rate = engine.say(
+                                audio, rate = engine.say(
                                     text, settings.voice_for(speaker), settings.speed,
                                     speaker=speaker)
                             except Exception:                    # noqa: BLE001
@@ -351,9 +561,14 @@ class JobRunner:
                             failed += 1
                             continue
                     if getattr(audio, "size", 0):
-                        sf.write(path, audio, sample_rate)
+                        sf.write(path, audio, rate)
                 if getattr(audio, "size", 0):
-                    spoken.append({"start": seg["start"], "end": seg["end"], "samples": audio})
+                    # Normalised here, on the way in, so a mid-job engine swap —
+                    # or a resume that reads back a mixed set of cached lines —
+                    # cannot put two rates into one track.
+                    audio = _match_rate(audio, int(rate), project_rate)
+                    spoken.append({"start": seg["start"], "end": seg["end"],
+                                   "samples": audio, "rate": project_rate})
                 if n % 5 == 0 or n == total - 1:
                     done = n + 1
                     rate = done / max(0.1, time.time() - t0)
@@ -366,11 +581,11 @@ class JobRunner:
             # ---------------------------------------------------- assemble
             report = self._stage(job, plan, "assemble")
             video_len = download.media_duration(video)
-            track, astats = align.assemble(spoken, video_len, sample_rate,
+            track, astats = align.assemble(spoken, video_len, project_rate,
                                            settings.max_stretch, report)
             stats.update(astats)
             raw = workdir / "dubbed.wav"
-            sf.write(raw, track, sample_rate)
+            sf.write(raw, track, project_rate)
 
             report(0.75, "Mixing")
             speech_only = raw
@@ -398,6 +613,7 @@ class JobRunner:
 
             report(0.8, "Checking the result")
             stats.update(mux.verify(video, out_path))
+            stats.update(mux.check_loudness(out_path, video_len))
             if srt:
                 shutil.copy(srt, out_path.with_suffix(".srt"))
 
@@ -405,7 +621,15 @@ class JobRunner:
             stats["lines_spoken"] = len(spoken)
             if failed:
                 stats["lines_failed"] = failed
-            separate_backend.cleanup(workdir)          # stems are large; drop them
+                notes.append(f"{failed} line{'s' if failed != 1 else ''} could not be "
+                             "spoken and were left silent.")
+            if stats.get("audio_warning"):
+                notes.append(stats["audio_warning"])
+            stats["notes"] = notes
+            separate_backend.cleanup(source_dir)       # stems are large; drop them
+            freed = prune_workdir(workdir)
+            if freed:
+                stats["working_files_freed"] = round(freed / (1024 ** 2))
 
             job.stats = stats
             job.output = str(out_path)
@@ -413,6 +637,7 @@ class JobRunner:
             job.finished = time.time()
             job.overall = 1.0
             job.message = f"Saved to {out_path.parent.name}/{out_path.name}"
+            _record_history(job)
             self._emit(job)
 
         except _Cancelled:
@@ -433,7 +658,7 @@ class JobRunner:
 
     # ------------------------------------------------------------- voices
     def _make_engine(self, settings, machine, segments, speech_wav: Path,
-                     workdir: Path, speaker_ids: list[int], report):
+                     audio_dir: Path, speaker_ids: list[int], report):
         """Build the TTS engine, capturing a reference clip per speaker if cloning."""
         if settings.voice_mode != "clone":
             return tts_backend.load_tts(machine.fast_path, report), False
@@ -448,7 +673,10 @@ class JobRunner:
             report(0.0, f"Cloning unavailable ({exc}); using a built-in voice")
             return tts_backend.load_tts(machine.fast_path, report), False
 
-        ref_wav = workdir / "speech24k.wav"
+        # Under the keyed audio folder with the rest: this one feeds the clone
+        # prompts, so a stale copy puts the original background music inside
+        # every cloned voice.
+        ref_wav = audio_dir / "speech24k.wav"
         if not ref_wav.exists():
             _resample_to(speech_wav, ref_wav, 24000, mono=True)
         audio, rate = sf.read(ref_wav, dtype="float32")
@@ -459,7 +687,7 @@ class JobRunner:
         for speaker in speaker_ids:
             ref = diarize_backend.pick_reference(segments, speaker, audio, rate)
             if ref is not None and ref.size > rate:              # at least a second
-                engine.add_reference(speaker, ref, rate, workdir / "refs")
+                engine.add_reference(speaker, ref, rate, audio_dir / "refs")
                 captured += 1
 
         if not captured:

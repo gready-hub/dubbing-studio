@@ -26,6 +26,7 @@ BASE = _base_dir()
 JOBS = BASE / "jobs"
 MODELS = BASE / "models"
 SETTINGS_FILE = BASE / "settings.json"
+HISTORY_FILE = BASE / "history.json"
 OUTPUT_DIR = Path(os.environ.get("DUBBING_STUDIO_OUTPUT", str(Path.home() / "Movies" / "Dubbed")))
 
 
@@ -246,7 +247,9 @@ class Settings:
     audio_mode: str = "replace"          # replace | duck | dual
     duck_db: float = -18.0
     target_language: str = "English"
-    source_language: str = "auto"
+    # No source_language: it was declared here and never read by anything, and a
+    # setting nothing consumes is worse than no setting at all. The recognisers
+    # detect the source themselves and the translation prompt never named it.
     glossary: str = "none"
     custom_glossary: str = ""
     translator: str = "ollama"           # ollama | anthropic | openai
@@ -298,7 +301,21 @@ class Settings:
         return s
 
     def save(self) -> None:
+        """Write the settings, including any API keys, to SETTINGS_FILE.
+
+        The Anthropic and OpenAI keys are stored here in plain text. That is a
+        deliberate choice for a local single-user app — the Keychain would put a
+        system prompt in front of every job, and the app has no server to hold a
+        token for it — but it is only defensible if it is stated rather than
+        assumed, so the settings panel and the README both say where the key
+        goes. What can be done cheaply is narrowing who can read it: the file is
+        owner-only, so another account on the same Mac cannot.
+        """
         SETTINGS_FILE.write_text(json.dumps(asdict(self), indent=2))
+        try:
+            SETTINGS_FILE.chmod(0o600)
+        except OSError:
+            pass                          # not fatal; the file is still written
 
     def glossary_text(self) -> str:
         parts = []
