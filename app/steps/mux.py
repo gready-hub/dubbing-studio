@@ -79,6 +79,64 @@ def mux(video: Path, dubbed: Path, dst: Path, mode: str = "replace",
     return dst
 
 
+def check_loudness(result: Path, total_duration: float,
+                   silence_db: float = -50.0, min_run: float = 3.0) -> dict:
+    """Confirm the finished track actually contains speech.
+
+    verify() compares frame counts and durations, which catches structural
+    mistakes but says nothing about content: a dub that is correctly muxed,
+    exactly the right length and completely silent passes every check it makes.
+    Peak and mean level answer "is there anything there at all"; the total time
+    spent in silent runs of at least min_run seconds answers "is there anything
+    there throughout", which is what catches a dub that died half way.
+
+    Measured with ffmpeg's own volumedetect and silencedetect rather than by
+    decoding the track here, so it costs one pass and no new dependency.
+    """
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "info", "-nostats", "-i", str(result), "-map", "0:a:0",
+         "-af", f"volumedetect,silencedetect=noise={silence_db}dB:d={min_run}",
+         "-f", "null", "-"],
+        capture_output=True, text=True)
+    text = proc.stderr
+
+    def level(label: str) -> float | None:
+        for line in text.splitlines():
+            if label in line:
+                try:
+                    return float(line.split(label)[1].split("dB")[0].strip().rstrip(":").strip())
+                except (IndexError, ValueError):
+                    return None
+        return None
+
+    peak = level("max_volume:")
+    mean = level("mean_volume:")
+    silent = 0.0
+    for line in text.splitlines():
+        if "silence_duration:" in line:
+            try:
+                silent += float(line.split("silence_duration:")[1].strip().split()[0])
+            except (IndexError, ValueError):
+                pass
+
+    stats: dict = {"peak_db": peak, "mean_db": mean, "silent_seconds": round(silent, 1)}
+    # -45 dBFS is well below anything audible as speech but comfortably above a
+    # digitally silent track, so it separates "quiet" from "empty".
+    stats["audio_present"] = peak is not None and peak > -45.0
+    share = silent / total_duration if total_duration > 0 else 0.0
+    stats["silent_share"] = round(share, 3)
+
+    if not stats["audio_present"]:
+        stats["audio_warning"] = ("The finished soundtrack is silent — nothing was "
+                                  "audible in the dubbed audio.")
+    elif share > 0.5:
+        stats["audio_warning"] = (
+            f"{int(share * 100)}% of the video has no dubbed speech over it. "
+            "That can be normal for a video with long wordless stretches, but it "
+            "is also what a half-failed run looks like.")
+    return stats
+
+
 def verify(original: Path, result: Path) -> dict:
     """Confirm the video stream survived untouched and the audio spans the video."""
     def probe(path: Path, args: list[str]) -> str:
