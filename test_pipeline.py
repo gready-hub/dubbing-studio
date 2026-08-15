@@ -435,6 +435,11 @@ def test_preset_change_reseparates():
     from app.config import Settings, JOBS
 
     MIX_HZ, STEM_HZ, RATE = 200.0, 800.0, 44100
+    URL = "https://example.com/preset-change"
+    # From a clean folder: a link maps to a stable job id, so leftovers from a
+    # previous run of this suite would be reused and the test would be asserting
+    # against whatever the last run happened to leave.
+    shutil_rmtree(JOBS / pipeline._job_id(URL))
     work = WORK / "preset"
     work.mkdir(parents=True, exist_ok=True)
     clip = work / "clip.mp4"
@@ -485,16 +490,22 @@ def test_preset_change_reseparates():
     real_download = pipeline.download.download
     real_separate = pipeline.separate_backend.separate
     real_transcribe = pipeline.asr_backend.transcribe
+    real_prune = pipeline.prune_workdir
     pipeline.download.download = fake_download
     pipeline.separate_backend.separate = fake_separate
     pipeline.asr_backend.transcribe = fake_transcribe
+    # Pruning after a successful job removes the derived audio, which would hide
+    # this bug rather than fix it — and only for jobs that succeed. A run that
+    # failed or was cancelled keeps everything, and is then exactly the stale
+    # folder the next run reads from, so that is the state to test against.
+    pipeline.prune_workdir = lambda workdir: 0
     T._call_ollama = fake_llm
 
     def run(preset: str):
         s = Settings().apply_preset(preset)
         s.translator = "ollama"
         s.voice = "bf_emma"
-        job = pipeline.runner.submit("https://example.com/preset-change", s)
+        job = pipeline.runner.submit(URL, s)
         t0 = time.time()
         while job.status in ("queued", "running") and time.time() - t0 < 600:
             time.sleep(1)
@@ -530,6 +541,7 @@ def test_preset_change_reseparates():
         pipeline.download.download = real_download
         pipeline.separate_backend.separate = real_separate
         pipeline.asr_backend.transcribe = real_transcribe
+        pipeline.prune_workdir = real_prune
 
 
 # ================================ 7. one sample rate across the whole track
@@ -563,6 +575,12 @@ def test_mixed_sample_rates():
     # And through the pipeline: an engine that reports 32 kHz and then fails,
     # forcing the real mid-job fallback to the 24 kHz portable voice.
     STARTS = [(1.0, 3.0), (5.0, 7.0)]
+    URL = "https://example.com/rate-switch"
+    # Cached lines from an earlier run of this suite would be read straight back
+    # and the engine never called, so the fallback this test exists to trigger
+    # would never happen.
+    from app.config import JOBS as JOBS_DIR
+    shutil_rmtree(JOBS_DIR / pipeline._job_id(URL))
     work = WORK / "rates"
     work.mkdir(parents=True, exist_ok=True)
     clip = work / "clip.mp4"
@@ -613,15 +631,18 @@ def test_mixed_sample_rates():
     real_download = pipeline.download.download
     real_transcribe = pipeline.asr_backend.transcribe
     real_make = pipeline.JobRunner._make_engine
+    real_prune = pipeline.prune_workdir
     pipeline.download.download = fake_download
     pipeline.asr_backend.transcribe = fake_transcribe
     pipeline.JobRunner._make_engine = lambda *a, **k: (RateSwitchingEngine(), False)
+    # The assembled track is one of the intermediates a successful job drops.
+    pipeline.prune_workdir = lambda workdir: 0
     T._call_ollama = fake_llm
 
     try:
         s = Settings().apply_preset("fast")
         s.translator = "ollama"
-        job = pipeline.runner.submit("https://example.com/rate-switch", s)
+        job = pipeline.runner.submit(URL, s)
         t0 = time.time()
         while job.status in ("queued", "running") and time.time() - t0 < 600:
             time.sleep(1)
@@ -657,6 +678,64 @@ def test_mixed_sample_rates():
         pipeline.download.download = real_download
         pipeline.asr_backend.transcribe = real_transcribe
         pipeline.JobRunner._make_engine = real_make
+        pipeline.prune_workdir = real_prune
+
+
+# ==================================== 8. a finished job drops its bulk
+def test_cleanup():
+    """Keep what makes a re-run cheap; drop the rest.
+
+    A job folder held the download, the full-band audio, the stems and the
+    rendered track — about 1.5 GB for an hour of video, under Application
+    Support where nobody would find it.
+    """
+    print("\n[8] Clearing up after a finished job")
+    from app.pipeline import dir_size, prune_workdir
+    from app.config import JOBS
+
+    work = WORK / "cleanup"
+    shutil_rmtree(work)
+    (work / "derived" / "abc" / "stems").mkdir(parents=True)
+    (work / "lines" / "def").mkdir(parents=True)
+
+    big = np.zeros(240000, dtype=np.float32)
+    sf.write(work / "dubbed.wav", big, 24000)
+    sf.write(work / "derived" / "abc" / "full.wav", big, 24000)
+    sf.write(work / "derived" / "abc" / "stems" / "vocals.wav", big, 24000)
+    sf.write(work / "lines" / "def" / "00000.wav", big, 24000)
+    (work / "derived" / "abc" / "source.mp4").write_bytes(b"x" * 5000)
+    (work / "segments.json").write_text('[{"start": 0}]')
+    (work / "translated.json").write_text("[]")
+    (work / "subtitles.srt").write_text("1\n")
+
+    before = dir_size(work)
+    freed = prune_workdir(work)
+
+    check("something was actually reclaimed", freed > 0, f"{freed} bytes")
+    check("the transcript is kept", (work / "segments.json").exists())
+    check("the translation is kept", (work / "translated.json").exists())
+    check("the subtitles are kept", (work / "subtitles.srt").exists())
+    check("the rendered lines are kept",
+          (work / "lines" / "def" / "00000.wav").exists())
+    for gone in ("dubbed.wav", "derived/abc/full.wav", "derived/abc/source.mp4",
+                 "derived/abc/stems/vocals.wav"):
+        check(f"{gone} is dropped", not (work / gone).exists())
+    check("emptied folders go too", not (work / "derived").exists())
+    check("the folder is smaller than it was", dir_size(work) < before,
+          f"{dir_size(work)} < {before}")
+
+    # And the real job from section 4 kept what a resume needs.
+    if E2E_JOB_ID:
+        job_dir = JOBS / E2E_JOB_ID
+        check("the finished job kept its transcript",
+              (job_dir / "segments.json").exists())
+        check("the finished job dropped its working audio",
+              not (job_dir / "dubbed.wav").exists())
+
+
+def shutil_rmtree(path):
+    import shutil
+    shutil.rmtree(path, ignore_errors=True)
 
 
 if __name__ == "__main__":
@@ -667,6 +746,7 @@ if __name__ == "__main__":
     test_resume()
     test_preset_change_reseparates()
     test_mixed_sample_rates()
+    test_cleanup()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")
