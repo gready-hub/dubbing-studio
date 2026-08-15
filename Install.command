@@ -111,9 +111,23 @@ check_cmd_for() {
     *)           echo "$1" ;;
   esac
 }
+
+# Being on PATH is not the same as being usable. A pyenv shim for a version
+# pyenv has not selected sits on PATH, satisfies `command -v`, and then exits
+# non-zero with "command not found" the moment it is run. Testing with
+# `command -v` therefore skipped the Homebrew install here and left step 4
+# building the environment from an interpreter that cannot start — so for the
+# interpreters, ask whether it actually runs.
+tool_usable() {
+  case "$1" in
+    python3.12|python3) "$1" -c 'import sys' >/dev/null 2>&1 ;;
+    *)                  command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
 for tool in ffmpeg yt-dlp python@3.12; do
   name="$(check_cmd_for "$tool")"
-  if brew list --formula "$tool" >/dev/null 2>&1 || command -v "$name" >/dev/null 2>&1; then
+  if brew list --formula "$tool" >/dev/null 2>&1 || tool_usable "$name"; then
     ok "$name already installed"
   else
     # Braced deliberately: bash treats the bytes of a following multi-byte
@@ -129,10 +143,47 @@ brew upgrade yt-dlp >/dev/null 2>&1 && ok "yt-dlp up to date" || true
 
 # ------------------------------------------------------------- 4. Python
 step "4 of 7  Python environment"
-PY="$(command -v python3.12 || command -v python3)"
-"$PY" -m venv .venv 2>/dev/null || true
+# Resolve the interpreter by running it, and try Homebrew's own path before
+# whatever PATH happens to resolve first: a pyenv or conda shim earlier in PATH
+# shadows a perfectly good python3.12 and then refuses to start.
+pick_python() {
+  local candidate resolved
+  for candidate in "$(brew --prefix 2>/dev/null)/opt/python@3.12/bin/python3.12" \
+                   /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 \
+                   python3.12 python3; do
+    resolved="$(command -v "$candidate" 2>/dev/null)" || continue
+    "$resolved" -c 'import sys, venv; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)' \
+      >/dev/null 2>&1 && { printf "%s\n" "$resolved"; return 0; }
+  done
+  return 1
+}
+
+if ! PY="$(pick_python)"; then
+  bad "No usable Python 3.10 or newer was found."
+  say "    Install one with:  brew install python@3.12"
+  read -r -p "Press return."; exit 1
+fi
+ok "Using $("$PY" -V 2>&1)"
+
+# A half-built .venv is worse than none: it has the directory layout but no
+# working interpreter, so `source activate` succeeds and every later step runs
+# against the wrong python. Failing to build one is fatal, not a warning —
+# continuing past it is what turned a bad interpreter into four more errors.
+if [[ -d .venv && ! -x .venv/bin/python ]]; then
+  warn "Removing an incomplete .venv left by an earlier attempt"
+  rm -rf .venv
+fi
+if [[ ! -x .venv/bin/python ]]; then
+  if ! "$PY" -m venv .venv >>"$LOG" 2>&1; then
+    bad "Could not create the Python environment. See $LOG"
+    read -r -p "Press return."; exit 1
+  fi
+fi
 # shellcheck disable=SC1091
-source .venv/bin/activate
+if ! source .venv/bin/activate; then
+  bad "Could not activate the Python environment."
+  read -r -p "Press return."; exit 1
+fi
 python -m pip install --quiet --upgrade pip wheel
 REQ="requirements-portable.txt"
 [[ "$ARCH" == "arm64" ]] && REQ="requirements-mac.txt"
