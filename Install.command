@@ -116,7 +116,12 @@ for tool in ffmpeg yt-dlp python@3.12; do
   if brew list --formula "$tool" >/dev/null 2>&1 || command -v "$name" >/dev/null 2>&1; then
     ok "$name already installed"
   else
-    say "  Installing $name…"
+    # Braced deliberately: bash treats the bytes of a following multi-byte
+    # character as part of an unbraced name, so "$name…" expands the variable
+    # "name…", which set -u then kills the installer over. This line only runs
+    # when a tool is actually missing, so it survived every re-run on a machine
+    # that already had them.
+    say "  Installing ${name}…"
     brew install "$tool" >/dev/null 2>&1 && ok "$name installed" || warn "$name may have failed — check below"
   fi
 done
