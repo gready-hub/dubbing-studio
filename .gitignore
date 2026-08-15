@@ -1,0 +1,18 @@
+# The virtual environment is rebuilt by Install.command and is ~1.9 GB — many
+# times the size of the source. It also hard-codes absolute paths, so a copy
+# taken from someone else's machine would not work anyway.
+.venv/
+
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Anything a local run leaves behind. Job working files and finished videos live
+# outside the project (Application Support and Movies/Dubbed), but these turn up
+# if someone points DUBBING_STUDIO_HOME at the source folder.
+jobs/
+models/
+output/
+*.log

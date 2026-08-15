@@ -1,0 +1,12 @@
+# Optional "quality extras" — large (torch alone is ~2.5 GB) but they unlock
+# music/speech separation, voice cloning and the Whisper transcription engine.
+torch>=2.4
+torchaudio>=2.4
+demucs>=4.0.1
+chatterbox-tts>=0.1.1
+faster-whisper>=1.0
+# chatterbox pulls in resemble-perth, whose watermarker still imports
+# pkg_resources. Setuptools dropped that module in 81, which makes
+# ChatterboxTTS.from_pretrained() die on a null watermarker — so cloning is
+# unavailable on a fresh install unless setuptools is held back.
+setuptools<81

@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dubbing Studio</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23b45309'/><g fill='%23fffbeb'><rect x='6' y='13' width='2.4' height='6' rx='1.2' opacity='.35'/><rect x='10' y='9' width='2.4' height='14' rx='1.2' opacity='.5'/><rect x='14' y='6' width='2.4' height='20' rx='1.2' opacity='.7'/><rect x='18' y='10' width='2.4' height='12' rx='1.2'/><rect x='22.5' y='13' width='2.4' height='6' rx='1.2'/></g></svg>">
+<style>
+  :root{
+    --bg:#faf9f7; --panel:#ffffff; --ink:#1c1917; --muted:#78716c; --line:#e7e5e4;
+    --accent:#b45309; --accent-soft:#fef3c7; --ok:#15803d; --bad:#b91c1c; --warn:#a16207;
+    --radius:14px; --shadow:0 1px 2px rgba(28,25,23,.05),0 8px 24px rgba(28,25,23,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#1c1917; --panel:#292524; --ink:#f5f5f4; --muted:#a8a29e; --line:#44403c;
+           --accent:#fbbf24; --accent-soft:#422006; --ok:#4ade80; --bad:#f87171; --warn:#fbbf24;
+           --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:780px;margin:0 auto;padding:40px 24px 80px}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:16px}
+  h1{font-size:26px;letter-spacing:-.02em;margin:0;font-weight:650}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 28px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+         box-shadow:var(--shadow);padding:22px;margin-bottom:18px}
+  label{display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px;
+        letter-spacing:.01em}
+  input[type=text],input[type=password],select,textarea{
+    width:100%;padding:12px 14px;font-size:15px;font-family:inherit;color:var(--ink);
+    background:var(--bg);border:1px solid var(--line);border-radius:10px;outline:none}
+  input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+  textarea{min-height:90px;resize:vertical;font-size:13px;line-height:1.5}
+  .row{display:flex;gap:10px;align-items:stretch}
+  .row input{flex:1}
+  button{font:inherit;font-weight:600;font-size:15px;cursor:pointer;border-radius:10px;
+         border:1px solid transparent;padding:12px 20px;transition:opacity .15s,transform .05s}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .primary{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+  @media (prefers-color-scheme:dark){ .primary{color:#1c1917} }
+  .ghost{background:transparent;color:var(--muted);border-color:var(--line)}
+  .ghost:hover{color:var(--ink)}
+  .icon-btn{background:none;border:1px solid var(--line);padding:9px 14px;font-size:14px;
+            color:var(--muted)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media (max-width:620px){ .grid{grid-template-columns:1fr} }
+  .hidden{display:none !important}
+  .bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 10px}
+  .bar > i{display:block;height:100%;background:var(--accent);border-radius:99px;
+           transition:width .4s ease;width:0}
+  .stages{display:flex;gap:6px;margin-top:14px;flex-wrap:wrap}
+  .chip{font-size:12px;padding:4px 10px;border-radius:99px;border:1px solid var(--line);
+        color:var(--muted);white-space:nowrap}
+  .chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);
+           font-weight:600}
+  .chip.done{color:var(--ok);border-color:var(--ok)}
+  .job-title{font-weight:650;font-size:17px;letter-spacing:-.01em;margin:0 0 2px}
+  .msg{color:var(--muted);font-size:14px;margin:0}
+  .stat{display:flex;justify-content:space-between;padding:7px 0;font-size:14px;
+        border-bottom:1px solid var(--line)}
+  .stat:last-child{border-bottom:none}
+  .stat span:first-child{color:var(--muted)}
+  .stat span:last-child{font-variant-numeric:tabular-nums;font-weight:600}
+  video{width:100%;border-radius:10px;margin-top:14px;background:#000;display:block}
+  .check{display:flex;align-items:flex-start;gap:10px;padding:9px 0;font-size:14px;
+         border-bottom:1px solid var(--line)}
+  .check:last-child{border-bottom:none}
+  .dot{width:9px;height:9px;border-radius:99px;flex:none;margin-top:7px}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
+  .dot.opt{background:var(--warn)}
+  .check code{background:var(--bg);padding:2px 7px;border-radius:5px;font-size:12.5px;
+              border:1px solid var(--line);display:inline-block;margin-top:3px}
+  .banner{padding:12px 16px;border-radius:10px;font-size:14px;margin-bottom:16px;
+          border:1px solid}
+  .banner.bad{background:color-mix(in srgb,var(--bad) 8%,transparent);border-color:var(--bad);
+              color:var(--bad)}
+  .banner.info{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+  .engine{font-size:12px;color:var(--muted);border:1px solid var(--line);padding:5px 11px;
+          border-radius:99px;white-space:nowrap}
+  details summary{cursor:pointer;font-size:14px;color:var(--muted);font-weight:600;
+                  list-style:none;padding:4px 0}
+  details summary::-webkit-details-marker{display:none}
+  details summary::before{content:"▸";display:inline-block;margin-right:8px;
+                          transition:transform .15s}
+  details[open] summary::before{content:"▾"}
+  .hint{font-size:12.5px;color:var(--muted);margin-top:6px;line-height:1.45}
+  .past{display:flex;justify-content:space-between;align-items:center;padding:11px 0;
+        border-bottom:1px solid var(--line);font-size:14px;gap:12px}
+  .past:last-child{border-bottom:none}
+  .past b{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;
+          white-space:nowrap}
+  .past small{color:var(--muted);font-size:12.5px}
+  .preset-wrap{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+  .segmented{display:flex;gap:4px;background:var(--bg);border:1px solid var(--line);
+             border-radius:11px;padding:4px}
+  .segmented button{flex:1;padding:9px 10px;font-size:14px;border-radius:8px;
+                    background:transparent;color:var(--muted);border:none}
+  .segmented button.on{background:var(--panel);color:var(--ink);
+                       box-shadow:0 1px 3px rgba(28,25,23,.10)}
+  @media (prefers-color-scheme:dark){
+    .segmented button.on{box-shadow:0 1px 3px rgba(0,0,0,.4)}
+  }
+  .segmented button:disabled{opacity:.4}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;
+       background:var(--accent-soft);color:var(--accent);margin-left:8px;
+       font-weight:600;vertical-align:middle}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div>
+      <h1>Dubbing Studio</h1>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="engine" id="engine">…</span>
+      <button class="icon-btn" onclick="toggle('settings')">Settings</button>
+    </div>
+  </header>
+  <p class="sub">Paste a video link. Get it back speaking English.</p>
+
+  <div id="setupBanner" class="banner bad hidden"></div>
+
+  <!-- ---------------------------------------------------------- new job -->
+  <div class="panel">
+    <label for="url">Video link</label>
+    <div class="row">
+      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=…"
+             autocomplete="off" spellcheck="false">
+      <button class="primary" id="go" onclick="start()">Dub it</button>
+    </div>
+    <p class="hint" id="quickInfo">Works with YouTube and most other video sites.
+      Only download videos you own or have permission to use.</p>
+
+    <div class="preset-wrap">
+      <div class="segmented" id="presets"></div>
+      <p class="hint" id="presetBlurb"></p>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------- running -->
+  <div class="panel hidden" id="active">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px">
+      <div style="min-width:0">
+        <p class="job-title" id="aTitle">Starting…</p>
+        <p class="msg" id="aMsg">Getting ready</p>
+      </div>
+      <button class="ghost" id="cancelBtn" onclick="cancelJob()">Cancel</button>
+    </div>
+    <div class="bar"><i id="aBar"></i></div>
+    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted)">
+      <span id="aPct">0%</span><span id="aElapsed"></span>
+    </div>
+    <div class="stages" id="aStages"></div>
+  </div>
+
+  <!-- ------------------------------------------------------------ done -->
+  <div class="panel hidden" id="done">
+    <p class="job-title" id="dTitle"></p>
+    <p class="msg" id="dPath"></p>
+    <video id="dVideo" controls preload="none"></video>
+    <div style="display:flex;gap:8px;margin:16px 0 4px;flex-wrap:wrap">
+      <button class="primary" onclick="reveal()">Show in Finder</button>
+      <button class="ghost" onclick="reset()">Dub another</button>
+    </div>
+    <details style="margin-top:14px">
+      <summary>Quality report</summary>
+      <div id="dStats" style="margin-top:10px"></div>
+    </details>
+  </div>
+
+  <!-- -------------------------------------------------------- settings -->
+  <div class="panel hidden" id="settings">
+    <div class="grid">
+      <div>
+        <label for="voice">Voice</label>
+        <select id="voice"></select>
+      </div>
+      <div>
+        <label for="audio_mode">Original audio</label>
+        <select id="audio_mode">
+          <option value="replace">Replace completely</option>
+          <option value="duck">Keep quietly underneath</option>
+          <option value="dual">Keep as a second track</option>
+        </select>
+      </div>
+      <div>
+        <label for="glossary">Subject vocabulary</label>
+        <select id="glossary"></select>
+        <p class="hint">Locks specialist terms so they translate consistently.
+          This is what keeps craft and technical jargon correct.</p>
+      </div>
+      <div>
+        <label for="translator">Translated by</label>
+        <select id="translator">
+          <option value="ollama">Local model (free, private)</option>
+          <option value="anthropic">Claude API (best quality)</option>
+          <option value="openai">OpenAI API</option>
+        </select>
+      </div>
+      <div id="ollamaBox">
+        <label for="ollama_model">Local model</label>
+        <input type="text" id="ollama_model" placeholder="auto">
+        <p class="hint" id="modelHint"></p>
+      </div>
+      <div id="anthropicBox" class="hidden">
+        <label for="anthropic_key">Anthropic API key</label>
+        <input type="password" id="anthropic_key" placeholder="sk-ant-…">
+        <p class="hint">Stored only on this computer.</p>
+      </div>
+      <div id="openaiBox" class="hidden">
+        <label for="openai_key">OpenAI API key</label>
+        <input type="password" id="openai_key" placeholder="sk-…">
+        <p class="hint">Stored only on this computer.</p>
+      </div>
+      <div>
+        <label for="target_language">Translate into</label>
+        <input type="text" id="target_language" value="English">
+      </div>
+      <div>
+        <label for="speed">Speaking speed</label>
+        <select id="speed">
+          <option value="0.9">Slower</option>
+          <option value="1.0">Normal</option>
+          <option value="1.1">Slightly faster</option>
+        </select>
+      </div>
+    </div>
+
+    <details style="margin-top:18px">
+      <summary>Advanced</summary>
+      <div style="margin-top:12px">
+        <label for="custom_glossary">Extra terms (one per line, “source → translation”)</label>
+        <textarea id="custom_glossary" placeholder="punto bajo -> single crochet"></textarea>
+        <div class="grid" style="margin-top:14px">
+          <div>
+            <label for="separate_audio">Music and effects</label>
+            <select id="separate_audio">
+              <option value="true">Separate and keep them</option>
+              <option value="false">Don't separate (faster)</option>
+            </select>
+            <p class="hint">Splits speech from the rest so replacing the voices
+              doesn't wipe the soundtrack.</p>
+          </div>
+          <div>
+            <label for="diarize">Multiple speakers</label>
+            <select id="diarize">
+              <option value="true">Detect and give each a voice</option>
+              <option value="false">Treat as one speaker</option>
+            </select>
+          </div>
+          <div>
+            <label for="asr_model">Transcription engine</label>
+            <select id="asr_model">
+              <option value="parakeet">Parakeet — fast</option>
+              <option value="whisper">Whisper — more accurate, slower</option>
+            </select>
+          </div>
+          <div>
+            <label for="voice_mode">Voices</label>
+            <select id="voice_mode">
+              <option value="fixed">Use a built-in voice</option>
+              <option value="clone">Clone the original speaker</option>
+            </select>
+            <p class="hint" id="cloneHint">Cloning keeps the speaker's identity, but
+              carries their accent into English.</p>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:14px">
+          <div>
+            <label for="keep_video_quality">Video quality</label>
+            <select id="keep_video_quality">
+              <option value="best">Best available</option>
+              <option value="1080">Up to 1080p</option>
+              <option value="720">Up to 720p</option>
+            </select>
+          </div>
+          <div>
+            <label for="write_srt">Subtitles</label>
+            <select id="write_srt">
+              <option value="false">No subtitle file</option>
+              <option value="true">Also save an .srt</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div style="margin-top:20px;display:flex;gap:8px">
+      <button class="primary" onclick="saveSettings()">Save</button>
+      <button class="ghost" onclick="toggle('settings')">Close</button>
+      <span id="savedMsg" class="hint" style="align-self:center;margin:0"></span>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------- doctor -->
+  <div class="panel">
+    <details id="doctorWrap">
+      <summary>Setup check</summary>
+      <div id="doctor" style="margin-top:10px"></div>
+    </details>
+  </div>
+
+  <!-- --------------------------------------------------------- history -->
+  <div class="panel hidden" id="historyPanel">
+    <details>
+      <summary>Earlier videos</summary>
+      <div id="history" style="margin-top:6px"></div>
+    </details>
+  </div>
+
+</div>
+
+<script>
+const STAGES = [
+  ["download","Download"],["transcribe","Listen"],["translate","Translate"],
+  ["synthesize","Speak"],["assemble","Fit"],["finish","Save"]
+];
+let STATE = null, CURRENT = null, JOBS = {};
+
+const $ = id => document.getElementById(id);
+const toggle = id => $(id).classList.toggle("hidden");
+
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  if(!r.ok){ throw new Error((await r.json().catch(()=>({detail:"Something went wrong"}))).detail); }
+  return r.json();
+}
+
+/* ------------------------------------------------------------- bootstrap */
+async function boot(){
+  STATE = await api("/api/state");
+  $("engine").textContent = STATE.machine.engine;
+
+  const v = $("voice");
+  v.innerHTML = STATE.voices.map(o=>`<option value="${o.id}">${o.label}</option>`).join("");
+  const g = $("glossary");
+  g.innerHTML = Object.entries(STATE.glossaries)
+    .map(([k,l])=>`<option value="${k}">${l}</option>`).join("");
+
+  applySettings(STATE.settings);
+  $("modelHint").textContent =
+    `Leave blank to use ${STATE.machine.suggested_model}, chosen for your ${STATE.machine.ram_gb} GB of memory.`;
+
+  STATE.jobs.forEach(j => { JOBS[j.id] = j; });
+  const live = STATE.jobs.find(j => j.status==="running" || j.status==="queued");
+  if(live){ CURRENT = live.id; render(live); }
+  renderHistory();
+  doctor();
+  listen();
+}
+
+function applySettings(s){
+  ["voice","audio_mode","glossary","translator","ollama_model","anthropic_key",
+   "openai_key","target_language","custom_glossary","keep_video_quality",
+   "asr_model","voice_mode"]
+    .forEach(k => { if($(k)) $(k).value = s[k] ?? ""; });
+  $("speed").value = String(s.speed ?? 1.0);
+  $("write_srt").value = String(!!s.write_srt);
+  $("separate_audio").value = String(!!s.separate_audio);
+  $("diarize").value = String(!!s.diarize);
+  renderPresets(s.preset);
+  translatorChanged();
+}
+
+function renderPresets(active){
+  const f = STATE.features || {};
+  const blocked = {
+    best: (!f.cloning || !f.whisper)
+      ? "Needs the quality extras — see Setup check" : "",
+    balanced: !f.separation ? "Music separation isn't installed" : "",
+  };
+  $("presets").innerHTML = Object.entries(STATE.presets).map(([k,p])=>
+    `<button class="${k===active?"on":""}" data-preset="${k}"
+             ${blocked[k]?"disabled title='"+escapeAttr(blocked[k])+"'":""}
+             onclick="pickPreset('${k}')">${escapeHtml(p.label)}</button>`).join("");
+  const p = STATE.presets[active];
+  $("presetBlurb").textContent = blocked[active] || (p ? p.blurb : "");
+}
+
+async function pickPreset(name){
+  await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+                             body:JSON.stringify({data:{preset:name}})});
+  STATE = await api("/api/state");
+  applySettings(STATE.settings);
+}
+
+function translatorChanged(){
+  const t = $("translator").value;
+  $("ollamaBox").classList.toggle("hidden", t!=="ollama");
+  $("anthropicBox").classList.toggle("hidden", t!=="anthropic");
+  $("openaiBox").classList.toggle("hidden", t!=="openai");
+}
+document.addEventListener("change", e => {
+  if(e.target.id==="translator") translatorChanged();
+});
+
+async function saveSettings(){
+  const data = {};
+  ["voice","audio_mode","glossary","translator","ollama_model","anthropic_key",
+   "openai_key","target_language","custom_glossary","keep_video_quality",
+   "asr_model","voice_mode"]
+    .forEach(k => { if($(k)) data[k] = $(k).value; });
+  data.speed = parseFloat($("speed").value);
+  data.write_srt = $("write_srt").value === "true";
+  data.separate_audio = $("separate_audio").value === "true";
+  data.diarize = $("diarize").value === "true";
+  await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+                             body:JSON.stringify({data})});
+  $("savedMsg").textContent = "Saved";
+  setTimeout(()=>{ $("savedMsg").textContent=""; }, 1800);
+  doctor();
+}
+
+/* ------------------------------------------------------------------ jobs */
+async function start(){
+  const url = $("url").value.trim();
+  if(!url) return;
+  $("go").disabled = true;
+  $("setupBanner").classList.add("hidden");
+  try{
+    const job = await api("/api/job",{method:"POST",headers:{"Content-Type":"application/json"},
+                                      body:JSON.stringify({url})});
+    CURRENT = job.id; JOBS[job.id] = job;
+    $("done").classList.add("hidden");
+    render(job);
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $("go").disabled = false;
+  }
+}
+
+async function cancelJob(){
+  if(CURRENT) await api(`/api/job/${CURRENT}/cancel`,{method:"POST"});
+}
+
+function showError(msg){
+  const b = $("setupBanner");
+  b.textContent = msg;
+  b.className = "banner bad";
+  b.scrollIntoView({behavior:"smooth",block:"center"});
+}
+
+function listen(){
+  const es = new EventSource("/api/events");
+  es.onmessage = e => {
+    const job = JSON.parse(e.data);
+    JOBS[job.id] = job;
+    if(!CURRENT || job.id === CURRENT || job.status === "running") CURRENT = job.id;
+    if(job.id === CURRENT) render(job);
+    renderHistory();
+  };
+  es.onerror = () => setTimeout(()=>{ es.close(); listen(); }, 4000);
+}
+
+function render(job){
+  const running = job.status==="running" || job.status==="queued";
+  $("active").classList.toggle("hidden", !running);
+  $("done").classList.toggle("hidden", job.status!=="done");
+
+  if(running){
+    $("aTitle").textContent = job.title || "Working…";
+    $("aMsg").textContent = job.message;
+    $("aBar").style.width = (job.overall*100).toFixed(1)+"%";
+    $("aPct").textContent = Math.round(job.overall*100)+"%";
+    $("aElapsed").textContent = job.elapsed ? fmt(job.elapsed)+" elapsed" : "";
+    const at = STAGES.findIndex(s=>s[0]===job.stage);
+    $("aStages").innerHTML = STAGES.map((s,i)=>
+      `<span class="chip ${i===at?"on":(i<at?"done":"")}">${s[1]}</span>`).join("");
+  }
+
+  if(job.status==="done"){
+    $("dTitle").textContent = job.title;
+    $("dPath").textContent = job.message;
+    const vid = $("dVideo");
+    if(vid.dataset.job !== job.id){
+      vid.dataset.job = job.id;
+      vid.src = `/api/job/${job.id}/video`;
+    }
+    const s = job.stats || {};
+    const yn = v => v === true ? "yes" : v === false ? "no" : "—";
+    $("dStats").innerHTML = [
+      ["Quality preset", s.preset ?? "—"],
+      ["Speakers found", s.speakers ?? "—"],
+      ["Voices used", s.voices ?? "—"],
+      ["Music and effects kept", yn(s.music_kept)],
+      ["Lines spoken", s.lines_spoken ?? "—"],
+      ["Needed compressing", `${s.compressed ?? 0} of ${s.lines ?? 0}`],
+      ["Hardest squeeze", s.max_factor ? s.max_factor.toFixed(2)+"x" : "none"],
+      ["Timing drift", (s.max_drift ?? 0)+"s"],
+      ["Video frames preserved", s.frames_match ? `yes (${s.output_frames})` : "re-encoded"],
+      ["Audio vs video length", (s.drift_seconds ?? 0)+"s apart"],
+      ["Engine", s.engine ?? "—"],
+      ["Took", fmt(job.elapsed)]
+    ].map(([k,v])=>`<div class="stat"><span>${k}</span><span>${v}</span></div>`).join("");
+  }
+
+  if(job.status==="error") showError(job.error);
+}
+
+function renderHistory(){
+  const past = Object.values(JOBS)
+    .filter(j=>j.status==="done" && j.id!==CURRENT)
+    .sort((a,b)=>b.started-a.started);
+  $("historyPanel").classList.toggle("hidden", past.length===0);
+  $("history").innerHTML = past.map(j=>`
+    <div class="past">
+      <div style="min-width:0"><b>${escapeHtml(j.title)}</b><small>${fmt(j.elapsed)}</small></div>
+      <button class="ghost" onclick="revealPath('${escapeAttr(j.output)}')">Show</button>
+    </div>`).join("");
+}
+
+function reset(){
+  $("done").classList.add("hidden");
+  $("url").value = "";
+  $("url").focus();
+}
+
+const reveal = () => revealPath(JOBS[CURRENT]?.output || "");
+const revealPath = p => api("/api/reveal",{method:"POST",
+  headers:{"Content-Type":"application/json"},body:JSON.stringify({path:p})});
+
+async function doctor(){
+  const d = await api("/api/doctor");
+  $("doctor").innerHTML = d.checks.map(c=>`
+    <div class="check">
+      <span class="dot ${c.ok?"ok":(c.optional?"opt":"bad")}"></span>
+      <div><b>${escapeHtml(c.name)}</b>${c.optional&&!c.ok?'<span class="tag">optional</span>':""}
+        ${c.ok?"":`<br><code>${escapeHtml(c.hint)}</code>`}</div>
+    </div>`).join("");
+  if(!d.ready){
+    $("doctorWrap").open = true;
+    const b = $("setupBanner");
+    b.textContent = "Something needed is missing — see Setup check below.";
+    b.className = "banner info";
+  }
+}
+
+function fmt(sec){
+  sec = Math.max(0, Math.round(sec||0));
+  if(sec < 60) return sec+"s";
+  const m = Math.floor(sec/60), s = sec%60;
+  if(m < 60) return `${m}m ${s}s`;
+  return `${Math.floor(m/60)}h ${m%60}m`;
+}
+const escapeHtml = s => String(s??"").replace(/[&<>"']/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const escapeAttr = s => escapeHtml(s).replace(/'/g,"&#39;");
+
+$("url").addEventListener("keydown", e => { if(e.key==="Enter") start(); });
+boot();
+</script>
+</body>
+</html>

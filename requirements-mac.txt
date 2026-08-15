@@ -1,0 +1,13 @@
+-r requirements-base.txt
+mlx>=0.21
+parakeet-mlx>=0.3
+mlx-audio>=0.2
+# mlx-audio's Kokoro needs misaki for grapheme-to-phoneme, but declares it
+# optional and only imports it on the first generate() call — so without this the
+# voice loads cleanly and then fails part way into a job. The [en] extra brings
+# num2words and the spacy tokeniser it actually needs.
+misaki[en]>=0.9
+sherpa-onnx>=1.10
+pywebview>=5.3
+pillow>=10.0
+mlx-whisper>=0.4
