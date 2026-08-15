@@ -208,7 +208,7 @@ if python -c "import misaki" 2>/dev/null && ! python -c "import en_core_web_sm" 
 fi
 
 # ---------------------------------------------------- 5. Quality extras
-step "5 of 7  Quality extras"
+step "5 of 8  Quality extras"
 say "  These enable keeping music and effects, telling speakers apart, and"
 say "  cloning voices. Around 3 GB — the biggest download here."
 if python -c "import demucs" 2>/dev/null && python -c "import chatterbox" 2>/dev/null; then
@@ -221,8 +221,15 @@ else
   warn "Details: $LOG"
 fi
 
-# -------------------------------------------------------------- 6. Ollama
-step "6 of 7  Local translation model"
+# --------------------------------------------------------- 6. Speech models
+step "6 of 8  Speech models"
+say "  Fetching the models the app will need, so the first video doesn't stop"
+say "  part way through to download them."
+python -m app.warmup balanced 2>&1 | tee -a "$LOG" | grep -v '^\s*$' || \
+  warn "Some speech models could not be fetched; they'll download on first use."
+
+# -------------------------------------------------------------- 7. Ollama
+step "7 of 8  Local translation model"
 if command -v ollama >/dev/null 2>&1; then
   ok "Ollama already installed"
 else
@@ -262,8 +269,8 @@ if command -v ollama >/dev/null 2>&1; then
   fi
 fi
 
-# ------------------------------------------------------------ 7. Build app
-step "7 of 7  Building the app"
+# ------------------------------------------------------------ 8. Build app
+step "8 of 8  Building the app"
 python -m pip install --quiet pywebview pillow 2>/dev/null || \
   warn "Native window support unavailable — the app will open in your browser instead."
 
@@ -296,8 +303,8 @@ if (( ${#WARNINGS[@]} == 0 )); then
 
   Keep this folder where it is — the app runs from here.
 
-  The first video pauses briefly to fetch the speech
-  models, then goes straight to work.
+  The speech models are already downloaded, so the first
+  video goes straight to work.
 
 DONE
 else
