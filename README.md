@@ -119,6 +119,15 @@ and woodworking, and you can add your own lines under Advanced in the form
 - *Claude or OpenAI API* — noticeably better on specialist material. Costs a few
   pence per video. Paste a key and it's used instead.
 
+**Where an API key is kept.** In plain text, in
+`~/Library/Application Support/DubbingStudio/settings.json`, so the app can
+translate without asking for it every time. The file is readable only by your
+user account, and it is listed in `.gitignore` so it cannot be committed by
+accident — but it is not encrypted, and anyone who can log in as you can read it.
+The macOS Keychain was the alternative and was not used: it would put a system
+authorisation prompt in front of every job. If that trade isn't right for you,
+leave the key blank and use the local model.
+
 ---
 
 ## Running it anywhere else (Docker)
@@ -159,6 +168,14 @@ job keeps its own working files under
 
 Jobs resume. If one fails partway through, running the same link again reuses the
 transcription and translation it already finished rather than starting over.
+
+**Disk space.** A job succeeds and then drops its bulky intermediates — the
+downloaded video, the separated stems and the full-band audio, which for an hour
+of video come to well over a gigabyte. What stays is the transcript, the
+translation and the rendered lines, which are the expensive parts to recompute
+and a small fraction of the size. A job that *failed* keeps everything, because
+that is exactly when you re-run the link. The main window shows the running
+total with a **Clear** button beside it; clearing never touches finished videos.
 
 ---
 

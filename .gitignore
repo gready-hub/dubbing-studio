@@ -15,4 +15,11 @@ __pycache__/
 jobs/
 models/
 output/
+previews/
 *.log
+
+# settings.json holds the Anthropic and OpenAI keys in plain text. It normally
+# lives in Application Support, but DUBBING_STUDIO_HOME can put it right here —
+# which is the one case where a key could be committed by accident.
+settings.json
+history.json
