@@ -79,20 +79,29 @@ def separate(audio: Path, workdir: Path, prefer_gpu: bool = True,
     tail: list[str] = []
     passes = MODEL_PASSES.get(MODEL, 1)
     done_passes, last_pct = 0, -1
-    for line in proc.stdout:                                     # type: ignore[union-attr]
-        tail.append(line)
-        tail[:] = tail[-30:]
-        # Demucs prints a percentage bar; surface it rather than looking stalled.
-        if progress and "%" in line:
-            digits = "".join(c for c in line.split("%")[0][-4:] if c.isdigit())
-            if digits:
-                pct = min(100, int(digits))
-                if pct < last_pct:            # the bar restarted: next model in the bag
-                    done_passes = min(done_passes + 1, passes - 1)
-                last_pct = pct
-                overall = (done_passes + pct / 100) / passes
-                shown = min(99, int(overall * 100))
-                progress(0.05 + 0.94 * overall, f"Separating speech from music — {shown}%")
+    try:
+        for line in proc.stdout:                                 # type: ignore[union-attr]
+            tail.append(line)
+            tail[:] = tail[-30:]
+            # Demucs prints a percentage bar; surface it rather than looking stalled.
+            if progress and "%" in line:
+                digits = "".join(c for c in line.split("%")[0][-4:] if c.isdigit())
+                if digits:
+                    pct = min(100, int(digits))
+                    if pct < last_pct:        # the bar restarted: next model in the bag
+                        done_passes = min(done_passes + 1, passes - 1)
+                    last_pct = pct
+                    overall = (done_passes + pct / 100) / passes
+                    shown = min(99, int(overall * 100))
+                    progress(0.05 + 0.94 * overall,
+                             f"Separating speech from music — {shown}%")
+    except BaseException:
+        # The progress callback is how a cancel reaches us. Without this the
+        # separation carried on in the background after the job had stopped,
+        # holding the GPU for several more minutes.
+        proc.kill()
+        proc.wait()
+        raise
     proc.wait()
 
     if proc.returncode != 0 or not speech.exists():

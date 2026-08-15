@@ -67,12 +67,20 @@ def download(url: str, workdir: Path, quality: str = "best",
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     tail: list[str] = []
-    for line in proc.stdout:                                     # type: ignore[union-attr]
-        tail.append(line)
-        tail[:] = tail[-25:]
-        m = _PCT.search(line)
-        if m and progress:
-            progress(0.02 + 0.96 * float(m.group(1)) / 100, f"Downloading — {m.group(1)}%")
+    try:
+        for line in proc.stdout:                                 # type: ignore[union-attr]
+            tail.append(line)
+            tail[:] = tail[-25:]
+            m = _PCT.search(line)
+            if m and progress:
+                progress(0.02 + 0.96 * float(m.group(1)) / 100,
+                         f"Downloading — {m.group(1)}%")
+    except BaseException:
+        # A cancel arrives through the progress callback; don't leave yt-dlp
+        # pulling a gigabyte of video for a job that has already stopped.
+        proc.kill()
+        proc.wait()
+        raise
     proc.wait()
     if proc.returncode != 0:
         raise RuntimeError(_friendly("".join(tail)))
