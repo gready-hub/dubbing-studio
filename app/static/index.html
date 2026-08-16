@@ -651,7 +651,10 @@ async function audition(){
   try{
     const r = await fetch(`/api/voice-preview?voice=${encodeURIComponent(voice)}`
                         + `&speed=${encodeURIComponent(speed)}`);
-    if(!r.ok) throw new Error("That voice couldn't be played.");
+    if(!r.ok){
+      const detail = (await r.json().catch(()=>({}))).detail;
+      throw new Error(detail || "That voice couldn't be played.");
+    }
     el.src = URL.createObjectURL(await r.blob());
     await el.play();
     msg.textContent = "";

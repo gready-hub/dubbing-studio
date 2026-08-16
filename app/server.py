@@ -216,6 +216,13 @@ def voice_preview(voice: str, speed: float = 1.0):
     speed = max(0.5, min(2.0, float(speed)))
     out = BASE / "previews" / f"{voice}-{speed:.2f}.wav"
     if not out.exists():
+        # Rendering a new one loads a second copy of the speech model. Doing
+        # that while a job is running competes with it for the GPU and pushed
+        # this machine deep into swap — the interface stopped answering for
+        # minutes. An already-rendered preview costs nothing and is still served.
+        if any(j.status in ("queued", "running") for j in runner.jobs.values()):
+            raise HTTPException(409, "Try that once the current video has finished — "
+                                     "playing a new voice now would slow it down.")
         out.parent.mkdir(parents=True, exist_ok=True)
         import soundfile as sf
         from .backends import tts as tts_backend
