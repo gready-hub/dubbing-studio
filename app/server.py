@@ -134,10 +134,21 @@ def doctor() -> dict:
             "hint": "Start the Ollama app, or switch to an API key in Settings.",
         })
         if machine.has_ollama:
+            # Reports what will actually be used, not what was ideally wanted.
+            # The suggested model comes from installed memory, so a machine whose
+            # installer pulled a different one used to be told it was missing and
+            # handed a terminal command — for a difference nobody outside this
+            # code can see or cares about. Any Qwen translates instructional
+            # speech; only having none at all is a problem.
+            from .backends.translate import installed_models, usable_model
+            wanted = settings.resolved_ollama_model(machine.ram_gb)
+            picked, swapped = usable_model(wanted)
+            have = bool(installed_models())
             checks.append({
-                "name": f"Model {settings.resolved_ollama_model(machine.ram_gb)}",
-                "ok": _ollama_has(settings.resolved_ollama_model(machine.ram_gb)),
-                "hint": f"Run: ollama pull {settings.resolved_ollama_model(machine.ram_gb)}",
+                "name": f"Translation model — {picked}" if have else "Translation model",
+                "ok": have,
+                "hint": (f"None installed. Run:  ollama pull {wanted}" if not have
+                         else swapped),
             })
     elif settings.translator == "anthropic":
         checks.append({"name": "Anthropic API key", "ok": bool(settings.anthropic_key),
@@ -164,23 +175,6 @@ def doctor() -> dict:
     return {"checks": checks,
             "ready": all(c["ok"] for c in checks
                          if not c.get("optional") and not c["name"].startswith("MLX"))}
-
-
-def _ollama_has(model: str) -> bool:
-    import urllib.request
-    from .config import ollama_host
-    try:
-        with urllib.request.urlopen(f"{ollama_host()}/api/tags", timeout=2) as r:
-            tags = json.loads(r.read()).get("models", [])
-        # The whole tag, not the family. This compared base names, so having
-        # qwen3:8b installed reported qwen3:32b as present — the setup check
-        # went green and the job then died on a 404 from Ollama part way through
-        # translating. A green light that precedes a failure is worse than a red
-        # one, because the red one carries the command that fixes it.
-        wanted = model if ":" in model else f"{model}:latest"
-        return any(m.get("name", "") == wanted for m in tags)
-    except Exception:
-        return False
 
 
 @app.post("/api/settings")

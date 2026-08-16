@@ -206,11 +206,26 @@
            the person dubbing a crochet tutorial got "low stitch" for "punto
            bajo" and never found out the app could have got it right. It is the
            same class of question as the preset: what kind of video is this. -->
-      <div style="margin-top:16px">
-        <label for="glossary">What kind of video is this?</label>
-        <select id="glossary" onchange="pickGlossary()"></select>
-        <p class="hint" id="glossaryHint"></p>
+      <div class="grid" style="margin-top:16px">
+        <div>
+          <label for="glossary">What kind of video is this?</label>
+          <select id="glossary" onchange="pickGlossary()"></select>
+        </div>
+        <div>
+          <!-- Asked, not assumed. This lived in Advanced as "Multiple speakers"
+               and defaulted to on, which is the wrong way round for the
+               single-presenter instruction this app is mostly pointed at:
+               telling speakers apart is the least reliable step in the chain,
+               and when it over-segments it dubs one person in five voices. -->
+          <label for="diarize">Who's speaking?</label>
+          <select id="diarize" onchange="pickSpeakers()">
+            <option value="false">One person</option>
+            <option value="true">Several people</option>
+          </select>
+        </div>
       </div>
+      <p class="hint" id="glossaryHint"></p>
+      <p class="hint" id="speakersHint"></p>
     </div>
   </div>
 
@@ -346,13 +361,6 @@
               doesn't wipe the soundtrack.</p>
           </div>
           <div>
-            <label for="diarize">Multiple speakers</label>
-            <select id="diarize">
-              <option value="true">Detect and give each a voice</option>
-              <option value="false">Treat as one speaker</option>
-            </select>
-          </div>
-          <div>
             <label for="expected_speakers">How many people speak</label>
             <select id="expected_speakers">
               <option value="-1">Work it out automatically</option>
@@ -363,8 +371,9 @@
               <option value="5">5 people</option>
               <option value="6">6 people</option>
             </select>
-            <p class="hint">Working it out automatically is the least reliable part
-              of the chain. If you know the answer, saying so here is better.</p>
+            <p class="hint">Only used when “Who's speaking?” is set to several
+              people. Working it out automatically is the least reliable part of
+              the chain, so if you know the answer, saying so here is better.</p>
           </div>
           <div>
             <label for="keep_music">Music and effects bed</label>
@@ -567,6 +576,7 @@ function applySettings(s){
   });
   renderPresets(s.preset);
   glossaryHint(s.glossary);
+  speakersHint(String(!!s.diarize));
   translatorChanged();
 }
 
@@ -610,6 +620,27 @@ async function pickPreset(name){
 
 /* Saved on the spot. It sits on the front panel, where there is no Save button
    and no reason the user should expect to need one. */
+/* Both of these describe the video rather than the quality wanted, so they sit
+   with the presets and save on the spot — there is no Save button on that panel
+   and no reason anyone should expect to need one. */
+async function pickSpeakers(){
+  const value = $("diarize").value;
+  speakersHint(value);
+  try{
+    await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+                               body:JSON.stringify({data:{diarize: value === "true"}})});
+  }catch(err){ showError(err.message); }
+}
+
+function speakersHint(value){
+  $("speakersHint").textContent = value === "true"
+    ? "Each speaker gets their own voice. Telling people apart is the least "
+      + "reliable step, so check the result — if it finds more people than are "
+      + "really there, say how many in Settings."
+    : "Faster, and it can't mistake one person for several — which is the most "
+      + "common way a dub of a tutorial goes wrong.";
+}
+
 async function pickGlossary(){
   const value = $("glossary").value;
   glossaryHint(value);

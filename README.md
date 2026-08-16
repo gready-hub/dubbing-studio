@@ -8,28 +8,42 @@ Everything runs on your own machine. No account, no upload, no subscription.
 
 ## Installing on a Mac
 
-1. Put the **Dubbing Studio** folder somewhere permanent in your home folder —
-   `/Users/you/Dubbing Studio` is ideal. The app runs from wherever you leave it,
-   so don't put it in the bin afterwards.
+Open **Terminal** (press ⌘-Space, type `Terminal`, press return), paste this line
+and press return:
 
-   **Not Downloads, Desktop, Documents or iCloud Drive.** macOS blocks apps from
-   reading those folders, and it refuses silently rather than asking, so the app
-   icon would simply never open. The installer warns you if it finds itself in
-   one of them.
-2. Double-click **Install**.
-3. Wait. The first run takes 10–20 minutes because it downloads a lot. You can
-   leave it and come back.
-4. When it finishes, **Dubbing Studio** appears in your Applications folder.
-   Double-click it like any other app, and drag it to your Dock if you want.
+```
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/gready-hub/dubbing-studio/main/install.sh)"
+```
 
-The installer asks for your Mac password once, when it installs Homebrew. That is
-normal — Homebrew is the standard tool for installing software on a Mac and it
-needs permission to create its folder.
+That is the whole thing. It downloads the app, puts it in a folder that works,
+installs everything it needs and builds **Dubbing Studio** into your
+Applications folder. It takes 10–20 minutes the first time, mostly downloading;
+you can leave it and come back. It asks for your Mac password once, when it
+installs Homebrew — that is normal, Homebrew is the standard way software is
+installed on a Mac and it needs permission to create its folder.
 
-### If macOS refuses to open the Install file
+Running the same line again later updates the app and keeps everything else,
+so it is also how you upgrade.
 
-Right-click it, choose **Open**, then click **Open** again in the dialog. macOS
-does this for anything not bought from the App Store. You only need to do it once.
+### Why not just download the zip?
+
+You can — the folder is on GitHub — but the Terminal line above avoids three
+things that go wrong:
+
+- **The warning dialog.** Everything a browser downloads is tagged by macOS as
+  coming from an unidentified developer. Avoiding that dialog properly needs an
+  Apple Developer account and notarisation; nothing fetched by `curl` is tagged
+  in the first place, so there is no dialog to get past.
+- **Where the folder ends up.** macOS refuses to let a locally-built app read
+  Downloads, Desktop, Documents or iCloud Drive, and it refuses *silently* — so
+  a folder left where it landed installs an app that then simply never opens.
+  The Terminal line picks a folder that works.
+- **The unzipping, and finding the file inside it.**
+
+If you would still rather do it by hand: download the zip, unzip it, move the
+folder to somewhere like `/Users/you/Dubbing Studio` — **not** Downloads,
+Desktop, Documents or iCloud Drive — then right-click **Install.command**,
+choose **Open**, and click **Open** again in the dialog.
 
 ---
 

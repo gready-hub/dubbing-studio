@@ -240,20 +240,20 @@ SPEAKER_VOICE_POOL = ["bf_emma", "bm_george", "bf_isabella", "am_michael",
 PRESETS = {
     "fast": {
         "label": "Fast",
-        "blurb": "Quickest. Best for a single person talking with no music.",
-        "separate_audio": False, "diarize": False,
+        "blurb": "Quickest. Good when there is no music or effects worth keeping.",
+        "separate_audio": False,
         "asr_model": "parakeet", "voice_mode": "fixed",
     },
     "balanced": {
         "label": "Balanced",
-        "blurb": "Keeps music and effects, and gives each speaker their own voice.",
-        "separate_audio": True, "diarize": True,
+        "blurb": "Keeps the music and effects underneath the new voice.",
+        "separate_audio": True,
         "asr_model": "parakeet", "voice_mode": "fixed",
     },
     "best": {
         "label": "Best quality",
-        "blurb": "Everything on, plus each speaker's own cloned voice. Around 3x slower.",
-        "separate_audio": True, "diarize": True,
+        "blurb": "Also copies each speaker's own voice. Around 3x slower.",
+        "separate_audio": True,
         "asr_model": "whisper", "voice_mode": "clone",
     },
 }
@@ -286,15 +286,23 @@ class Settings:
     # "custom" in the interface).
     separate_audio: bool = True          # split speech from music before dubbing
     keep_music: bool = True              # mix the music/effects back underneath
-    diarize: bool = True                 # detect multiple speakers
+    # Off by default. This app is used mostly on single-presenter instruction,
+    # where telling speakers apart can only do harm: it is the least reliable
+    # step in the chain, and when it over-segments it dubs one person in five
+    # different voices — far worse than the alternative failure, which is two
+    # people sharing one. Asked plainly on the front panel instead.
+    diarize: bool = False                # detect multiple speakers
     expected_speakers: int = -1          # -1 = work it out automatically
     merge_lines: bool = True             # join lines that run straight together
     asr_model: str = "parakeet"          # parakeet | whisper
     voice_mode: str = "fixed"            # fixed | clone
 
-    # The four switches a preset is a name for. Anything else is a preference
-    # that sits alongside a preset rather than defining one.
-    PRESET_KEYS = ("separate_audio", "diarize", "asr_model", "voice_mode")
+    # The switches a preset is a name for. Deliberately not "diarize": how many
+    # people are in a video is a fact about the video, like its subject, not a
+    # quality-versus-cost trade-off. Leaving it in meant answering "just one
+    # person" flipped the preset to custom, and picking a preset silently
+    # overwrote the answer.
+    PRESET_KEYS = ("separate_audio", "asr_model", "voice_mode")
 
     def apply_preset(self, name: str) -> "Settings":
         spec = PRESETS.get(name)

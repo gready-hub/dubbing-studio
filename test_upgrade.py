@@ -57,11 +57,18 @@ def test_plan():
 
     fast = r._plan(Settings().apply_preset("fast"))
     check("fast skips separation", "separate" not in fast)
-    check("fast skips diarization", "diarize" not in fast)
 
     balanced = r._plan(Settings().apply_preset("balanced"))
     check("balanced includes separation", "separate" in balanced)
-    check("balanced includes diarization", "diarize" in balanced)
+
+    # Who is speaking is a fact about the video, not a quality preset, so no
+    # preset turns it on or off — the front panel asks instead. Off by default,
+    # because this app is used mostly on single-presenter instruction and
+    # over-segmentation dubs one person in several voices.
+    check("no preset dictates diarization", "diarize" not in balanced)
+    several = Settings().apply_preset("balanced")
+    several.diarize = True
+    check("saying several people speak adds the stage", "diarize" in r._plan(several))
 
     best = r._plan(Settings().apply_preset("best"))
     check("cloning gets a bigger share of the bar",
@@ -365,6 +372,7 @@ def test_balanced_end_to_end():
     T._call_ollama = fake_llm
 
     s = Settings().apply_preset("balanced")
+    s.diarize = True                  # this clip genuinely has two people in it
     s.translator = "ollama"
     s.voice = "bf_emma"
 
@@ -391,6 +399,30 @@ def test_balanced_end_to_end():
           f"{st.get('drift_seconds')}s")
     check("preset recorded in the report", st.get("preset") == "balanced")
     check("output exists", Path(job.output).exists())
+
+    # "Who's speaking?" is on the front panel now, so changing it on a link that
+    # has already been dubbed is an ordinary thing to do — and this pipeline has
+    # a history of reusing an artefact that no longer matches its settings. The
+    # transcript and the translation are rightly kept; the labels and the
+    # rendered voices are not, and they are what the answer changes.
+    def rerun(diarize: bool):
+        again = Settings().apply_preset("balanced")
+        again.diarize, again.translator, again.voice = diarize, "ollama", "bf_emma"
+        j = pipeline.runner.submit("https://example.com/two", again)
+        t = time.time()
+        while j.status in ("queued", "running") and time.time() - t < 900:
+            time.sleep(2)
+        return j
+
+    one = rerun(False)
+    check("saying one person speaks re-runs to a single voice",
+          one.status == "done" and one.stats.get("speakers") == 1,
+          f"{one.status}: {one.stats.get('speakers')}")
+
+    two = rerun(True)
+    check("and saying several restores them",
+          two.status == "done" and two.stats.get("speakers") == 2,
+          f"{two.status}: {two.stats.get('speakers')}")
 
     # Both assigned voices should actually appear in the rendered audio: check
     # the per-line files aren't all identical in pitch.

@@ -16,6 +16,8 @@ import urllib.error
 import urllib.request
 from typing import Callable, Optional
 
+from ..notes import note
+
 Progress = Optional[Callable[[float, str], None]]
 
 BATCH = 25
@@ -84,6 +86,48 @@ def _parse(reply: str, batch: list[dict]) -> dict[int, str]:
 
 
 # ----------------------------------------------------------------- backends
+
+def installed_models(host: str = "") -> list[dict]:
+    """What Ollama actually has, largest first."""
+    from ..config import ollama_host
+    host = host or ollama_host()
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as r:
+            models = json.loads(r.read()).get("models", [])
+    except Exception:                                            # noqa: BLE001
+        return []
+    return sorted((m for m in models if m.get("name")),
+                  key=lambda m: int(m.get("size") or 0), reverse=True)
+
+
+def usable_model(wanted: str, host: str = "") -> tuple[str, str]:
+    """The wanted model if Ollama has it, otherwise the best thing it does have.
+
+    The suggested model is chosen from installed memory, so a machine whose
+    installer pulled a different one — the download timed out, Ollama was slow to
+    start its first time, the RAM tier moved — asked for a tag that was not there
+    and the job died on a 404 part way through translating. The person this app
+    is for does not know that model tags exist and should not have to: another
+    Qwen of a different size translates instructional speech perfectly well, and
+    using it is strictly better than refusing.
+
+    Returns (model, note). The note is empty when nothing was substituted, and
+    otherwise says what happened, because a quietly different model is a quietly
+    different translation.
+    """
+    have = installed_models(host)
+    if not have:
+        return wanted, ""                 # unreachable; the caller reports that
+    names = [m["name"] for m in have]
+    if wanted in names:
+        return wanted, ""
+
+    family = wanted.split(":")[0]
+    same = [n for n in names if n.split(":")[0] == family]
+    picked = same[0] if same else names[0]
+    return picked, (f"{wanted} isn't installed, so {picked} was used to translate "
+                    f"instead. To use {wanted}, run:  ollama pull {wanted}")
+
 
 def _call_ollama(prompt: str, model: str, host: str = "") -> str:
     from ..config import ollama_host
@@ -169,7 +213,11 @@ def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = 
     target = settings.target_language
 
     if backend == "ollama":
-        model = settings.resolved_ollama_model(ram_gb)
+        model, swapped = usable_model(settings.resolved_ollama_model(ram_gb))
+        if swapped:
+            # Reported the same way any other result-changing fallback is, so it
+            # survives into the finished report rather than scrolling past.
+            note(progress, swapped)
         call = lambda p: _call_ollama(p, model)                      # noqa: E731
         label = f"local model {model}"
     elif backend == "anthropic":

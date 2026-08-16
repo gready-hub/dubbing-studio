@@ -280,6 +280,28 @@ def test_server():
                      "404: File not found (caused by <HTTPError 404: File not found>)")
     check("a dead link is explained in plain English",
           "typed correctly" in dead and "ERROR" not in dead, dead)
+    # Nobody outside this code knows model tags exist, and a machine whose
+    # installer pulled a different size used to die on a 404 mid-translation.
+    from app.backends import translate as T
+    real_installed = T.installed_models
+    T.installed_models = lambda host="": [{"name": "qwen3:8b", "size": 5_000_000_000},
+                                          {"name": "llama3:8b", "size": 4_000_000_000}]
+    try:
+        picked, note_ = T.usable_model("qwen3:8b")
+        check("an installed model is used as-is", picked == "qwen3:8b" and not note_)
+        picked, note_ = T.usable_model("qwen3:32b")
+        check("a missing size falls back within the same family",
+              picked == "qwen3:8b" and "isn't installed" in note_, picked)
+        picked, note_ = T.usable_model("mistral:7b")
+        check("a missing family falls back to whatever is there",
+              picked in ("qwen3:8b", "llama3:8b") and note_, picked)
+        T.installed_models = lambda host="": []
+        picked, note_ = T.usable_model("qwen3:8b")
+        check("with nothing installed it asks for what it wanted",
+              picked == "qwen3:8b" and not note_)
+    finally:
+        T.installed_models = real_installed
+
     check("an offline machine is told so",
           "internet connection" in _friendly("ERROR: unable to open: "
                                              "nodename nor servname provided"))
@@ -301,17 +323,37 @@ def test_server():
     for name in PRESETS:
         check(f"{name} settings identify as {name}",
               Settings().apply_preset(name).matching_preset() == name)
+    # Balanced without separation is exactly Fast, and is named as such rather
+    # than called custom — the presets are points in one space, not labels.
     off = Settings().apply_preset("balanced")
     off.separate_audio = False
-    check("changing a stage switch reads as custom", off.matching_preset() == "custom")
+    check("balanced minus separation is recognised as fast",
+          off.matching_preset() == "fast", off.matching_preset())
+    # A combination no preset describes.
+    mixed = Settings().apply_preset("balanced")
+    mixed.asr_model = "whisper"
+    check("a mix no preset describes reads as custom",
+          mixed.matching_preset() == "custom", mixed.matching_preset())
+
+    # How many people are speaking is a fact about the video, not a
+    # quality-versus-cost setting, so it belongs to neither preset.
+    for name in PRESETS:
+        check(f"{name} does not dictate who is speaking", "diarize" not in PRESETS[name])
+    spoke = Settings().apply_preset("best")
+    spoke.diarize = True
+    check("saying several people speak does not change the preset",
+          spoke.matching_preset() == "best", spoke.matching_preset())
 
     r = client.post("/api/settings", json={"data": {"preset": "balanced"}})
     check("picking a preset saves it", r.json()["preset"] == "balanced")
-    r = client.post("/api/settings", json={"data": {"separate_audio": False}})
-    check("turning a switch off flips the saved preset to custom",
+    r = client.post("/api/settings", json={"data": {"asr_model": "whisper"}})
+    check("an off-preset switch flips the saved preset to custom",
           r.json()["preset"] == "custom", r.json()["preset"])
-    r = client.post("/api/settings", json={"data": {"separate_audio": True}})
-    check("and turning it back on returns to the named preset",
+    r = client.post("/api/settings", json={"data": {"asr_model": "parakeet"}})
+    check("and putting it back returns to the named preset",
+          r.json()["preset"] == "balanced", r.json()["preset"])
+    r = client.post("/api/settings", json={"data": {"diarize": True}})
+    check("but saying several people speak leaves the preset alone",
           r.json()["preset"] == "balanced", r.json()["preset"])
 
 
