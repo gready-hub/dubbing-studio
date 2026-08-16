@@ -211,7 +211,10 @@ def prune_workdir(workdir: Path) -> int:
     everything, because that is precisely when the link gets run again.
     """
     freed = 0
-    for path in workdir.rglob("*"):
+    # Materialised before deleting anything: rglob walks lazily, and removing
+    # entries from a directory that is still being scanned can skip its
+    # siblings, which would leave some of the bulk behind at random.
+    for path in list(workdir.rglob("*")):
         if path.is_dir() or path.suffix in KEEP_SUFFIXES or "lines" in path.parts:
             continue
         try:
