@@ -145,6 +145,18 @@
       <div class="segmented" id="presets"></div>
       <p class="hint" id="presetBlurb"></p>
       <p class="hint hidden" id="presetBlocked"></p>
+
+      <!-- On the front panel, not buried in Settings. This is the one thing the
+           app does that the off-the-shelf tools don't, it ships glossaries for
+           exactly the material it was built for, and it defaults to None — so
+           the person dubbing a crochet tutorial got "low stitch" for "punto
+           bajo" and never found out the app could have got it right. It is the
+           same class of question as the preset: what kind of video is this. -->
+      <div style="margin-top:16px">
+        <label for="glossary">What kind of video is this?</label>
+        <select id="glossary" onchange="pickGlossary()"></select>
+        <p class="hint" id="glossaryHint"></p>
+      </div>
     </div>
   </div>
 
@@ -216,12 +228,6 @@
           <option value="duck">Keep quietly underneath</option>
           <option value="dual">Keep as a second track</option>
         </select>
-      </div>
-      <div>
-        <label for="glossary">Subject vocabulary</label>
-        <select id="glossary"></select>
-        <p class="hint">Locks specialist terms so they translate consistently.
-          This is what keeps craft and technical jargon correct.</p>
       </div>
       <div>
         <label for="translator">Translated by</label>
@@ -506,6 +512,7 @@ function applySettings(s){
     el.value = opt ? opt.value : (el.tagName === "SELECT" ? el.value : String(want));
   });
   renderPresets(s.preset);
+  glossaryHint(s.glossary);
   translatorChanged();
 }
 
@@ -545,6 +552,25 @@ async function pickPreset(name){
                              body:JSON.stringify({data:{preset:name}})});
   STATE = await api("/api/state");
   applySettings(STATE.settings);
+}
+
+/* Saved on the spot. It sits on the front panel, where there is no Save button
+   and no reason the user should expect to need one. */
+async function pickGlossary(){
+  const value = $("glossary").value;
+  glossaryHint(value);
+  try{
+    await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+                               body:JSON.stringify({data:{glossary:value}})});
+  }catch(err){ showError(err.message); }
+}
+
+function glossaryHint(value){
+  $("glossaryHint").textContent = value && value !== "none"
+    ? "Specialist terms in this subject will be translated the way the subject "
+      + "uses them, not the way a dictionary would."
+    : "If your video is about a craft or a trade, saying so keeps its jargon "
+      + "right — “punto bajo” becomes “single crochet”, not “low stitch”.";
 }
 
 function translatorChanged(){
@@ -637,8 +663,24 @@ function listen(){
   es.onerror = () => setTimeout(()=>{ es.close(); listen(); }, 4000);
 }
 
+/* A 10-minute video took 48 minutes to dub on this machine, so the app is
+   routinely left running behind something else. The window title is the one
+   thing still visible from another application — in the Dock, in the window
+   list, on a browser tab — and it never changed. */
+function setWindowTitle(job){
+  const base = "Dubbing Studio";
+  const at = job && Math.round((job.overall || 0) * 100);
+  document.title =
+    !job || job.status === "queued" ? base
+    : job.status === "running" ? `${at}% · ${base}`
+    : job.status === "done"    ? `Finished · ${base}`
+    : job.status === "error"   ? `Couldn't be dubbed · ${base}`
+    : base;
+}
+
 function render(job){
   const running = job.status==="running" || job.status==="queued";
+  setWindowTitle(job);
   $("active").classList.toggle("hidden", !running);
   $("done").classList.toggle("hidden", job.status!=="done");
   $("failed").classList.toggle("hidden", job.status!=="error");
@@ -806,6 +848,7 @@ function renderHistory(){
 }
 
 function reset(){
+  setWindowTitle(null);
   $("done").classList.add("hidden");
   $("failed").classList.add("hidden");
   $("url").value = "";

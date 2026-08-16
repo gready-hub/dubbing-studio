@@ -867,6 +867,21 @@ class JobRunner:
             job.speakers = len(speaker_ids)
             stats["speakers"] = len(speaker_ids)
 
+            # More voices than a conversation of this length can plausibly hold.
+            # Diarization reported 28 speakers for a ten-minute film with about
+            # seven characters in it, and the report said "Speakers found: 28"
+            # with no comment — so a dub in 28 different voices arrived looking
+            # like what the app meant to do. There is already a lever for this,
+            # and the person who can pull it is the one who watched the video.
+            if settings.diarize and len(speaker_ids) > max(6, job.duration / 45):
+                stats["speakers_implausible"] = True
+                notes.append(
+                    f"{len(speaker_ids)} different speakers were detected, which is "
+                    "more than a video this length usually has — telling them apart "
+                    "is the least reliable step, and it can split one person into "
+                    "several. If you know how many people speak, set it in Settings "
+                    "and run it again.")
+
             # -------------------------------------------------- synthesize
             report = self._stage(job, plan, "synthesize", notes)
             engine, cloning = self._make_engine(settings, machine, segments,

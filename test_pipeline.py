@@ -836,6 +836,18 @@ def test_segments_and_voices():
         check(f"pitch of a {hz:.0f} Hz tone is found", abs(got - hz) < 12,
               f"{got:.1f} Hz")
 
+    # A speaker count that cannot be right. The real run that prompted this
+    # reported 28 speakers for a 10m35s film with about seven characters, and
+    # said so without comment.
+    def implausible(count, seconds):
+        return count > max(6, seconds / 45)
+
+    check("28 speakers in a ten-minute film is flagged", implausible(28, 635))
+    check("three people in an hour-long podcast is not", not implausible(3, 3600))
+    check("eight on a long panel show is not", not implausible(8, 3600))
+    check("four in a two-minute clip is not", not implausible(4, 120))
+    check("twelve in a two-minute clip is", implausible(12, 120))
+
     s_ = Settings()
     s_.voice = "bf_emma"
     male = s_.voice_for(1, male=True)
