@@ -51,8 +51,10 @@ are tagged by macOS as coming from an unidentified developer; files fetched by
 > Liking it? One button turns it into the full dub, and the download isn't
 > repeated.
 
-Finished videos are saved to **Movies → Dubbed**. Samples are not — they play in
-the app and nowhere else.
+Finished videos are saved to **Movies → Dubbed**. The **Your dubbed videos**
+panel lists the recent ones and has an **Open folder** button, so nothing has to
+be hunted for. Samples are not saved there — they play in the app and nowhere
+else.
 
 ### The two questions on the front panel
 
