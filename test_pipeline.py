@@ -745,7 +745,8 @@ def test_cleanup():
     Support where nobody would find it.
     """
     print("\n[8] Clearing up after a finished job")
-    from app.pipeline import dir_size, prune_workdir
+    from app.pipeline import prune_workdir
+    from app.storage import dir_size
     from app.config import JOBS
 
     work = WORK / "cleanup"
@@ -1066,6 +1067,120 @@ def test_preview():
         pipeline.asr_backend.transcribe = real_transcribe
 
 
+# ============================== 11. knowing where the disk went
+def test_storage():
+    """Filling the boot disk does not just fail a job — macOS stops working too.
+
+    So the app has to be able to say what it is holding, let it go a piece at a
+    time, and refuse a video it has no room for rather than finding out at 80%.
+    """
+    print("\n[11] Disk space, and getting it back")
+    from app import storage as store
+    from app.config import JOBS, OUTPUT_DIR
+
+    # --- estimating before anything is written
+    hour = store.estimate_needed(3600, "720")
+    check("an hour at 720p is estimated in gigabytes",
+          2 * 1024**3 < hour < 3 * 1024**3, f"{hour / 1024**3:.1f} GB")
+    check("best quality is estimated larger than 720p",
+          store.estimate_needed(3600, "best") > hour)
+    check("a very short video still reserves a floor",
+          store.estimate_needed(2, "720") == store.MINIMUM_NEED)
+    check("an unknown duration doesn't go negative",
+          store.estimate_needed(-5, "720") == store.MINIMUM_NEED)
+    check("an unknown quality is treated as the largest",
+          store.estimate_needed(600, "??") == store.estimate_needed(600, "best"))
+
+    check("free space is a real number", store.free_bytes() > 0)
+
+    # --- a breakdown, not one figure
+    keys = [g["key"] for g in store.groups()]
+    check("every place the app writes to is accounted for",
+          set(keys) == {"jobs", "models", "previews", "ollama", "output"}, str(keys))
+    finished = next(g for g in store.groups() if g["key"] == "output")
+    check("finished videos are never offered for deletion", not finished["clearable"])
+    check("the translation model is shown but not deletable",
+          not next(g for g in store.groups() if g["key"] == "ollama")["clearable"])
+
+    # --- clearing one job at a time
+    a, b = JOBS / "aaaaaaaaaaaa", JOBS / "bbbbbbbbbbbb"
+    for folder in (a, b):
+        (folder / "derived").mkdir(parents=True, exist_ok=True)
+        (folder / "derived" / "big.wav").write_bytes(b"x" * 2_000_000)
+    rows = store.job_folders()
+    check("each job folder is listed with its size",
+          {r["id"] for r in rows} >= {a.name, b.name})
+    # A folder holding little more than an error log is not where a disk went.
+    tiny = JOBS / "cccccccccccc"
+    tiny.mkdir(parents=True, exist_ok=True)
+    (tiny / "error.log").write_text("it broke")
+    check("a folder with nothing but an error log is left off the list",
+          not any(r["id"] == tiny.name for r in store.job_folders()))
+    freed = store.clear(f"job:{a.name}")
+    check("clearing one job frees roughly its size", 1_500_000 < freed < 3_000_000, str(freed))
+    check("that job's folder is gone", not a.exists())
+    check("the other job is untouched", b.exists())
+
+    # A job that is still running must survive a clear-all.
+    store.clear("jobs", keep={b.name})
+    check("a job named as live is kept", b.exists())
+    store.clear("jobs")
+    check("clearing them all empties the folder",
+          not any(p.is_dir() for p in JOBS.iterdir()))
+
+    # Someone short of space may well keep the models on an external drive, and
+    # that folder is not this app's to empty. The suite itself symlinks it, so
+    # this also stops a test run deleting the real 700 MB.
+    if store.MODELS.is_symlink():
+        target = store.MODELS.resolve()
+        check("a symlinked models folder is left alone", store.clear("models") == 0)
+        check("and it is still there", target.is_dir())
+
+    # --- nothing else is reachable
+    before = store.dir_size(OUTPUT_DIR) if OUTPUT_DIR.is_dir() else 0
+    for bad in ("output", "..", "everything", "models/../.."):
+        try:
+            store.clear(bad)
+            check(f"“{bad}” is refused outright", False, "it was accepted")
+        except ValueError:
+            check(f"“{bad}” is refused outright", True)
+    check("the finished videos folder survived every one of those",
+          (store.dir_size(OUTPUT_DIR) if OUTPUT_DIR.is_dir() else 0) == before)
+
+    # A job id is a folder name, not a path. This one is named rather than
+    # joined-and-trusted, so it resolves outside JOBS and is dropped.
+    check("a job id that climbs out of the folder frees nothing",
+          store.clear("job:../../etc") == 0)
+
+    # --- refusing a video there is no room for
+    from app import pipeline
+    from app.config import Settings
+    clip = WORK / "preview" / "clip.mp4"
+    real_probe, real_download = pipeline.download.probe, pipeline.download.download
+    real_free = store.free_bytes
+    pipeline.download.probe, pipeline.download.download = stub_download(
+        clip, "No Room", 3600.0)
+    store.free_bytes = lambda path=None: 100 * 1024 ** 2          # 100 MB left
+    try:
+        URL = "https://example.com/no-room"
+        workdir = JOBS / pipeline._link_id(URL)
+        shutil_rmtree(workdir)
+        job = pipeline.runner.submit(URL, Settings().apply_preset("fast"))
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < 120:
+            time.sleep(0.5)
+        check("an hour of video with 100 MB free is refused", job.status == "error",
+              f"{job.status}: {job.error}")
+        check("the message says what it needs and what there is",
+              "room on the disk" in job.error and "100 MB" in job.error, job.error)
+        check("and it refused before downloading anything",
+              not list(workdir.rglob("*.mp4")) if workdir.exists() else True)
+    finally:
+        pipeline.download.probe = real_probe
+        pipeline.download.download = real_download
+        store.free_bytes = real_free
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -1077,6 +1192,7 @@ if __name__ == "__main__":
     test_cleanup()
     test_segments_and_voices()
     test_preview()
+    test_storage()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

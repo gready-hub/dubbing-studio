@@ -23,6 +23,7 @@ from typing import Callable
 import numpy as np
 import soundfile as sf
 
+from . import storage
 from .config import HISTORY_FILE, JOBS, OUTPUT_DIR, Settings, detect_machine
 from .backends import asr as asr_backend
 from .backends import clone as clone_backend
@@ -360,17 +361,6 @@ HISTORY_LIMIT = 50
 KEEP_SUFFIXES = {".json", ".srt", ".log"}
 
 
-def dir_size(path: Path) -> int:
-    total = 0
-    for item in path.rglob("*"):
-        try:
-            if item.is_file():
-                total += item.stat().st_size
-        except OSError:
-            pass
-    return total
-
-
 def prune_workdir(workdir: Path) -> int:
     """Drop a finished job's bulky intermediates. Returns the bytes reclaimed.
 
@@ -699,6 +689,18 @@ class JobRunner:
             job.duration = float(info["duration"] or 0)
             self._emit(job)
 
+            # Left in the folder so the disk-space panel can name what it is
+            # offering to delete. The folder is a hash of the link, and a sample
+            # is deliberately never written to the history — which is exactly the
+            # case someone is most likely to want to clear, and the one that
+            # would otherwise be listed as twelve characters of SHA-1. A .json
+            # suffix so prune_workdir keeps it.
+            try:
+                (workdir / "info.json").write_text(json.dumps(
+                    {"title": job.title, "url": job.url}, ensure_ascii=False))
+            except OSError:
+                pass                        # a label; never worth failing a job
+
             window = PREVIEW_SECONDS if job.preview else 0.0
             if job.preview and 0 < job.duration <= PREVIEW_MIN_VIDEO:
                 # Sampling most of a short video means waiting through
@@ -711,6 +713,21 @@ class JobRunner:
             # Unweighted when the site reports no duration — live streams and a
             # few hosts do that, and a plausible-looking bar beats a division by
             # zero.
+            # Checked here, where the duration is known and nothing has been
+            # written yet. A job holds the source video, a full-band wav, the
+            # separated stems and the assembled track at once before it prunes
+            # itself, and filling the boot disk does not just fail the job — the
+            # whole machine stops working at the same moment. Better to refuse
+            # with a number the user can act on than to find out at 80%.
+            need = storage.estimate_needed(window or job.duration,
+                                           settings.keep_video_quality)
+            free = storage.free_bytes(JOBS)
+            if free < need:
+                raise RuntimeError(
+                    f"There isn't enough room on the disk. This video needs about "
+                    f"{_gb(need)} while it works, and there is {_gb(free)} free. "
+                    "Clear some working files in the app, empty the bin, and try again.")
+
             weight = (min(self.PREVIEW_DOWNLOAD_CAP, job.duration / window)
                       if window and job.duration else 1.0)
             plan = self._plan(settings, weight)
@@ -1191,6 +1208,12 @@ def _mins(seconds: float) -> str:
     if seconds < 90:
         return f"{seconds}s"
     return f"{seconds // 60} min"
+
+
+def _gb(count: int) -> str:
+    """Disk sizes, rounded the way someone reading a warning needs them."""
+    gb = count / (1024 ** 3)
+    return f"{gb:.1f} GB" if gb >= 1 else f"{round(count / (1024 ** 2))} MB"
 
 
 def _clock(seconds: float) -> str:

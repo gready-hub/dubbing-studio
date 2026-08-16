@@ -113,6 +113,20 @@ def doctor() -> dict:
         {"name": "yt-dlp", "ok": machine.has_ytdlp,
          "hint": "Install with: brew install yt-dlp"},
     ]
+    # Room to work in. A job holds the source video, a full-band wav, the
+    # separated stems and the assembled track at once before it prunes itself,
+    # and a boot disk that fills takes the whole machine down with it — so this
+    # belongs beside ffmpeg and yt-dlp as something to know before starting,
+    # not something to discover at 80%.
+    from . import storage as store
+    free = store.free_bytes()
+    checks.append({
+        "name": f"Disk space — {round(free / 1024 ** 3, 1)} GB free",
+        "ok": free >= store.LOW_DISK,
+        "hint": "Under 5 GB is not enough to dub a long video, and macOS itself "
+                "starts to struggle. Clear some working files below.",
+    })
+
     settings = Settings.load()
     if settings.translator == "ollama":
         checks.append({
@@ -291,46 +305,67 @@ def job_reference(job_id: str, index: int):
     return FileResponse(path, media_type="audio/wav")
 
 
-@app.get("/api/storage")
-def storage() -> dict:
-    """How much disk the job working files are holding.
+def _folder_title(name: str) -> str:
+    """Turn a job folder's hash back into the video it belongs to.
 
-    Nobody goes looking in Application Support, so without this the folder just
-    grows until something else runs out of room.
+    The folder is named after the link, and a full run carries that same name as
+    its id — so a live job matches outright, and a finished one is found in the
+    history, whose ids are that name plus a timestamp.
     """
     from .config import JOBS
-    from .pipeline import dir_size
-    if not JOBS.is_dir():
-        return {"bytes": 0, "jobs": 0, "path": str(JOBS)}
-    return {"bytes": dir_size(JOBS),
-            "jobs": sum(1 for p in JOBS.iterdir() if p.is_dir()),
-            "path": str(JOBS)}
+    from .pipeline import _load_history
+    job = runner.jobs.get(name)
+    if job and job.title:
+        return job.title
+    # Written by the job itself. Covers the case the history cannot: a sample is
+    # never recorded there, and a sample is the most likely thing to be cleared.
+    try:
+        return json.loads((JOBS / name / "info.json").read_text())["title"]
+    except Exception:                                            # noqa: BLE001
+        pass
+    for entry in reversed(_load_history()):
+        if str(entry.get("id", "")).split("-")[0] == name and entry.get("title"):
+            return entry["title"]
+    return ""
+
+
+@app.get("/api/storage")
+def storage_summary() -> dict:
+    """Everything this app is keeping, and how much room is left for more.
+
+    It used to report one number for one of the four places it writes to, and
+    nobody goes looking in Application Support — so between the speech models,
+    the model Ollama holds on its behalf, the working files and the finished
+    videos, the only visible figure was the smallest one.
+    """
+    from . import storage as store
+    return store.summary(_folder_title)
+
+
+class ClearRequest(BaseModel):
+    what: str = "jobs"
 
 
 @app.post("/api/storage/clear")
-def clear_storage(request: Request) -> dict:
-    """Delete every job's working files. Finished videos are not touched.
+def clear_storage(req: ClearRequest, request: Request) -> dict:
+    """Empty one group, or one job's working files. Never the finished videos.
 
     Refused while something is running, since the job being cleared out from
     under itself would fail in a way that looks like a bug in the pipeline.
     """
-    import shutil
-    from .config import JOBS
-    from .pipeline import dir_size
+    from . import storage as store
 
     _local_only(request)
     if runner.busy():
         raise HTTPException(409, "Something is still running — wait for it to finish.")
-
-    freed = dir_size(JOBS) if JOBS.is_dir() else 0
-    live = {j.id for j in runner.jobs.values() if j.status in ("queued", "running")}
-    for folder in (p for p in JOBS.iterdir() if p.is_dir()):
-        # The busy() guard above is check-then-act; this makes the actual
-        # deletion safe if a job starts in the window between the two.
-        if folder.name in live:
-            continue
-        shutil.rmtree(folder, ignore_errors=True)
-    return {"freed": freed}
+    try:
+        # The busy() guard above is check-then-act; naming the live jobs makes
+        # the deletion itself safe if one starts in the window between the two.
+        live = {j.id for j in runner.jobs.values() if j.status in ("queued", "running")}
+        freed = store.clear(req.what, keep=live)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"freed": freed, **store.summary(_folder_title)}
 
 
 @app.get("/api/job/{job_id}/video")

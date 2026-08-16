@@ -142,7 +142,11 @@
   .past:last-child{border-bottom:none}
   .past b{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;
           white-space:nowrap}
-  .past small{color:var(--muted);font-size:12.5px}
+  .past small{color:var(--muted);font-size:12.5px;white-space:normal}
+  /* Sizes sit beside their label rather than in a column of their own: these
+     rows already carry a wrapping explanation and two buttons. */
+  .qty{font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;
+       margin-left:8px}
   .preset-wrap{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
   .segmented{display:flex;gap:4px;background:var(--bg);border:1px solid var(--line);
              border-radius:11px;padding:4px}
@@ -456,17 +460,15 @@
   <!-- --------------------------------------------------------- storage -->
   <!-- Hidden until there is something in it: a maintenance control shown to
        someone who has not yet dubbed anything is plumbing, not an offer. -->
-  <div class="panel quiet hidden" id="storagePanel">
-    <div class="past">
-      <div style="min-width:0">
-        <b>Working files</b>
-        <small id="storageLine">Checking…</small>
-      </div>
-      <div style="display:flex;gap:8px;flex-shrink:0">
-        <button class="ghost" onclick="revealStorage()">Show</button>
-        <button class="ghost" id="clearBtn" onclick="clearStorage()">Clear</button>
-      </div>
-    </div>
+  <div class="panel quiet" id="storagePanel">
+    <details id="storageWrap">
+      <summary id="storageSummary">Disk space</summary>
+      <div id="storageGroups" style="margin-top:10px"></div>
+      <details id="jobsWrap" class="hidden" style="margin-top:12px">
+        <summary id="jobsSummary">Working files, video by video</summary>
+        <div id="storageJobs" style="margin-top:6px"></div>
+      </details>
+    </details>
   </div>
 
   <!-- ---------------------------------------------------------- doctor -->
@@ -977,25 +979,63 @@ const fmtBytes = b => b >= 1073741824 ? (b/1073741824).toFixed(1)+" GB"
                     : b >= 1048576    ? Math.round(b/1048576)+" MB"
                     : Math.round(b/1024)+" KB";
 
-let STORAGE_PATH = "";
+/* One Clear button that emptied every job at once was the whole of it. Between
+   the speech models, the model Ollama holds on this app's behalf, the working
+   files and the finished videos, a few hours of use is tens of gigabytes — and
+   only the smallest of those four was ever shown. */
+function paintStorage(s){
+  const free = fmtBytes(s.free || 0);
+  $("storageSummary").textContent = s.low
+    ? `Disk space — only ${free} left`
+    : `Disk space — ${free} free`;
+  $("storageSummary").style.color = s.low ? "var(--bad)" : "";
+  // Opened by itself when it matters, since a collapsed panel is no warning.
+  if(s.low) $("storageWrap").open = true;
 
-async function storage(){
-  try{
-    const s = await api("/api/storage");
-    STORAGE_PATH = s.path || "";
-    // The panel appears only once there is something in it, and the path is on
-    // hover and behind Show rather than printed. Spelled out it wrapped onto
-    // two lines of somebody else's filesystem and told the reader nothing they
-    // could act on.
-    $("storagePanel").classList.toggle("hidden", !s.jobs);
-    $("storageLine").textContent =
-      `${fmtBytes(s.bytes)} across ${s.jobs} job${s.jobs===1?"":"s"}`;
-    $("storageLine").title = s.path || "";
-    $("clearBtn").disabled = !s.jobs;
-  }catch(err){ $("storageLine").textContent = "Couldn't check."; }
+  $("storageGroups").innerHTML = (s.groups || []).map(g => `
+    <div class="past">
+      <div style="min-width:0">
+        <b>${escapeHtml(g.label)} <span class="qty">${fmtBytes(g.bytes)}</span></b>
+        <small>${escapeHtml(g.hint)}</small>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0">
+        ${g.path ? `<button class="ghost" onclick="revealPath('${escapeAttr(g.path)}')"
+                     >Show</button>` : ""}
+        ${g.clearable ? `<button class="ghost" ${g.bytes ? "" : "disabled"}
+                           onclick="clearStorage('${escapeAttr(g.key)}','${escapeAttr(g.label)}')"
+                         >Clear</button>` : ""}
+      </div>
+    </div>`).join("");
+
+  const jobs = s.jobs || [];
+  $("jobsWrap").classList.toggle("hidden", !jobs.length);
+  $("jobsSummary").textContent = `Working files, video by video (${jobs.length})`;
+  $("storageJobs").innerHTML = jobs.map(j => `
+    <div class="past">
+      <div style="min-width:0"><b>${escapeHtml(j.title)}</b>
+        <small>${fmtBytes(j.bytes)}</small></div>
+      <button class="ghost"
+        onclick="clearStorage('job:${escapeAttr(j.id)}','${escapeAttr(j.title)}')"
+        >Clear</button>
+    </div>`).join("");
 }
 
-const revealStorage = () => STORAGE_PATH && revealPath(STORAGE_PATH);
+async function storage(){
+  try{ paintStorage(await api("/api/storage")); }
+  catch(err){ $("storageSummary").textContent = "Disk space — couldn't check"; }
+}
+
+async function clearStorage(what, label){
+  if(!confirm(`Delete “${label}”?\n\nFinished videos are never touched. `
+            + `Anything removed here is rebuilt or downloaded again when it is next needed.`)) return;
+  try{
+    // The reply carries a fresh summary, so the panel is redrawn from what the
+    // server now sees rather than from what the browser assumed it did.
+    paintStorage(await api("/api/storage/clear",
+      {method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({what})}));
+  }catch(err){ showError(err.message); }
+}
 
 async function clearStorage(){
   if(!confirm("Delete the saved working files for every job?\n\n"
