@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -445,6 +446,49 @@ def _record_history(job: Job) -> None:
         pass                      # history is a convenience, never worth a job
 
 
+class KeepAwake:
+    """Hold the Mac awake while there is work to do.
+
+    An hour of video is an hour of work, and a laptop left alone sleeps long
+    before that. The job does not fail when it happens — it simply stops, and
+    resumes when somebody touches the trackpad, which to anyone who started it
+    and walked away is indistinguishable from the app having hung.
+
+    Deliberately not -d. Keeping the screen lit for an hour drains the battery
+    and is not what was asked for; the work continues perfectly well with the
+    display off.
+
+    -w ties the assertion to this process, so a crash cannot leave a Mac that
+    never sleeps again. The explicit stop covers the ordinary case.
+    """
+
+    FLAGS = ("-i",    # don't idle-sleep the system
+             "-m",    # don't idle-sleep the disk
+             "-s")    # don't sleep at all while on mains power
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen | None = None
+
+    def __enter__(self) -> "KeepAwake":
+        try:
+            self._proc = subprocess.Popen(
+                ["caffeinate", *self.FLAGS, "-w", str(os.getpid())],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            self._proc = None      # not macOS, or no caffeinate — nothing to do
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        proc, self._proc = self._proc, None
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:                                    # noqa: BLE001
+                proc.kill()
+        return False
+
+
 class JobRunner:
     def __init__(self) -> None:
         self.jobs: dict[str, Job] = {}
@@ -495,7 +539,15 @@ class JobRunner:
         return job
 
     def _work(self) -> None:
-        """Drain the queue, one job at a time, then retire."""
+        """Drain the queue, one job at a time, then retire.
+
+        Held awake for the whole drain rather than per job, so a queue does not
+        let the machine doze off in the gap between two of them.
+        """
+        with KeepAwake():
+            self._drain()
+
+    def _drain(self) -> None:
         while True:
             with self._lock:
                 if not self._pending:

@@ -1302,6 +1302,53 @@ def test_storage():
         store.free_bytes = real_free
 
 
+# ================================ 12. not letting the Mac doze off mid-job
+def test_keep_awake():
+    """An hour of video is an hour of work, and a laptop left alone sleeps.
+
+    The job survives it — everything resumes when somebody touches the trackpad
+    — but to whoever started it and walked away, a run that stopped at 40% for
+    half an hour is indistinguishable from one that hung.
+    """
+    print("\n[12] Staying awake while there is work")
+    import platform
+    from app.pipeline import KeepAwake
+
+    def held():
+        out = subprocess.run(["pmset", "-g", "assertions"],
+                             capture_output=True, text=True).stdout
+        return "caffeinate" in out
+
+    check("the display is deliberately left alone", "-d" not in KeepAwake.FLAGS,
+          str(KeepAwake.FLAGS))
+    check("idle sleep, disk sleep and mains sleep are all covered",
+          set(KeepAwake.FLAGS) == {"-i", "-m", "-s"}, str(KeepAwake.FLAGS))
+
+    if platform.system() != "Darwin":
+        check("nothing is attempted off macOS", True, "skipped")
+        return
+
+    was = held()
+    keeper = KeepAwake().__enter__()
+    time.sleep(0.5)
+    check("an assertion is taken while working", held(), "pmset reports caffeinate")
+    check("and it is tied to this process, not left loose",
+          "-w" in keeper._proc.args and str(os.getpid()) in keeper._proc.args)
+    keeper.__exit__()
+    time.sleep(0.5)
+    check("it is given back when the queue empties", held() == was)
+
+    # A machine without caffeinate must not take the app down with it.
+    real = pipeline_popen = __import__("subprocess").Popen
+    try:
+        import subprocess as _sp
+        _sp.Popen = lambda *a, **k: (_ for _ in ()).throw(OSError("no caffeinate"))
+        with KeepAwake() as k:
+            check("a Mac without caffeinate is simply not held awake", k._proc is None)
+    finally:
+        __import__("subprocess").Popen = real
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -1314,6 +1361,7 @@ if __name__ == "__main__":
     test_segments_and_voices()
     test_preview()
     test_storage()
+    test_keep_awake()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")
