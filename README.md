@@ -133,8 +133,8 @@ it fetches about 700 MB of speech models, one time only.
 
 Start anything long and leave it. The Mac is held awake while there is work
 queued, so a job doesn't stall at 40% because nobody touched the trackpad — the
-screen may still sleep, only the machine is kept up. The **Staying awake** pill
-beside the progress says so and switches it off.
+screen may still sleep, only the machine is kept up. The **Won't sleep** pill
+at the top says so, and switches it off.
 
 > [!NOTE]
 > Closing the lid sleeps regardless, whatever an app asks for. Leave it open, or

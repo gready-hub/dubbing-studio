@@ -32,7 +32,11 @@
        font:16px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
        -webkit-font-smoothing:antialiased}
   .wrap{max-width:780px;margin:0 auto;padding:40px 24px 48px}
-  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:16px}
+  /* Wraps: the header carries a title, a toggle, an engine badge and a button,
+     and at 430px an unwrapped row squashes all four. */
+  header{display:flex;align-items:center;justify-content:space-between;
+         margin-bottom:8px;gap:10px;flex-wrap:wrap}
+  header > div:last-child{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   /* Scales rather than wrapping. At 430px the fixed 26px broke the title across
      two lines — "Dubbing" above "Studio" — which is the first thing anyone sees. */
   h1{font-size:clamp(20px,5vw,26px);letter-spacing:-.02em;margin:0;font-weight:650;
@@ -105,9 +109,9 @@
   .chip.done::before{content:"✓";margin-right:5px;opacity:.75}
   /* Same pill as the stage chips, so it reads as part of that row rather than
      as a stray control. */
-  .toggle{font:inherit;font-size:12px;font-weight:500;padding:4px 10px;
+  .toggle{font:inherit;font-size:12px;font-weight:500;padding:5px 11px;
           border-radius:99px;border:1px solid var(--line);color:var(--muted);
-          background:transparent;cursor:pointer;margin-top:12px;
+          background:transparent;cursor:pointer;
           display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
   .toggle:hover{color:var(--ink);border-color:var(--muted)}
   .toggle[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);
@@ -198,6 +202,11 @@
       <h1>Dubbing Studio</h1>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
+      <!-- A standing preference rather than a per-job one, so it lives with the
+           other standing things instead of appearing only while a job runs.
+           Wording states the Mac's behaviour, not a live reading: it describes
+           what will happen while dubbing, which is when the assertion is held. -->
+      <button class="toggle hidden" id="aAwake" onclick="toggleAwake()"></button>
       <span class="engine" id="engine">…</span>
       <button class="icon-btn" onclick="toggle('settings')">Settings</button>
     </div>
@@ -282,11 +291,6 @@
       <span id="aPct">0%</span><span id="aElapsed"></span>
     </div>
     <div class="stages" id="aStages"></div>
-    <!-- A control, not a paragraph. The app alters how this Mac behaves for as
-         long as a job is queued; saying so is the minimum, and letting it be
-         switched off in the same gesture costs nothing. The detail lives on the
-         tooltip, where it is available without being in the way. -->
-    <button class="toggle hidden" id="aAwake" onclick="toggleAwake()"></button>
     <div id="aRefs"></div>
   </div>
 
@@ -606,6 +610,9 @@ async function boot(){
     .map(([k,l])=>`<option value="${k}">${l}</option>`).join("");
 
   applySettings(STATE.settings);
+  // macOS only: caffeinate is its, and the Docker build holds nothing.
+  $("aAwake").classList.toggle("hidden", STATE.machine.system !== "Darwin");
+  renderAwake();
   document.querySelectorAll(".settingsPath").forEach(el => {
     el.textContent = STATE.settings_path || "settings.json";
   });
@@ -873,10 +880,6 @@ function render(job){
         escapeHtml(STAGE_LABELS[key] || key)}</span>`).join("");
     // A cancel can only take effect between steps, so say it has been heard
     // rather than leaving the button looking unpressed for several minutes.
-    // Only where it is actually happening: caffeinate is macOS's, and the
-    // Docker build holds nothing.
-    $("aAwake").classList.toggle("hidden", STATE?.machine?.system !== "Darwin");
-    renderAwake();
     $("cancelBtn").disabled = !!job.cancelling;
     $("cancelBtn").textContent = job.cancelling ? "Stopping…" : "Cancel";
     renderReferences(job);
@@ -1063,12 +1066,13 @@ function renderAwake(){
   const el = $("aAwake");
   el.setAttribute("aria-pressed", String(on));
   el.innerHTML = MOON.replace("%SLASH%", on ? SLASH : "")
-    + (on ? "Staying awake" : "May sleep");
+    + (on ? "Won't sleep" : "May sleep");
   el.title = on
-    ? "Your Mac won't sleep while there's work to do, so a job can be left "
-      + "running. Closing the lid will still send it to sleep. Click to allow it."
-    : "Your Mac may sleep while working, which pauses the job until you wake it. "
-      + "Click to keep it awake.";
+    ? "While a video is being dubbed, your Mac is kept awake so the job isn't "
+      + "left half-done. The screen can still sleep; closing the lid still "
+      + "sleeps. Click to allow it to sleep."
+    : "Your Mac may sleep part-way through dubbing a video, which pauses the job "
+      + "until you wake it. Click to keep it awake.";
 }
 
 async function toggleAwake(){
