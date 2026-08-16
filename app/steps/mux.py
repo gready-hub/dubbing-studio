@@ -120,9 +120,16 @@ def check_loudness(result: Path, total_duration: float,
                 pass
 
     stats: dict = {"peak_db": peak, "mean_db": mean, "silent_seconds": round(silent, 1)}
+    if proc.returncode != 0 or peak is None:
+        # The probe itself failed, which says nothing about the audio. Reporting
+        # that as silence would put "the finished soundtrack is silent" on a
+        # perfectly good dub — the one warning that must not cry wolf.
+        stats["audio_present"] = None
+        stats["audio_warning"] = ""
+        return stats
     # -45 dBFS is well below anything audible as speech but comfortably above a
     # digitally silent track, so it separates "quiet" from "empty".
-    stats["audio_present"] = peak is not None and peak > -45.0
+    stats["audio_present"] = peak > -45.0
     share = silent / total_duration if total_duration > 0 else 0.0
     stats["silent_share"] = round(share, 3)
 

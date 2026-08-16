@@ -231,11 +231,23 @@ def _ladder(use_mlx: bool, model: str) -> list[tuple[str, Callable, Callable]]:
 
 
 def prefetch(use_mlx: bool, model: str = "parakeet", progress: Progress = None) -> None:
-    """Fetch every engine transcribe() might reach, including its fallbacks."""
+    """Fetch every engine transcribe() might reach, including its fallbacks.
+
+    Each one is attempted independently. Letting the first failure abort the
+    rest would skip exactly the fallbacks this exists to warm — they are reached
+    when the primary is failing, which is when its download is likeliest to have
+    failed too.
+    """
+    last_error: Exception | None = None
     for label, _, fetch in _ladder(use_mlx, model):
         if progress:
             progress(0.0, f"Fetching {label}")
-        fetch()
+        try:
+            fetch()
+        except Exception as exc:                                 # noqa: BLE001
+            last_error = exc
+    if last_error is not None:
+        raise last_error
 
 
 def transcribe(audio_wav: Path, use_mlx: bool, model: str = "parakeet",

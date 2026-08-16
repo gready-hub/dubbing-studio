@@ -449,8 +449,16 @@ const TEXT_SETTINGS = ["voice","audio_mode","glossary","translator","ollama_mode
 function applySettings(s){
   TEXT_SETTINGS.forEach(k => { if($(k)) $(k).value = s[k] ?? ""; });
   BOOL_SETTINGS.forEach(k => { if($(k)) $(k).value = String(!!s[k]); });
+  // Matched numerically, not as a string. JSON turns Python's 1.0 into JS 1,
+  // and String(1) is "1", which matches none of the "0.9"/"1.0"/"1.1" options —
+  // so the Speed select came up blank and then sent an empty speed.
   Object.entries(NUM_SETTINGS).forEach(([k, dflt]) => {
-    if($(k)) $(k).value = String(s[k] ?? dflt);
+    const el = $(k);
+    if(!el) return;
+    const want = Number(s[k] ?? dflt);
+    const opt = el.tagName === "SELECT"
+      ? [...el.options].find(o => Number(o.value) === want) : null;
+    el.value = opt ? opt.value : (el.tagName === "SELECT" ? el.value : String(want));
   });
   renderPresets(s.preset);
   translatorChanged();

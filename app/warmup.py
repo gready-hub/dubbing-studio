@@ -81,10 +81,14 @@ def main() -> int:
     if preset not in PRESETS:
         preset = "balanced"                       # "custom" has no model list
     failed = warm(preset)
-    if failed:
-        print(f"  {len(failed)} of these will download on first use instead.",
-              flush=True)
-    return 0                      # never fatal: the app fetches on demand anyway
+    if not failed:
+        return 0
+    print(f"  {len(failed)} of these will download on first use instead.", flush=True)
+    # Non-zero so the installer can say so. Not fatal to the install: the caller
+    # warns and carries on, and the app still fetches on demand exactly as
+    # before. Returning 0 regardless meant the installer promised the models
+    # were ready even when none of them had arrived.
+    return 1
 
 
 if __name__ == "__main__":

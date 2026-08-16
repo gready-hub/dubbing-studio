@@ -62,7 +62,7 @@ ok "$( [[ "$ARCH" == "arm64" ]] && echo "Apple Silicon — the fast path is avai
 ok "${RAM_GB} GB memory"
 
 # ---------------------------------------------------------------- 1. Xcode
-step "1 of 7  Apple developer tools"
+step "1 of 8  Apple developer tools"
 if xcode-select -p >/dev/null 2>&1; then
   ok "Already installed"
 else
@@ -74,7 +74,7 @@ else
 fi
 
 # ------------------------------------------------------------- 2. Homebrew
-step "2 of 7  Homebrew (installs the other tools)"
+step "2 of 8  Homebrew (installs the other tools)"
 
 # Pick up an existing Homebrew *before* deciding whether to install one. This
 # script runs under bash, so it never sees the PATH that Homebrew adds to
@@ -100,7 +100,7 @@ command -v brew >/dev/null 2>&1 || { bad "Homebrew still not found."; read -r -p
 ok "Homebrew ready"
 
 # ------------------------------------------------------- 3. ffmpeg, yt-dlp
-step "3 of 7  Video tools"
+step "3 of 8  Video tools"
 # The command each formula is expected to put on PATH. python@3.12 provides
 # "python3.12", not "python" — checking for the latter would skip the install on
 # any Mac with a pyenv or conda shim, and leave us building the venv from an
@@ -142,7 +142,7 @@ done
 brew upgrade yt-dlp >/dev/null 2>&1 && ok "yt-dlp up to date" || true
 
 # ------------------------------------------------------------- 4. Python
-step "4 of 7  Python environment"
+step "4 of 8  Python environment"
 # Resolve the interpreter by running it, and try Homebrew's own path before
 # whatever PATH happens to resolve first: a pyenv or conda shim earlier in PATH
 # shadows a perfectly good python3.12 and then refuses to start.
@@ -225,8 +225,11 @@ fi
 step "6 of 8  Speech models"
 say "  Fetching the models the app will need, so the first video doesn't stop"
 say "  part way through to download them."
-python -m app.warmup 2>&1 | tee -a "$LOG" | grep -v '^\s*$' || \
+# Not piped through grep: `||` binds to the last command in a pipeline, so the
+# warning was keyed on grep's exit status and could never fire.
+if ! python -m app.warmup 2>&1 | tee -a "$LOG"; then
   warn "Some speech models could not be fetched; they'll download on first use."
+fi
 
 # -------------------------------------------------------------- 7. Ollama
 step "7 of 8  Local translation model"

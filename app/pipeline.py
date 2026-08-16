@@ -341,8 +341,14 @@ class JobRunner:
         """Tell each waiting job where it now is in the queue."""
         with self._lock:
             waiting = [job for job, _ in self._pending]
+        running = any(j.status == "running" for j in self.jobs.values())
         for position, job in enumerate(waiting, 1):
             job.queue_position = position
+            if position == 1 and not running:
+                # Submitted to an idle app: it is about to be picked up, and
+                # telling it to wait for a video that does not exist made the
+                # only job in the queue announce itself as second.
+                continue
             job.message = ("Next — waiting for the current video to finish"
                            if position == 1 else
                            f"Waiting — {position - 1} ahead of it")
@@ -565,11 +571,6 @@ class JobRunner:
             if not segments:
                 raise RuntimeError("No speech was found in that video.")
 
-            segments = diarize_backend.label_segments(segments, turns)
-            speaker_ids = sorted({s.get("speaker", 0) for s in segments})
-            job.speakers = len(speaker_ids)
-            stats["speakers"] = len(speaker_ids)
-
             # --------------------------------------------------- translate
             report = self._stage(job, plan, "translate", notes)
             tcache = workdir / "translated.json"
@@ -585,6 +586,18 @@ class JobRunner:
                 tcache.write_text(json.dumps(segments, ensure_ascii=False, indent=1))
                 _cache_stamp(workdir, "translated", trans_print)
 
+            # Labelled *after* the translation cache, not before it. The cache
+            # file carries whatever speaker labels were current when it was
+            # written, so reusing it replayed them — and changing "how many
+            # people speak" then did nothing at all, which is precisely what the
+            # note above tells the user to go and try. Translation does not
+            # depend on who is speaking, so relabelling here costs nothing and
+            # keeps the expensive artefact valid.
+            segments = diarize_backend.label_segments(segments, turns)
+            speaker_ids = sorted({s.get("speaker", 0) for s in segments})
+            job.speakers = len(speaker_ids)
+            stats["speakers"] = len(speaker_ids)
+
             # -------------------------------------------------- synthesize
             report = self._stage(job, plan, "synthesize", notes)
             engine, cloning = self._make_engine(settings, machine, segments,
@@ -593,7 +606,11 @@ class JobRunner:
             # Offered for playback while the job runs: a reference with music
             # under it, or of the wrong person, colours every line that follows,
             # and this is the only moment it can still be caught cheaply.
-            job.references = [str(p) for p in sorted((audio_dir / "refs").glob("*.wav"))]
+            # Only when this run is actually cloning: Balanced and Best share an
+            # audio_dir, so refs left behind by an earlier Best run would
+            # otherwise be offered on a run that is not using them at all.
+            job.references = ([str(p) for p in sorted((audio_dir / "refs").glob("*.wav"))]
+                              if cloning else [])
             if job.references:
                 self._emit(job)
             if settings.voice_mode == "clone" and not cloning:
@@ -612,9 +629,16 @@ class JobRunner:
             # lines recorded at another rate. _match_rate would repair that last
             # one, but repairing on read is not the same as not being able to
             # reach it — and it costs an ffmpeg pass per line when it fires.
+            # ...and by who each line was assigned to, so that changing the
+            # speaker count really does re-render the voices rather than
+            # replaying the previous run's.
+            speaker_print = _fingerprint(
+                settings.diarize, settings.expected_speakers,
+                "".join(str(s.get("speaker", 0)) for s in segments))
             segdir = workdir / "lines" / _fingerprint(trans_print, settings.voice_mode,
                                                       settings.voice, settings.speed,
-                                                      engine.name, project_rate)
+                                                      engine.name, project_rate,
+                                                      speaker_print)
             segdir.mkdir(parents=True, exist_ok=True)
             spoken: list[dict] = []
             total = len(segments)
