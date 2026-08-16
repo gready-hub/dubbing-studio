@@ -824,8 +824,7 @@ class JobRunner:
             report = self._stage(job, plan, "download", notes)
             video, _ = download.download(job.url, source_dir,
                                          settings.keep_video_quality, report, info,
-                                         cookies_from=settings.youtube_cookies,
-                                         allow_av1=machine.av1_ok)
+                                         cookies_from=settings.youtube_cookies)
             if not job.duration:
                 job.duration = download.media_duration(video)
             self._emit(job)
@@ -1172,10 +1171,13 @@ class JobRunner:
                              "spoken and were left silent.")
             if stats.get("video_codec") and not stats.get("widely_playable"):
                 notes.append(
-                    f"The picture is {stats['video_codec'].upper()}. H.264 is asked "
-                    "for first at every quality, so this video was offered in no "
-                    "other format. Macs older than an M3 can't play it — QuickTime "
-                    "opens the file with sound but no picture. It will play in VLC.")
+                    f"The picture is {stats['video_codec'].upper()}, because this "
+                    "video isn't offered in H.264 at all. "
+                    + ("It plays on this Mac, but not on Macs older than an M3, and "
+                       "not reliably on phones — VLC opens it everywhere."
+                       if machine.av1_ok else
+                       "QuickTime opens the file with sound but no picture. VLC will "
+                       "play it."))
             if stats.get("audio_warning"):
                 notes.append(stats["audio_warning"])
             if job.preview:

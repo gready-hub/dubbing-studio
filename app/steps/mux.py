@@ -57,7 +57,12 @@ def mux(video: Path, dubbed: Path, dst: Path, mode: str = "replace",
     elif mode == "dual":
         cmd += [
             "-map", "0:v:0", "-map", "1:a:0", "-map", "0:a:0",
-            "-c:v", "copy", "-c:a", "copy",
+            # Both tracks re-encoded rather than copied. The dub is already AAC,
+            # but the original is whatever the site served — on YouTube usually
+            # Opus, which in an MP4 will not play on most Android players or in
+            # QuickTime. Copying it produced a file that was universal in every
+            # respect except its second audio track.
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
             "-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=English (dubbed)",
             "-metadata:s:a:1", "title=Original",
             "-disposition:a:0", "default", "-disposition:a:1", "0",

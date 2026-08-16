@@ -1463,15 +1463,67 @@ def test_translation_qc():
     # download() with a stub and never put it back, so inspect would be reading
     # the fake.
     src = (ROOT / "app" / "steps" / "download.py").read_text()
-    # A regex, not a prefix: YouTube labels the same codec avc1.640028 on some
-    # formats and h264 on others, and matching one silently falls through to the
-    # AV1 this exists to avoid.
-    check("H.264 is matched by both of the names YouTube gives it",
-          "^(avc|h264)" in src, "selector does not use the regex form")
-    check("and it still falls back rather than refusing a video",
-          "+ba/bv*" in src)
-    check("a Mac that can decode AV1 is not made to download H.264",
-          "allow_av1" in src)
+    # The selector is one documented builder rather than strings assembled in
+    # two branches, so every rung can be checked without touching the network.
+    from app.steps.download import choose_format, format_selector as fsel
+
+    for q in ("best", "1080", "720", "nonsense", ""):
+        chain = fsel(q).split("/")
+        check(f"{(q or 'blank'):8s}: ends in a bare best", chain[-1] == "b", fsel(q))
+        check(f"{(q or 'blank'):8s}: no empty rung",
+              all(r.strip() for r in chain), fsel(q))
+
+    check("H.264 is matched by both names YouTube gives it",
+          "^(avc|h264)" in fsel("best"))
+    check("the height cap is dropped by the last rung rather than failing",
+          fsel("720").split("/")[-1] == "b")
+    check("a capped chain offers a combined stream, for sites with no separate audio",
+          "b[height<=720]" in fsel("720"))
+    check("an unrecognised quality is treated as best, not as an empty cap",
+          fsel("nonsense") == fsel("best"))
+
+    # Chosen from the format list the site actually published, rather than from a
+    # selector string and hope — so the codec and the size are known before
+    # anything is fetched.
+    LISTING = {"formats": [
+        {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none",
+         "height": 1080, "filesize": 1733_000_000},
+        {"format_id": "399", "vcodec": "av01.0.08M.08", "acodec": "none",
+         "height": 1080, "filesize": 758_000_000},
+        {"format_id": "248", "vcodec": "vp9", "acodec": "none",
+         "height": 1080, "filesize": 803_000_000},
+        {"format_id": "136", "vcodec": "avc1.4d401f", "acodec": "none",
+         "height": 720, "filesize": 660_000_000},
+        {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a",
+         "tbr": 129, "filesize": 95_000_000},
+    ]}
+    check("H.264 is chosen over the smaller AV1 and VP9",
+          choose_format(LISTING, "best")["spec"] == "137+140",
+          str(choose_format(LISTING, "best")))
+    check("the height cap is honoured when one is set",
+          choose_format(LISTING, "720")["spec"] == "136+140")
+    check("the real size comes back, not an estimate",
+          choose_format(LISTING, "720")["bytes"] == 660_000_000 + 95_000_000)
+    check("a listing with nothing usable falls back to the selector",
+          choose_format({"formats": []}, "best") is None)
+    # Nothing left is universally playable, so the smallest is taken and the
+    # report says so — ranking codecs nobody can play would be false precision.
+    no264 = {"formats": [f for f in LISTING["formats"]
+                         if "avc" not in (f.get("vcodec") or "")]}
+    picked = choose_format(no264, "best")
+    check("without H.264 the smallest is taken rather than refusing the video",
+          picked["spec"] == "399+140", str(picked))
+    above_cap = {"formats": [f for f in LISTING["formats"]
+                             if (f.get("height") or 0) != 720]}
+    check("a cap nothing satisfies is dropped rather than returning nothing",
+          choose_format(above_cap, "720") is not None)
+
+    # Progress is read from a template we define, not scraped out of text that
+    # yt-dlp writes for a terminal and is free to change.
+    check("no percentage is scraped from human-readable output", "_PCT" not in src)
+    check("a progress template is asked for", "--progress-template" in src)
+    check("and it carries the byte counts, not just a percentage",
+          "downloaded_bytes" in src and "total_bytes" in src)
 
     from app.config import can_decode_av1, mac_generation, AV1_FROM_GENERATION
     check("AV1 is gated on the generation that can decode it",
