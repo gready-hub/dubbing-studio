@@ -376,6 +376,52 @@ def job_video(job_id: str):
     return FileResponse(job.output, media_type="video/mp4")
 
 
+REPO = "gready-hub/dubbing-studio"
+
+
+@app.get("/api/version")
+def version() -> dict:
+    """Whether a newer version exists. Never blocks anything if it can't tell.
+
+    The installer records the commit it fetched; this asks GitHub what is on the
+    branch now. Both sides are best-effort — offline, rate-limited or installed
+    some other way all mean the same thing, which is that no update is offered.
+    """
+    import urllib.request
+    from . import storage as store
+
+    stamp = store.APP_DIR / ".version"
+    try:
+        current = stamp.read_text().strip()
+    except OSError:
+        return {"known": False}
+    if len(current) != 40:
+        return {"known": False}
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{REPO}/commits/main",
+            headers={"Accept": "application/vnd.github.sha", "User-Agent": "dubbing-studio"})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            latest = r.read().decode().strip()
+    except Exception:                                            # noqa: BLE001
+        return {"known": False}
+    return {"known": True, "current": current[:7], "latest": latest[:7],
+            "update": len(latest) == 40 and latest != current}
+
+
+@app.post("/api/update")
+def run_update(request: Request) -> dict:
+    """Hand the installer to Terminal. Same script as a first install."""
+    _local_only(request)
+    from . import storage as store
+    script = store.APP_DIR / "Install.command"
+    if not script.is_file():
+        raise HTTPException(404, "The installer isn't in the app folder.")
+    script.chmod(0o755)
+    subprocess.run(["open", "-a", "Terminal", str(script)], check=False)
+    return {"ok": True}
+
+
 @app.post("/api/uninstall")
 def open_uninstaller(request: Request) -> dict:
     """Open the uninstaller in Terminal.

@@ -321,6 +321,9 @@ class Job:
     title: str = ""
     duration: float = 0.0
     error: str = ""
+    # What the failing tool actually said. Shown behind a disclosure rather than
+    # in the message, so a failure is diagnosable without being frightening.
+    error_detail: str = ""
     output: str = ""
     stats: dict = field(default_factory=dict)
     started: float = field(default_factory=time.time)
@@ -741,7 +744,8 @@ class JobRunner:
             source_dir = _derived_dir(workdir, "source", settings.keep_video_quality)
             report = self._stage(job, plan, "download", notes)
             video, _ = download.download(job.url, source_dir,
-                                         settings.keep_video_quality, report, info)
+                                         settings.keep_video_quality, report, info,
+                                         cookies_from=settings.youtube_cookies)
             if not job.duration:
                 job.duration = download.media_duration(video)
             self._emit(job)
@@ -1114,6 +1118,10 @@ class JobRunner:
 
         except _Cancelled:
             self._stopped(job)
+        except download.DownloadError as exc:
+            self._fail(job, str(exc), exc.detail)
+            job.error_detail = exc.detail
+            self._emit(job)
         except TranslationError as exc:
             self._fail(job, str(exc))
         except FileNotFoundError as exc:

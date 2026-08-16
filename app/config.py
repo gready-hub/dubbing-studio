@@ -283,6 +283,12 @@ class Settings:
     anthropic_model: str = "claude-sonnet-4-5"
     openai_model: str = "gpt-4o"
     keep_video_quality: str = "best"     # best | 1080 | 720
+    # Blank, or a browser name yt-dlp understands. YouTube increasingly refuses
+    # signed-out requests for some videos whatever client asks; borrowing the
+    # session from a browser the user is already signed into is what fixes those.
+    # Off unless named, because reading someone's cookie store is not a thing to
+    # do quietly on their behalf.
+    youtube_cookies: str = ""            # "" | safari | chrome | firefox | edge | brave
     write_srt: bool = False
     max_stretch: float = 1.55
 

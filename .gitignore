@@ -23,3 +23,4 @@ previews/
 # which is the one case where a key could be committed by accident.
 settings.json
 history.json
+.version

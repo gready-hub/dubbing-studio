@@ -73,6 +73,12 @@ mkdir -p "$(dirname "$DEST")"
 mv "$SRC" "$DEST" || { bad "Couldn't put the app in: $DEST"; exit 1; }
 [[ -d "$TMP/venv-keep" ]] && mv "$TMP/venv-keep" "$DEST/.venv"
 
+# What was installed, so the app can notice when it is behind. Best effort — a
+# missing file just means no update is ever offered, which is the right failure.
+curl -fsSL "https://api.github.com/repos/$REPO/commits/$BRANCH" 2>/dev/null \
+  | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1 > "$DEST/.version" || true
+[[ -s "$DEST/.version" ]] || rm -f "$DEST/.version"
+
 # Belt and braces. Nothing fetched by curl carries it, but a folder left over
 # from an earlier zip download might, and one quarantined file in the tree is
 # enough to produce the dialog this route exists to avoid.

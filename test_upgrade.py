@@ -345,7 +345,7 @@ def test_balanced_end_to_end():
     meta = {"title": "Two Speaker Test", "duration": dl.media_duration(clip),
             "uploader": "t", "thumbnail": ""}
 
-    def fake_download(url, workdir, quality="best", progress=None, info=None):
+    def fake_download(url, workdir, quality="best", progress=None, info=None, **_):
         import shutil
         workdir.mkdir(parents=True, exist_ok=True)
         dest = workdir / "source.mp4"

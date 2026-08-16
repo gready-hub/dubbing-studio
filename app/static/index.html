@@ -155,6 +155,9 @@
   .swatch{display:inline-block;width:9px;height:9px;border-radius:3px;
           margin-right:8px;vertical-align:middle;flex:none}
   .usage-empty{color:var(--muted);font-size:12.5px;margin:2px 0 14px}
+  pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;
+      padding:12px 14px;font-size:12px;line-height:1.5;overflow-x:auto;
+      white-space:pre-wrap;word-break:break-word;max-height:240px;margin:8px 0 0}
   .danger-row{border-top:1px solid var(--line);margin-top:14px;padding-top:16px;
               display:flex;justify-content:space-between;align-items:center;
               gap:12px;flex-wrap:wrap;font-size:14px}
@@ -192,6 +195,11 @@
   <p class="sub">Paste a video link. Get it back speaking English.</p>
 
   <div id="setupBanner" class="banner bad hidden"></div>
+  <div id="updateBanner" class="banner info hidden">
+    <span id="updateText"></span>
+    <button class="ghost" style="padding:6px 12px;font-size:13px;margin-left:10px"
+            onclick="runUpdate()">Update now</button>
+  </div>
 
   <!-- ---------------------------------------------------------- new job -->
   <div class="panel">
@@ -286,6 +294,10 @@
   <div class="panel hidden" id="failed">
     <p class="job-title" id="fTitle"></p>
     <div class="banner bad" id="fMsg" style="margin:10px 0 0"></div>
+    <details id="fDetailWrap" class="hidden" style="margin-top:4px">
+      <summary>What the downloader actually said</summary>
+      <pre id="fDetail"></pre>
+    </details>
     <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
       <button class="primary" onclick="retry()">Try again</button>
       <button class="ghost" onclick="reset()">Start over</button>
@@ -416,6 +428,21 @@
           </div>
         </div>
         <div class="grid" style="margin-top:14px">
+          <div>
+            <label for="youtube_cookies">Sign in as</label>
+            <select id="youtube_cookies">
+              <option value="">Don't sign in</option>
+              <option value="safari">Safari</option>
+              <option value="chrome">Chrome</option>
+              <option value="firefox">Firefox</option>
+              <option value="edge">Edge</option>
+              <option value="brave">Brave</option>
+            </select>
+            <p class="hint">For videos YouTube refuses to send to a signed-out
+              request. Borrows the session from a browser you're already signed
+              into on this Mac. Nothing is uploaded; the cookies are only sent to
+              the site the video is on.</p>
+          </div>
           <div>
             <label for="keep_video_quality">Video quality</label>
             <select id="keep_video_quality">
@@ -581,6 +608,7 @@ async function boot(){
   doctor();
   storage();
   listen();
+  checkVersion();
 }
 
 const BOOL_SETTINGS = ["write_srt","separate_audio","diarize","keep_music","merge_lines"];
@@ -588,6 +616,7 @@ const BOOL_SETTINGS = ["write_srt","separate_audio","diarize","keep_music","merg
 // of the dataclass field, so sending a float for an int setting is fine.
 const NUM_SETTINGS = {speed: 1.0, expected_speakers: -1, duck_db: -18, max_stretch: 1.55};
 const TEXT_SETTINGS = ["voice","audio_mode","glossary","translator","ollama_model",
+  "youtube_cookies",
   "anthropic_key","openai_key","anthropic_model","openai_model","target_language",
   "custom_glossary","keep_video_quality","asr_model","voice_mode"];
 
@@ -904,6 +933,12 @@ function render(job){
       ? (job.preview ? "Sample — " : "") + job.title
       : "That video couldn't be dubbed";
     $("fMsg").textContent = job.error || "Something went wrong.";
+    // The tool's own words. Buried in a log under Application Support they were
+    // no use to anyone; here they are one click away and copyable, which is the
+    // difference between "it didn't work" and being able to find out why.
+    const detail = (job.error_detail || "").trim();
+    $("fDetailWrap").classList.toggle("hidden", !detail);
+    $("fDetail").textContent = detail;
     // The banner at the top is for problems with the submission itself — an
     // empty box, a link that isn't one, a missing ffmpeg. A job that got as far
     // as running and then failed belongs where the job was.
@@ -989,6 +1024,27 @@ async function doctor(){
     b.textContent = "Something needed is missing — see Setup check below.";
     b.className = "banner info";
   }
+}
+
+/* ---------------------------------------------------------------- update */
+/* One call on start-up, and silence unless there is something to say. Offline,
+   rate-limited, or installed some other way all report the same thing, which is
+   that no update is offered. */
+async function checkVersion(){
+  try{
+    const v = await api("/api/version");
+    if(!v.known || !v.update) return;
+    $("updateText").textContent =
+      `A newer version is available (${v.current} → ${v.latest}).`;
+    $("updateBanner").classList.remove("hidden");
+  }catch(err){ /* never worth bothering anyone about */ }
+}
+
+async function runUpdate(){
+  if(!confirm("Update Dubbing Studio?\n\nThis opens the installer in Terminal. "
+            + "Your settings, videos and finished work are kept.")) return;
+  try{ await api("/api/update",{method:"POST"}); }
+  catch(err){ showError(err.message); }
 }
 
 /* -------------------------------------------------------------- audition */

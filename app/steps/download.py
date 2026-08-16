@@ -26,7 +26,7 @@ def probe(url: str) -> dict:
     out = subprocess.run(_ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download", url],
                          capture_output=True, text=True, timeout=120)
     if out.returncode != 0:
-        raise RuntimeError(_friendly(out.stderr))
+        raise DownloadError(_friendly(out.stderr), out.stderr)
     data = json.loads(out.stdout)
     return {
         "title": data.get("title", "video"),
@@ -41,6 +41,19 @@ _TRANSIENT = ("403", "429", "too many requests", "temporarily unavailable",
               "timed out", "connection reset", "connection aborted")
 
 
+class DownloadError(RuntimeError):
+    """A failed download, with the tool's own words kept alongside the plain one.
+
+    The friendly message is what somebody can act on; the raw tail is what makes
+    the difference between "it didn't work" and knowing why, and it was only
+    ever written to a log file in Application Support.
+    """
+
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__(message)
+        self.detail = detail.strip()
+
+
 def _looks_transient(message: str) -> bool:
     s = message.lower()
     return any(marker in s for marker in _TRANSIENT)
@@ -49,9 +62,15 @@ def _looks_transient(message: str) -> bool:
 def _friendly(stderr: str) -> str:
     s = stderr.lower()
     if "403" in s and "forbidden" in s:
-        return ("The site refused to hand over the video data, even though it "
-                "described the video happily. This is nearly always temporary — "
-                "try the same link again in a minute.")
+        # By the time anyone reads this the download has already been attempted
+        # several times, each as a different player client. Telling them to try
+        # again in a minute at that point is advice that has already been taken
+        # on their behalf and failed.
+        return ("YouTube described the video but refused to send it, on every "
+                "attempt. It usually wants a signed-in browser session: open "
+                "Settings and set “Sign in as” to the browser you watch YouTube "
+                "in. If that doesn't do it, the video may be private, "
+                "age-restricted or members-only.")
     if "private video" in s:
         return "That video is private, so it can't be downloaded."
     if "sign in to confirm your age" in s or "age" in s and "restricted" in s:
@@ -99,7 +118,8 @@ def _tidy(line: str) -> str:
 
 
 def download(url: str, workdir: Path, quality: str = "best",
-             progress: Progress = None, info: dict | None = None) -> tuple[Path, dict]:
+             progress: Progress = None, info: dict | None = None,
+             cookies_from: str = "") -> tuple[Path, dict]:
     """info: a probe() result the caller already has, to save asking twice.
 
     The preview needs the duration before it can weight the progress bar, which
@@ -122,8 +142,15 @@ def download(url: str, workdir: Path, quality: str = "best",
         # *desyncs* the two: a hand-set desktop Chrome string turns a download
         # that works into a reliable 403. yt-dlp's own default is correct.
         "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
-        "--newline", "--no-warnings", "-o", str(target), url,
+        "--newline", "--no-warnings",
     ]
+    # The fix for the stubborn case: YouTube increasingly wants a session, and a
+    # signed-out request for some videos is refused whatever client asks. Off
+    # unless the user names a browser, because reading their cookie store is not
+    # something to do quietly on their behalf.
+    if cookies_from:
+        cmd += ["--cookies-from-browser", cookies_from]
+    cmd += ["-o", str(target), url]
 
     # A 403 on the media fetch, straight after a metadata probe that succeeded,
     # is throttling rather than a bad link — the same request goes through a
@@ -134,18 +161,34 @@ def download(url: str, workdir: Path, quality: str = "best",
             progress(0.02 + 0.96 * float(m.group(1)) / 100,
                      f"Downloading — {m.group(1)}%")
 
-    attempts = 3
-    for attempt in range(1, attempts + 1):
-        code, problem = stream(cmd, show, tail_lines=25)
+    # yt-dlp negotiates a player client with YouTube before it is handed media
+    # URLs, and a 403 on the media fetch straight after a metadata probe that
+    # succeeded is usually that client being refused rather than the video being
+    # unavailable. Asking again as a different one costs nothing, needs nothing
+    # from the user, and is the retry most likely to land — repeating the same
+    # request three times, which is what happened before, mostly just waits.
+    #
+    # Which clients YouTube accepts changes; this is a mitigation, not a
+    # guarantee. None means "whatever yt-dlp would choose for itself", which is
+    # kept first because it is the one its maintainers keep current.
+    clients = (None, "web_safari", "tv", "ios")
+    problem = ""
+    for attempt, client in enumerate(clients, 1):
+        run = list(cmd)
+        if client:
+            run += ["--extractor-args", f"youtube:player_client={client}"]
+        code, problem = stream(run, show, tail_lines=25)
         if code == 0:
             break
-        if attempt >= attempts or not _looks_transient(problem):
-            raise RuntimeError(_friendly(problem))
+        if attempt >= len(clients) or not _looks_transient(problem):
+            raise DownloadError(_friendly(problem), problem)
         if progress:
             # Also the cancel check, so a stop during the wait is honoured.
-            progress(0.02, f"The site refused that request; trying again "
-                           f"({attempt} of {attempts - 1})")
-        time.sleep(4 * attempt)
+            progress(0.02, f"The site refused that request — asking a different "
+                           f"way ({attempt} of {len(clients) - 1})")
+        time.sleep(3 * attempt)
+    else:
+        raise DownloadError(_friendly(problem), problem)
 
     files = sorted(workdir.glob("source.*"))
     if not files:

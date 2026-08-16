@@ -72,7 +72,8 @@ def stub_download(clip: Path, title: str, duration: float, replace: bool = False
     def fake_probe(url):
         return dict(meta)
 
-    def fake_download(url, workdir, quality="best", progress=None, info=None):
+    # **_ so a new pass-through argument is not a suite-wide failure.
+    def fake_download(url, workdir, quality="best", progress=None, info=None, **_):
         workdir.mkdir(parents=True, exist_ok=True)
         dest = workdir / "source.mp4"
         if replace or not dest.exists():
@@ -327,8 +328,13 @@ def test_server():
     check("an offline machine is told so",
           "internet connection" in _friendly("ERROR: unable to open: "
                                              "nodename nor servname provided"))
-    check("a 403 keeps its own explanation",
-          "temporary" in _friendly("ERROR: unable to download: HTTP Error 403: Forbidden"))
+    # Said honestly: by the time this reaches anyone the download has already
+    # been retried as several different player clients, so "try again in a
+    # minute" is advice that has been taken on their behalf and failed.
+    forbidden = _friendly("ERROR: unable to download: HTTP Error 403: Forbidden")
+    check("a 403 says what to actually do about it",
+          "Sign in as" in forbidden and "every attempt" in forbidden, forbidden[:80])
+    check("and no longer claims it is temporary", "temporary" not in forbidden.lower())
     odd = _friendly("ERROR: [youtube] abc: Something nobody anticipated "
                     "(caused by <SomeError: blah>)")
     check("anything unrecognised is passed on, minus the scaffolding",
