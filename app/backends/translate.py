@@ -64,8 +64,46 @@ def _build_prompt(batch: list[dict], context: list[str], target: str, glossary: 
     return "\n".join(parts)
 
 
+# What the model sometimes puts back at the front of its own answer. The slot
+# marker was already stripped; the id was not, so a reply of "63|id: 63 Blusa de
+# verano..." was spoken aloud with the number in it.
+_ECHOED = re.compile(
+    r"^\s*(?:\[[\d.]+s\]"                       # an echoed slot marker
+    r"|(?:id|line|#)\s*[:.]?\s*\d+\s*[-:.|)]*"   # "id: 63", "line 63.", "#63"
+    r"|\d+\s*[|:.)]"                             # a bare "63|" or "63."
+    r")\s*", re.IGNORECASE)
+
+
+def _strip_echo(text: str) -> str:
+    """Remove any scaffolding the model repeated back into its translation."""
+    for _ in range(3):                     # "63| id: 63 ..." has two layers
+        stripped = _ECHOED.sub("", text, count=1)
+        if stripped == text:
+            break
+        text = stripped
+    return text.strip().strip('"').strip()
+
+
+def _looks_untranslated(text: str, source: str) -> bool:
+    """The model handed the source back instead of translating it.
+
+    A local model that has lost the thread does this for a run of lines, and
+    nothing downstream can tell — the dub simply speaks the original language in
+    an English voice for several minutes, which is what happened on a real
+    hour-long video.
+
+    Short lines are exempt: "OK", a number, or a name legitimately survives
+    translation unchanged, and rejecting those would throw away good work.
+    """
+    def bare(s: str) -> str:
+        return re.sub(r"[^\w]+", "", s).casefold()
+
+    a, b = bare(text), bare(source)
+    return len(b) > 15 and a == b
+
+
 def _parse(reply: str, batch: list[dict]) -> dict[int, str]:
-    wanted = {s["i"] for s in batch}
+    wanted = {s["i"]: s.get("text", "") for s in batch}
     out: dict[int, str] = {}
     for line in reply.splitlines():
         line = line.strip()
@@ -77,10 +115,10 @@ def _parse(reply: str, batch: list[dict]) -> dict[int, str]:
             continue
         idx = int(head)
         if idx in wanted:
-            text = tail.strip()
-            text = re.sub(r"^\[[\d.]+s\]\s*", "", text)      # strip an echoed slot marker
-            text = text.strip().strip('"')
-            if text:
+            text = _strip_echo(tail.strip())
+            # Treated as a miss rather than a result, so the retry above gets a
+            # go at it and it is counted if it never lands.
+            if text and not _looks_untranslated(text, wanted[idx]):
                 out[idx] = text
     return out
 

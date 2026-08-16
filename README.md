@@ -122,6 +122,12 @@ because that is when you re-run the link.
 
 ## Quality presets
 
+> [!NOTE]
+> Video is downloaded as H.264 wherever the site offers it, and copied into the
+> finished file rather than re-encoded. YouTube's own 1080p pick is usually AV1,
+> which no Mac before the M3 can decode — QuickTime opens those with sound and
+> no picture. H.264 is a larger download and plays everywhere.
+
 | Preset | What it does | Speed |
 |---|---|---|
 | **Fast** | One voice, no separation | About the video's own length |

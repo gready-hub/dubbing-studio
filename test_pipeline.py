@@ -1367,6 +1367,84 @@ def test_keep_awake():
         _sp.Popen = real
 
 
+# ============== 13. catching a translation that went wrong before it is spoken
+def test_translation_qc():
+    """A real 52-minute dub read out "id: 63" and then several minutes of Spanish.
+
+    Nothing downstream could tell: the audio check heard speech, the frame check
+    saw the picture survive, and the file was the right length. The failure is
+    upstream of everything that looks at the finished article.
+    """
+    print("\n[13] Catching a translation that went wrong")
+    from app.backends.translate import _looks_untranslated, _parse, _strip_echo
+    from app.steps import qc
+
+    SRC = "Blusa de verano facil en todas las tallas paso a paso"
+
+    # Scaffolding the model echoes back into its own answer.
+    for raw, want in [("id: 63 Now we chain three.", "Now we chain three."),
+                      ("[2.0s] Now we chain three.", "Now we chain three."),
+                      ("[2.0s] id 63. Now we chain three.", "Now we chain three."),
+                      ("#63 Now we chain three.", "Now we chain three."),
+                      ("63) Now we chain three.", "Now we chain three."),
+                      ("Now we chain three.", "Now we chain three.")]:
+        got = _strip_echo(raw)
+        check(f"stripped: {raw[:26]!r}", got == want, got)
+
+    # A number that is part of the sentence is not scaffolding.
+    kept = _strip_echo("3 chain stitches, then turn.")
+    check("a leading number that belongs to the sentence survives",
+          kept == "3 chain stitches, then turn.", kept)
+
+    check("the source handed back is spotted", _looks_untranslated(SRC, SRC))
+    check("a real translation is not", not _looks_untranslated("A summer blouse.", SRC))
+    check("a short line unchanged is left alone", not _looks_untranslated("OK", "OK"))
+
+    # And the parser refuses it, which turns a wrong answer into a missing one —
+    # so the retry above it gets a go, and the 5% ceiling can fail the job rather
+    # than deliver an hour of the original language.
+    check("the parser rejects an untranslated line",
+          _parse(f"63|{SRC}", [{"i": 63, "text": SRC}]) == {})
+    check("and repairs an echoed one",
+          _parse("63|id: 63 Now we chain three.", [{"i": 63, "text": SRC}])
+          == {63: "Now we chain three."})
+
+    # The check itself, which also covers a translation restored from cache.
+    segs = [{"text": SRC, "translation": "id: 63 Now we chain three."},
+            {"text": SRC, "translation": SRC},
+            {"text": "Vale", "translation": "OK"},
+            {"text": "Y seguimos", "translation": "And we carry on."},
+            {"text": "Nada", "translation": ""}]
+    report = qc.check(segs)
+    check("the echoed line is repaired, not dropped",
+          segs[0]["translation"] == "Now we chain three.")
+    check("the untranslated line is left silent", segs[1]["translation"] == "")
+    check("the good lines are untouched",
+          segs[2]["translation"] == "OK" and segs[3]["translation"] == "And we carry on.")
+    check("the counts are right",
+          (report["repaired"], report["untranslated"], report["spoken"]) == (1, 1, 3),
+          str(report))
+    check("and it says so in a sentence", "original language" in qc.summarise(report))
+    check("a clean translation says nothing at all",
+          qc.summarise(qc.check([{"text": "Hola", "translation": "Hello there."}])) == "")
+
+    # --- the codec that made a finished dub unplayable
+    from app.steps.mux import WIDELY_PLAYABLE
+    check("H.264 counts as playable anywhere", "h264" in WIDELY_PLAYABLE)
+    check("AV1 does not", "av1" not in WIDELY_PLAYABLE)
+
+    # Read from the file, not through the module: earlier tests replace
+    # download() with a stub and never put it back, so inspect would be reading
+    # the fake.
+    src = (ROOT / "app" / "steps" / "download.py").read_text()
+    check("the download asks for H.264 before anything else",
+          "vcodec^=avc1" in src)
+    check("both the capped and uncapped selectors ask for it",
+          src.count("vcodec^=avc1") == 2, str(src.count("vcodec^=avc1")))
+    check("and each still falls back rather than refusing a video",
+          "+ba/bv*" in src and src.count("/b\"") + src.count("/b}") >= 1)
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -1380,6 +1458,7 @@ if __name__ == "__main__":
     test_preview()
     test_storage()
     test_keep_awake()
+    test_translation_qc()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

@@ -130,9 +130,17 @@ def download(url: str, workdir: Path, quality: str = "best",
     if progress:
         progress(0.02, f"Found “{info['title']}”")
 
-    fmt = "bv*+ba/b"
+    # H.264 first, whatever else is on offer. The video stream is copied rather
+    # than re-encoded, so whatever YouTube hands over is what has to play on the
+    # far end — and its 1080p pick is usually AV1, which no Mac before the M3 can
+    # decode. A real trial produced a 52-minute AV1 file that QuickTime on an M1
+    # opened as audio with no picture. H.264 is larger and universally playable,
+    # and a video that will not play is worth nothing at any size.
     if quality in ("1080", "720"):
-        fmt = f"bv*[height<={quality}]+ba/b[height<={quality}]/b"
+        cap = f"[height<={quality}]"
+        fmt = (f"bv*[vcodec^=avc1]{cap}+ba/bv*{cap}+ba/b{cap}/b")
+    else:
+        fmt = "bv*[vcodec^=avc1]+ba/bv*+ba/b"
 
     target = workdir / "source.%(ext)s"
     cmd = _ytdlp_cmd() + [

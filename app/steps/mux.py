@@ -144,12 +144,20 @@ def check_loudness(result: Path, total_duration: float,
     return stats
 
 
+# Codecs any Mac in use can decode. Deliberately conservative: hevc is fine on
+# Apple silicon but not on every older Intel Mac, and this list exists to answer
+# "will it play for the person I send it to", not "will it play for me".
+WIDELY_PLAYABLE = {"h264", "mpeg4"}
+
+
 def verify(original: Path, result: Path) -> dict:
     """Confirm the video stream survived untouched and the audio spans the video."""
     def probe(path: Path, args: list[str]) -> str:
         return subprocess.run(["ffprobe", "-v", "error", *args, "-of", "csv=p=0", str(path)],
                               capture_output=True, text=True, check=True).stdout.strip()
 
+    codec = probe(result, ["-select_streams", "v:0", "-show_entries", "stream=codec_name"])
+    codec = codec.splitlines()[0] if codec else ""
     src_frames = probe(original, ["-select_streams", "v:0", "-show_entries", "stream=nb_frames"])
     out_frames = probe(result, ["-select_streams", "v:0", "-show_entries", "stream=nb_frames"])
     out_vdur = probe(result, ["-select_streams", "v:0", "-show_entries", "stream=duration"])
@@ -162,6 +170,12 @@ def verify(original: Path, result: Path) -> dict:
             return 0.0
 
     return {
+        "video_codec": codec,
+        # H.264 plays on everything. AV1 needs an M3 or newer to decode on a Mac,
+        # and QuickTime on anything older opens the file as audio with no
+        # picture — a finished dub nobody can watch. The download is asked to
+        # prefer H.264, so this is the check that the preference held.
+        "widely_playable": codec in WIDELY_PLAYABLE,
         "frames_match": src_frames.splitlines()[:1] == out_frames.splitlines()[:1],
         "source_frames": src_frames.splitlines()[0] if src_frames else "?",
         "output_frames": out_frames.splitlines()[0] if out_frames else "?",

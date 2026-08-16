@@ -33,7 +33,7 @@ from .backends import separate as separate_backend
 from .backends import tts as tts_backend
 from .backends.translate import (describe_translator, translate as run_translate,
                                  TranslationError)
-from .steps import align, download, mux
+from .steps import align, download, mux, qc
 from .steps.segments import merge_adjacent
 
 # (key, label, relative cost) — relative costs are turned into weights for
@@ -955,6 +955,16 @@ class JobRunner:
                 tcache.write_text(json.dumps(segments, ensure_ascii=False, indent=1))
                 _cache_stamp(workdir, "translated", trans_print)
 
+            # Checked whether it was just produced or restored from cache. The
+            # cache is the reason this cannot live in the parser: a translation
+            # that went wrong once would otherwise be replayed on every re-run of
+            # the same link, and the run that produced it is long gone.
+            quality = qc.check(segments)
+            stats["translation_check"] = quality
+            trouble = qc.summarise(quality)
+            if trouble:
+                notes.append(trouble)
+
             # Recorded whether it ran or was reused, since the report describes
             # the file that exists rather than the work done this time.
             stats["translated_by"], weak = describe_translator(settings, machine.ram_gb)
@@ -1159,6 +1169,12 @@ class JobRunner:
                 stats["lines_failed"] = failed
                 notes.append(f"{failed} line{'s' if failed != 1 else ''} could not be "
                              "spoken and were left silent.")
+            if stats.get("video_codec") and not stats.get("widely_playable"):
+                notes.append(
+                    f"The picture is {stats['video_codec'].upper()}. H.264 is asked "
+                    "for first at every quality, so this video was offered in no "
+                    "other format. Macs older than an M3 can't play it — QuickTime "
+                    "opens the file with sound but no picture. It will play in VLC.")
             if stats.get("audio_warning"):
                 notes.append(stats["audio_warning"])
             if job.preview:
