@@ -273,6 +273,39 @@ def test_server():
     r = client.get("/api/doctor")
     check("doctor endpoint responds", r.status_code == 200 and "checks" in r.json())
 
+    # An old yt-dlp is the commonest reason a video describes itself happily and
+    # then refuses to download, and the check used to say only that it existed.
+    import datetime as _dt
+    from app import server as _srv
+    names = [c["name"] for c in r.json()["checks"]]
+    check("the setup check names the yt-dlp version",
+          any(n.startswith("yt-dlp — ") for n in names), str(names[:3]))
+
+    real_run = _srv.subprocess.run
+
+    class _Out:
+        def __init__(self, s): self.stdout = s
+
+    def dated(days_old):
+        d = _dt.date.today() - _dt.timedelta(days=days_old)
+        return lambda *a, **k: _Out(f"{d.year}.{d.month:02d}.{d.day:02d}\n")
+
+    try:
+        _srv.subprocess.run = dated(5)
+        check("a recent yt-dlp is not flagged", _srv._ytdlp_age()[0] is False)
+        _srv.subprocess.run = dated(200)
+        stale, shown = _srv._ytdlp_age()
+        check("one from months ago is", stale is True, shown)
+        _srv.subprocess.run = lambda *a, **k: _Out("2026.07.04.dev0+abc\n")
+        check("a build with an undateable version is left alone",
+              _srv._ytdlp_age() == (False, "2026.07.04.dev0+abc"))
+        def boom(*a, **k): raise OSError("no yt-dlp")
+        _srv.subprocess.run = boom
+        check("and a missing yt-dlp is not reported as stale",
+              _srv._ytdlp_age() == (False, ""))
+    finally:
+        _srv.subprocess.run = real_run
+
     # What a failed download actually says to the person reading it. The failed
     # panel shows this verbatim, so anything yt-dlp phrases for itself ends up
     # in front of someone who cannot act on it.

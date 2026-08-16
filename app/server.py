@@ -104,15 +104,46 @@ def _feature_status() -> dict:
     }
 
 
+# yt-dlp versions are dates, so how old one is needs no network to work out.
+YTDLP_STALE_DAYS = 60
+
+
+def _ytdlp_age() -> tuple[bool, str]:
+    """(is it old, what version). Never raises; unknown counts as fine."""
+    import datetime as _dt
+    try:
+        version = subprocess.run(["yt-dlp", "--version"], capture_output=True,
+                                 text=True, timeout=8).stdout.strip()
+    except Exception:                                            # noqa: BLE001
+        return False, ""
+    try:
+        y, m, d = (int(p) for p in version.split(".")[:3])
+        age = (_dt.date.today() - _dt.date(y, m, d)).days
+    except Exception:                                            # noqa: BLE001
+        return False, version              # a build we cannot date is not a fault
+    return age > YTDLP_STALE_DAYS, version
+
+
 @app.get("/api/doctor")
 def doctor() -> dict:
     machine = detect_machine()
     checks = [
         {"name": "ffmpeg", "ok": machine.has_ffmpeg,
          "hint": "Install with: brew install ffmpeg"},
-        {"name": "yt-dlp", "ok": machine.has_ytdlp,
-         "hint": "Install with: brew install yt-dlp"},
     ]
+    # The version, not just its presence. YouTube changes break yt-dlp every few
+    # weeks and the fix ships within days, so an old copy is the commonest reason
+    # a video describes itself happily and then refuses to download — and until
+    # now the check said "yt-dlp ✓" and left nobody anything to look at.
+    stale, version = _ytdlp_age()
+    checks.append({
+        "name": f"yt-dlp — {version}" if version else "yt-dlp",
+        "ok": machine.has_ytdlp and not stale,
+        "hint": ("Install with: brew install yt-dlp" if not machine.has_ytdlp else
+                 "This copy is old enough that YouTube has probably changed under "
+                 "it, which shows up as a video refusing to download. Update it:  "
+                 "brew update && brew upgrade yt-dlp"),
+    })
     # Room to work in. A job holds the source video, a full-band wav, the
     # separated stems and the assembled track at once before it prunes itself,
     # and a boot disk that fills takes the whole machine down with it — so this

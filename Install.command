@@ -139,7 +139,16 @@ for tool in ffmpeg yt-dlp python@3.12; do
     brew install "$tool" >/dev/null 2>&1 && ok "$name installed" || warn "$name may have failed — check below"
   fi
 done
-brew upgrade yt-dlp >/dev/null 2>&1 && ok "yt-dlp up to date" || true
+# YouTube changes break yt-dlp regularly and the fix ships within days, so an
+# old one is the commonest cause of a video that describes itself happily and
+# then refuses to download. `brew upgrade` alone is not enough: without a
+# refreshed formula index it compares against whatever Homebrew last knew about
+# and does nothing at all. Slow, and worth it once.
+say "  Checking for a newer yt-dlp…"
+brew update >/dev/null 2>&1 || true
+brew upgrade yt-dlp >/dev/null 2>&1 || true
+YTDLP_VERSION="$(yt-dlp --version 2>/dev/null || echo unknown)"
+ok "yt-dlp $YTDLP_VERSION"
 
 # ------------------------------------------------------------- 4. Python
 step "4 of 8  Python environment"

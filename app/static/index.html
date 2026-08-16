@@ -906,6 +906,7 @@ function render(job){
       ...(sample ? [["Sample taken from", s.preview_from ?? "0:00"]] : []),
       ["Quality preset", s.preset ?? "—"],
       ["Speakers found", s.speakers ?? "—"],
+      ["Translated by", s.translated_by ?? "—"],
       ["Voices used", s.voices ?? "—"],
       ["Music and effects kept", yn(s.music_kept)],
       ["Lines spoken", s.lines_spoken ?? "—"],

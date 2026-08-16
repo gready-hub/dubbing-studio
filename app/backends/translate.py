@@ -204,6 +204,33 @@ def _call_openai(prompt: str, model: str, key: str) -> str:
     return data["choices"][0]["message"]["content"]
 
 
+# Small enough that its output on specialist material is a real risk to the
+# result, rather than merely a bit worse.
+WEAK_LOCAL_MODELS = ("qwen3:4b", "qwen3:1.7b", "qwen3:0.6b")
+
+
+def describe_translator(settings, ram_gb: int) -> tuple[str, str]:
+    """(what will translate, a warning if that is the weak link).
+
+    Translation is the one stage whose failure cannot be heard as a failure: a
+    bad dub with clean audio and perfect timing sounds finished and is useless.
+    So what did it goes in the report next to everything else, and when it is a
+    model small enough to be the risk, the report says so.
+    """
+    if settings.translator == "anthropic":
+        return settings.anthropic_model, ""
+    if settings.translator == "openai":
+        return settings.openai_model, ""
+    model, _ = usable_model(settings.resolved_ollama_model(ram_gb))
+    if model in WEAK_LOCAL_MODELS:
+        return model, (f"Translated by {model}, the smallest local model, because "
+                       "that is what fits this Mac's memory. On specialist material "
+                       "it is the weakest part of the chain — if the wording reads "
+                       "badly, an API key under Settings costs a few pence a video "
+                       "and is markedly better.")
+    return model, ""
+
+
 # ------------------------------------------------------------------- public
 
 def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = None) -> list[dict]:

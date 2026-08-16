@@ -30,7 +30,8 @@ from .backends import clone as clone_backend
 from .backends import diarize as diarize_backend
 from .backends import separate as separate_backend
 from .backends import tts as tts_backend
-from .backends.translate import translate as run_translate, TranslationError
+from .backends.translate import (describe_translator, translate as run_translate,
+                                 TranslationError)
 from .steps import align, download, mux
 from .steps.segments import merge_adjacent
 
@@ -875,6 +876,12 @@ class JobRunner:
                 segments = run_translate(segments, settings, machine.ram_gb, report)
                 tcache.write_text(json.dumps(segments, ensure_ascii=False, indent=1))
                 _cache_stamp(workdir, "translated", trans_print)
+
+            # Recorded whether it ran or was reused, since the report describes
+            # the file that exists rather than the work done this time.
+            stats["translated_by"], weak = describe_translator(settings, machine.ram_gb)
+            if weak:
+                notes.append(weak)
 
             # Labelled *after* the translation cache, not before it. The cache
             # file carries whatever speaker labels were current when it was
