@@ -272,6 +272,13 @@
       <span id="aPct">0%</span><span id="aElapsed"></span>
     </div>
     <div class="stages" id="aStages"></div>
+    <!-- Said because it is true, not because it is reassuring. The app alters
+         how this Mac behaves for as long as a job is queued, and doing that
+         quietly is not on. It also happens to answer the question anyone
+         starting an hour-long video is about to ask. -->
+    <p class="hint hidden" id="aAwake">Your Mac is being kept awake while this
+      runs, so it won't stall if you leave it. The screen can still sleep —
+      but closing the lid will send it to sleep anyway.</p>
     <div id="aRefs"></div>
   </div>
 
@@ -858,6 +865,9 @@ function render(job){
         escapeHtml(STAGE_LABELS[key] || key)}</span>`).join("");
     // A cancel can only take effect between steps, so say it has been heard
     // rather than leaving the button looking unpressed for several minutes.
+    // Only where it is actually happening: caffeinate is macOS's, and the
+    // Docker build holds nothing.
+    $("aAwake").classList.toggle("hidden", STATE?.machine?.system !== "Darwin");
     $("cancelBtn").disabled = !!job.cancelling;
     $("cancelBtn").textContent = job.cancelling ? "Stopping…" : "Cancel";
     renderReferences(job);
