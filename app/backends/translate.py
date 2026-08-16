@@ -20,7 +20,8 @@ from ..notes import note
 
 Progress = Optional[Callable[[float, str], None]]
 
-BATCH = 25
+BATCH = 25            # lines per request...
+BATCH_CHARS = 2800    # ...unless they are long ones, which is when models buckle
 CONTEXT = 3
 
 SYSTEM = """You translate speech for an AI-dubbed video soundtrack.
@@ -184,7 +185,20 @@ def _call_ollama(prompt: str, model: str, host: str = "") -> str:
         body: dict = {
             "model": model,
             "stream": False,
-            "options": {"temperature": 0.2, "num_ctx": 8192},
+            "options": {
+                "temperature": 0.2,
+                "num_ctx": 8192,
+                # A small model under token pressure falls into repeating itself
+                # — echoing the input back, or filling the budget with the same
+                # fragment. It is a well-known failure of quantised local models
+                # on long structured tasks, and it is what produced a dub that
+                # read out "id: 63" and then several minutes of the original
+                # language. A mild repetition penalty discourages the loop
+                # without flattening legitimately repeated words, which matter
+                # in a tutorial that says "chain three" forty times.
+                "repeat_penalty": 1.1,
+                "min_p": 0.05,
+            },
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": prompt}],
         }
@@ -278,6 +292,29 @@ def describe_translator(settings, ram_gb: int) -> tuple[str, str]:
     return model, ""
 
 
+def _batches(segments: list[dict]) -> list[list[dict]]:
+    """Group lines into requests, capped by count and by size.
+
+    A fixed twenty-five was fine until the lines were long: joined run-on speech
+    can be several hundred characters each, and a batch of those crowds the
+    context window, which is precisely when a small model stops following the
+    format and starts repeating itself.
+    """
+    out: list[list[dict]] = []
+    current: list[dict] = []
+    size = 0
+    for seg in segments:
+        cost = len(seg.get("text", "")) + 16          # the id and slot marker
+        if current and (len(current) >= BATCH or size + cost > BATCH_CHARS):
+            out.append(current)
+            current, size = [], 0
+        current.append(seg)
+        size += cost
+    if current:
+        out.append(current)
+    return out
+
+
 def _ask(batch: list[dict], context: list[str], target: str, glossary: str,
          call) -> dict[int, str]:
     try:
@@ -352,7 +389,7 @@ def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = 
         seg["i"] = n
 
     done: dict[int, str] = {}
-    batches = [segments[i:i + BATCH] for i in range(0, len(segments), BATCH)]
+    batches = _batches(segments)
 
     for bn, batch in enumerate(batches):
         start = batch[0]["i"]

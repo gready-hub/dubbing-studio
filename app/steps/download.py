@@ -142,8 +142,13 @@ def download(url: str, workdir: Path, quality: str = "best",
     if allow_av1:
         fmt = f"bv*{cap}+ba/b{cap}/b" if cap else "bv*+ba/b"
     else:
-        fmt = (f"bv*[vcodec^=avc1]{cap}+ba/bv*{cap}+ba/b{cap}/b" if cap
-               else "bv*[vcodec^=avc1]+ba/bv*+ba/b")
+        # A regex rather than a prefix: YouTube labels this codec avc1.640028
+        # on some formats and h264 on others, and matching only the first
+        # silently falls through to whatever else is on offer — which is the AV1
+        # this exists to avoid.
+        h264 = r"[vcodec~='^(avc|h264)']"
+        fmt = (f"bv*{h264}{cap}+ba/bv*{cap}+ba/b{cap}/b" if cap
+               else f"bv*{h264}+ba/bv*+ba/b")
 
     target = workdir / "source.%(ext)s"
     cmd = _ytdlp_cmd() + [

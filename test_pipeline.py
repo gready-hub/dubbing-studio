@@ -1463,12 +1463,44 @@ def test_translation_qc():
     # download() with a stub and never put it back, so inspect would be reading
     # the fake.
     src = (ROOT / "app" / "steps" / "download.py").read_text()
-    check("the download asks for H.264 before anything else",
-          "vcodec^=avc1" in src)
-    check("both the capped and uncapped selectors ask for it",
-          src.count("vcodec^=avc1") == 2, str(src.count("vcodec^=avc1")))
-    check("and each still falls back rather than refusing a video",
-          "+ba/bv*" in src and src.count("/b\"") + src.count("/b}") >= 1)
+    # A regex, not a prefix: YouTube labels the same codec avc1.640028 on some
+    # formats and h264 on others, and matching one silently falls through to the
+    # AV1 this exists to avoid.
+    check("H.264 is matched by both of the names YouTube gives it",
+          "^(avc|h264)" in src, "selector does not use the regex form")
+    check("and it still falls back rather than refusing a video",
+          "+ba/bv*" in src)
+    check("a Mac that can decode AV1 is not made to download H.264",
+          "allow_av1" in src)
+
+    from app.config import can_decode_av1, mac_generation, AV1_FROM_GENERATION
+    check("AV1 is gated on the generation that can decode it",
+          AV1_FROM_GENERATION == 3)
+    check("this machine reports a generation", mac_generation() >= 0)
+    check("and the two agree",
+          can_decode_av1() == (mac_generation() >= AV1_FROM_GENERATION))
+
+    # Batches are capped by size as well as count: long joined lines crowd the
+    # context window, which is exactly when a small model starts repeating.
+    from app.backends.translate import _batches, BATCH, BATCH_CHARS
+    short = _batches([{"text": "x" * 40} for _ in range(60)])
+    check("short lines batch by count", max(len(b) for b in short) == BATCH,
+          str([len(b) for b in short]))
+    long_ = _batches([{"text": "y" * 400} for _ in range(20)])
+    check("long ones batch by size instead",
+          max(len(b) for b in long_) < BATCH
+          and all(sum(len(s["text"]) for s in b) <= BATCH_CHARS for b in long_),
+          str([len(b) for b in long_]))
+    check("and a single over-long line is still carried, not dropped",
+          [len(b) for b in _batches([{"text": "z" * 9000}])] == [1])
+
+    # From the file: earlier tests replace _call_ollama with a stub and never
+    # put it back, so inspect would be reading the fake.
+    tsrc = (ROOT / "app" / "backends" / "translate.py").read_text()
+    check("the local model is asked not to repeat itself",
+          "repeat_penalty" in tsrc and "min_p" in tsrc)
+    check("and told outright not to copy the source back",
+          "NEVER COPY" in tsrc)
 
 
 if __name__ == "__main__":
