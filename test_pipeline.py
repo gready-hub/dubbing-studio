@@ -1329,24 +1329,42 @@ def test_keep_awake():
         return
 
     was = held()
-    keeper = KeepAwake().__enter__()
+    keeper = KeepAwake()
+    keeper.start()
     time.sleep(0.5)
     check("an assertion is taken while working", held(), "pmset reports caffeinate")
     check("and it is tied to this process, not left loose",
           "-w" in keeper._proc.args and str(os.getpid()) in keeper._proc.args)
-    keeper.__exit__()
+    keeper.start()
+    check("starting twice holds one, not two", keeper.active)
+    keeper.stop()
     time.sleep(0.5)
     check("it is given back when the queue empties", held() == was)
+    keeper.stop()
+    check("stopping twice is harmless", not keeper.active)
+
+    # The pill in the running panel is a switch, and a switch that only takes
+    # effect on the next job would be lying for the hour it matters most.
+    from app.pipeline import JobRunner
+    r = JobRunner()
+    check("switching it on with nothing running holds nothing",
+          r.sync_keep_awake(True) is False)
+    r.awake.start()
+    time.sleep(0.4)
+    check("switching it off releases the one being held right now",
+          r.sync_keep_awake(False) is False and not held())
 
     # A machine without caffeinate must not take the app down with it.
-    real = pipeline_popen = __import__("subprocess").Popen
+    import subprocess as _sp
+    real = _sp.Popen
     try:
-        import subprocess as _sp
         _sp.Popen = lambda *a, **k: (_ for _ in ()).throw(OSError("no caffeinate"))
-        with KeepAwake() as k:
-            check("a Mac without caffeinate is simply not held awake", k._proc is None)
+        k = KeepAwake()
+        k.start()
+        check("a Mac without caffeinate is simply not held awake", not k.active)
+        k.stop()
     finally:
-        __import__("subprocess").Popen = real
+        _sp.Popen = real
 
 
 if __name__ == "__main__":

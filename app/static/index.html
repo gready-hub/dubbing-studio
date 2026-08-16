@@ -103,6 +103,16 @@
      was tried and dropped — muted on a filled pill is 3.8:1 at 12px, which is
      worse to read than the green it replaced. */
   .chip.done::before{content:"✓";margin-right:5px;opacity:.75}
+  /* Same pill as the stage chips, so it reads as part of that row rather than
+     as a stray control. */
+  .toggle{font:inherit;font-size:12px;font-weight:500;padding:4px 10px;
+          border-radius:99px;border:1px solid var(--line);color:var(--muted);
+          background:transparent;cursor:pointer;margin-top:12px;
+          display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .toggle:hover{color:var(--ink);border-color:var(--muted)}
+  .toggle[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);
+                               background:var(--accent-soft)}
+  .toggle svg{width:13px;height:13px;flex:none}
   .job-title{font-weight:650;font-size:17px;letter-spacing:-.01em;margin:0 0 2px}
   .msg{color:var(--muted);font-size:14px;margin:0}
   .stat{display:flex;justify-content:space-between;padding:7px 0;font-size:14px;
@@ -272,13 +282,11 @@
       <span id="aPct">0%</span><span id="aElapsed"></span>
     </div>
     <div class="stages" id="aStages"></div>
-    <!-- Said because it is true, not because it is reassuring. The app alters
-         how this Mac behaves for as long as a job is queued, and doing that
-         quietly is not on. It also happens to answer the question anyone
-         starting an hour-long video is about to ask. -->
-    <p class="hint hidden" id="aAwake">Your Mac is being kept awake while this
-      runs, so it won't stall if you leave it. The screen can still sleep —
-      but closing the lid will send it to sleep anyway.</p>
+    <!-- A control, not a paragraph. The app alters how this Mac behaves for as
+         long as a job is queued; saying so is the minimum, and letting it be
+         switched off in the same gesture costs nothing. The detail lives on the
+         tooltip, where it is available without being in the way. -->
+    <button class="toggle hidden" id="aAwake" onclick="toggleAwake()"></button>
     <div id="aRefs"></div>
   </div>
 
@@ -868,6 +876,7 @@ function render(job){
     // Only where it is actually happening: caffeinate is macOS's, and the
     // Docker build holds nothing.
     $("aAwake").classList.toggle("hidden", STATE?.machine?.system !== "Darwin");
+    renderAwake();
     $("cancelBtn").disabled = !!job.cancelling;
     $("cancelBtn").textContent = job.cancelling ? "Stopping…" : "Cancel";
     renderReferences(job);
@@ -1037,6 +1046,42 @@ async function doctor(){
     const b = $("setupBanner");
     b.textContent = "Something needed is missing — see Setup check below.";
     b.className = "banner info";
+  }
+}
+
+/* ----------------------------------------------------------- staying awake */
+// One shape either way: a crescent moon, struck through when sleep is being
+// held off. It carries the meaning without colour, which the pill's border
+// alone would not.
+const MOON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor"'
+  + ' stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+  + '<path d="M14 9.3A6.2 6.2 0 0 1 6.7 2 6 6 0 1 0 14 9.3z"/>%SLASH%</svg>';
+const SLASH = '<path d="M2.2 13.8 13.8 2.2"/>';
+
+function renderAwake(){
+  const on = !!STATE?.settings?.keep_awake;
+  const el = $("aAwake");
+  el.setAttribute("aria-pressed", String(on));
+  el.innerHTML = MOON.replace("%SLASH%", on ? SLASH : "")
+    + (on ? "Staying awake" : "May sleep");
+  el.title = on
+    ? "Your Mac won't sleep while there's work to do, so a job can be left "
+      + "running. Closing the lid will still send it to sleep. Click to allow it."
+    : "Your Mac may sleep while working, which pauses the job until you wake it. "
+      + "Click to keep it awake.";
+}
+
+async function toggleAwake(){
+  const on = !STATE.settings.keep_awake;
+  STATE.settings.keep_awake = on;         // optimistic; the pill is the feedback
+  renderAwake();
+  try{
+    await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+                               body:JSON.stringify({data:{keep_awake:on}})});
+  }catch(err){
+    STATE.settings.keep_awake = !on;
+    renderAwake();
+    showError(err.message);
   }
 }
 

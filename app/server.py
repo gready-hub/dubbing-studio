@@ -237,6 +237,8 @@ def save_settings(patch: SettingsPatch) -> dict:
     # leaving the control claiming a preset the settings no longer are.
     settings.preset = settings.matching_preset()
     settings.save()
+    # Applied now, not at the next job. See JobRunner.sync_keep_awake.
+    runner.sync_keep_awake(settings.keep_awake)
     return asdict(settings)
 
 

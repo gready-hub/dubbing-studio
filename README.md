@@ -131,12 +131,13 @@ beats this comfortably, and switching **Translated by** to an API key removes
 the biggest chunk of time from every preset. The first video is slower still —
 it fetches about 700 MB of speech models, one time only.
 
-Start anything long and leave it — the Mac is held awake for as long as there
-is work queued, so a job does not quietly stall at 40% because nobody touched
-the trackpad. The screen is allowed to sleep; only the machine is kept up.
+Start anything long and leave it. The Mac is held awake while there is work
+queued, so a job doesn't stall at 40% because nobody touched the trackpad — the
+screen may still sleep, only the machine is kept up. The **Staying awake** pill
+beside the progress says so and switches it off.
 
 > [!NOTE]
-> Closing the lid still sleeps, whatever an app asks for. Leave it open, or
+> Closing the lid sleeps regardless, whatever an app asks for. Leave it open, or
 > plugged into an external display.
 
 > [!NOTE]

@@ -289,6 +289,7 @@ class Settings:
     # Off unless named, because reading someone's cookie store is not a thing to
     # do quietly on their behalf.
     youtube_cookies: str = ""            # "" | safari | chrome | firefox | edge | brave
+    keep_awake: bool = True              # hold the Mac awake while work is queued
     write_srt: bool = False
     max_stretch: float = 1.55
 

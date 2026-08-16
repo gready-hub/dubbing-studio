@@ -468,25 +468,33 @@ class KeepAwake:
 
     def __init__(self) -> None:
         self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
 
-    def __enter__(self) -> "KeepAwake":
-        try:
-            self._proc = subprocess.Popen(
-                ["caffeinate", *self.FLAGS, "-w", str(os.getpid())],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError:
-            self._proc = None      # not macOS, or no caffeinate — nothing to do
-        return self
+    @property
+    def active(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
 
-    def __exit__(self, *exc) -> bool:
-        proc, self._proc = self._proc, None
+    def start(self) -> None:
+        """Idempotent, and safe to call from the interface thread mid-job."""
+        with self._lock:
+            if self.active:
+                return
+            try:
+                self._proc = subprocess.Popen(
+                    ["caffeinate", *self.FLAGS, "-w", str(os.getpid())],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                self._proc = None  # not macOS, or no caffeinate — nothing to do
+
+    def stop(self) -> None:
+        with self._lock:
+            proc, self._proc = self._proc, None
         if proc and proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except Exception:                                    # noqa: BLE001
                 proc.kill()
-        return False
 
 
 class JobRunner:
@@ -502,6 +510,20 @@ class JobRunner:
         # both at once and made each of them slower.
         self._pending: list[tuple[Job, Settings]] = []
         self._worker: threading.Thread | None = None
+        self.awake = KeepAwake()
+
+    def sync_keep_awake(self, wanted: bool) -> bool:
+        """Apply the setting to the assertion being held right now.
+
+        A switch that only takes effect on the next job is a switch that lies
+        for the hour it matters most, so this acts on the live one. Turning it
+        on while nothing is running holds nothing — there is no work to protect.
+        """
+        if wanted and self.busy():
+            self.awake.start()
+        elif not wanted:
+            self.awake.stop()
+        return self.awake.active
 
     def subscribe(self, fn: Callable[[dict], None]) -> None:
         self._listeners.append(fn)
@@ -544,8 +566,12 @@ class JobRunner:
         Held awake for the whole drain rather than per job, so a queue does not
         let the machine doze off in the gap between two of them.
         """
-        with KeepAwake():
+        if Settings.load().keep_awake:
+            self.awake.start()
+        try:
             self._drain()
+        finally:
+            self.awake.stop()
 
     def _drain(self) -> None:
         while True:
