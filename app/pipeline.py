@@ -255,6 +255,18 @@ def _speech_start(media: Path, duration: float, window: float = PREVIEW_SECONDS)
                 start = 0.0
             break
 
+    # A lead-in that filled everything that was looked at is not a lead-in.
+    # Without this, ninety seconds of silence reported its silence_end at the
+    # end of the file and the window was placed in the last thirty seconds of a
+    # video with nothing in it. Which of the two readings applies depends on
+    # what stopped the scan: the end of the video means there is no speech to
+    # find and the beginning is as good a place as any, while the scan limit
+    # means the speech is somewhere past it and the boundary is the best guess
+    # available.
+    scanned = min(duration, PREVIEW_SCAN_SECONDS) if duration > 0 else PREVIEW_SCAN_SECONDS
+    if start >= scanned - 0.5:
+        start = scanned if duration > scanned else 0.0
+
     # Never past the end: a video whose speech begins in its last few seconds
     # would otherwise be handed a window with nothing in it. Guarded on a known
     # duration rather than on it exceeding the window, so that a video shorter

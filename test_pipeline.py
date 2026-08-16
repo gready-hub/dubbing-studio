@@ -907,6 +907,11 @@ def test_preview():
               pipeline._link_id(URL) == pipeline._job_id(URL, False))
 
         job = pipeline.runner.submit(URL, s, preview=True)
+        # An impatient second click is the same job, not two racing over one
+        # folder. The buttons are disabled while a submission is in flight, but
+        # that is a courtesy; this is the guarantee.
+        check("a second click while it runs is the same job",
+              pipeline.runner.submit(URL, s, preview=True) is job)
         t0 = time.time()
         while job.status in ("queued", "running") and time.time() - t0 < 600:
             time.sleep(1)
@@ -962,6 +967,36 @@ def test_preview():
                   str(brief.stats.get("notes")))
             check("so it did reach the finished videos folder",
                   Path(brief.output).parent == OUTPUT_DIR, brief.output)
+
+        # ------------------------------------------ nothing to hear at all
+        # A video with no speech in it — a music video, a silent screencast —
+        # should fail plainly and in a minute, which is most of the argument for
+        # sampling in the first place.
+        SILENT_URL = "https://example.com/all-quiet"
+        shutil_rmtree(JOBS_DIR / pipeline._link_id(SILENT_URL))
+        silent = work / "silent.mp4"
+        if not silent.exists():
+            subprocess.run(["ffmpeg", "-y", "-v", "error",
+                            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                            "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                            "-map", "0:v", "-map", "1:a", "-t", "90",
+                            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                            str(silent)], check=True)
+        check("a silent video starts its window at the beginning",
+              pipeline._speech_start(silent, 90.0) == 0.0)
+
+        pipeline.download.probe, pipeline.download.download = stub_download(
+            silent, "All Quiet", 90.0)
+        pipeline.asr_backend.transcribe = lambda *a, **k: []
+
+        quiet = pipeline.runner.submit(SILENT_URL, s, preview=True)
+        t0 = time.time()
+        while quiet.status in ("queued", "running") and time.time() - t0 < 600:
+            time.sleep(1)
+        check("a video with no speech fails rather than producing silence",
+              quiet.status == "error", quiet.status)
+        check("and says so in plain English",
+              "no speech" in quiet.error.lower(), quiet.error)
     finally:
         pipeline.download.probe = real_probe
         pipeline.download.download = real_download
