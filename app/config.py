@@ -94,6 +94,15 @@ def _ollama_up() -> bool:
         return False
 
 
+def in_container() -> bool:
+    """A real container, evidenced by the runtime rather than by a variable.
+
+    Used for the one decision where being wrong is a security problem: which
+    interface the server binds to.
+    """
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
 def in_docker() -> bool:
     """Separate from detect_machine() because startup needs only this.
 

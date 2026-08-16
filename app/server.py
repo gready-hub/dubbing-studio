@@ -10,13 +10,14 @@ import threading
 import webbrowser
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .config import (BUILTIN_GLOSSARIES, OUTPUT_DIR, PRESETS, SETTINGS_FILE,
-                     Settings, VOICES, detect_machine, in_docker,
+                     Settings, VOICES, detect_machine, in_container,
                      suggest_ollama_model)
 from .pipeline import runner
 
@@ -35,6 +36,27 @@ class SettingsPatch(BaseModel):
 
 
 # ------------------------------------------------------------------ routes
+
+def _local_only(request: Request) -> None:
+    """Refuse a state-changing request that came from a web page.
+
+    The endpoints that take no body are CORS "simple requests": any site the
+    user happens to have open can POST to them on loopback without a preflight,
+    and while it cannot read the reply, the side effect still happens — wiping
+    every job's working files, or cancelling a job halfway through an hour of
+    video. The ones that take a JSON body are already protected, since that
+    content type forces a preflight.
+
+    A browser always sends Origin on a cross-origin POST. Our own page sends
+    either none or its own origin, so this costs nothing and closes it.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+    host = urlparse(origin).hostname
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        raise HTTPException(403, "That request didn't come from Dubbing Studio.")
+
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
@@ -187,7 +209,8 @@ def create_job(req: JobRequest) -> dict:
 
 
 @app.post("/api/job/{job_id}/cancel")
-def cancel_job(job_id: str) -> dict:
+def cancel_job(job_id: str, request: Request) -> dict:
+    _local_only(request)
     if job_id not in runner.jobs:
         raise HTTPException(404, "No such job.")
     runner.cancel(job_id)
@@ -198,7 +221,6 @@ def cancel_job(job_id: str) -> dict:
 # actually used for.
 PREVIEW_TEXT = "Right, let's carry on with the next round of the pattern."
 _preview_lock = threading.Lock()
-_preview_engine = None
 
 
 @app.get("/api/voice-preview")
@@ -209,7 +231,6 @@ def voice_preview(voice: str, speed: float = 1.0):
     instant and flicking between voices is quick enough to actually compare
     them.
     """
-    global _preview_engine
     from .config import BASE, VOICES
     if not any(v["id"] == voice for v in VOICES):
         raise HTTPException(404, "No such voice.")
@@ -234,12 +255,9 @@ def voice_preview(voice: str, speed: float = 1.0):
         # above exists to protect. Previews are cached on disk, so the only
         # thing being given up is a faster first render of each voice.
         with _preview_lock:
-            if _preview_engine is None:
-                _preview_engine = tts_backend.load_tts(detect_machine().fast_path)
-            try:
-                audio, rate = _preview_engine.say(PREVIEW_TEXT, voice, speed)
-            finally:
-                _preview_engine = None
+            engine = tts_backend.load_tts(detect_machine().fast_path)
+            audio, rate = engine.say(PREVIEW_TEXT, voice, speed)
+            del engine
         if not getattr(audio, "size", 0):
             raise HTTPException(500, "The voice produced no sound.")
         sf.write(out, audio, rate)
@@ -282,7 +300,7 @@ def storage() -> dict:
 
 
 @app.post("/api/storage/clear")
-def clear_storage() -> dict:
+def clear_storage(request: Request) -> dict:
     """Delete every job's working files. Finished videos are not touched.
 
     Refused while something is running, since the job being cleared out from
@@ -292,11 +310,17 @@ def clear_storage() -> dict:
     from .config import JOBS
     from .pipeline import dir_size
 
+    _local_only(request)
     if runner.busy():
         raise HTTPException(409, "Something is still running — wait for it to finish.")
 
     freed = dir_size(JOBS) if JOBS.is_dir() else 0
+    live = {j.id for j in runner.jobs.values() if j.status in ("queued", "running")}
     for folder in (p for p in JOBS.iterdir() if p.is_dir()):
+        # The busy() guard above is check-then-act; this makes the actual
+        # deletion safe if a job starts in the window between the two.
+        if folder.name in live:
+            continue
         shutil.rmtree(folder, ignore_errors=True)
     return {"freed": freed}
 
@@ -372,7 +396,11 @@ def main() -> None:
     # could reach it — the README's localhost:8765 answered nothing at all.
     # Everywhere else, stay on loopback: this is a personal app with no
     # authentication, and it has no business being reachable from the network.
-    docker = in_docker()
+    # Deliberately not in_docker(): that is satisfied by DUBBING_STUDIO_DOCKER=1
+    # alone, which is a reasonable thing to set on a workstation while testing
+    # the portable path — and it would have published an unauthenticated API,
+    # settings included, on every interface. Only an actual container qualifies.
+    docker = in_container()
     host, shown = ("0.0.0.0", "localhost") if docker else ("127.0.0.1", "127.0.0.1")  # noqa: S104
     url = f"http://{shown}:{port}"
 

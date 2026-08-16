@@ -215,14 +215,13 @@ def prune_workdir(workdir: Path) -> int:
     # entries from a directory that is still being scanned can skip its
     # siblings, which would leave some of the bulk behind at random.
     entries = list(workdir.rglob("*"))
-    keep_root = workdir.resolve()
     freed = 0
     for path in entries:
         if path.is_dir() or path.suffix in KEEP_SUFFIXES:
             continue
         # Relative to the job folder, so the check cannot be swayed by a
         # directory called "lines" somewhere above it in the user's home.
-        if "lines" in path.resolve().relative_to(keep_root).parts:
+        if "lines" in path.relative_to(workdir).parts:
             continue
         try:
             size = path.stat().st_size
@@ -265,7 +264,12 @@ def _record_history(job: Job) -> None:
     history.append(entry)
     history.sort(key=lambda h: h.get("finished", 0))
     try:
-        HISTORY_FILE.write_text(json.dumps(history[-HISTORY_LIMIT:], indent=1))
+        # Written whole, then moved into place: request threads read this file,
+        # and one that caught it mid-write saw truncated JSON and reported no
+        # history at all.
+        tmp = HISTORY_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(history[-HISTORY_LIMIT:], indent=1))
+        tmp.replace(HISTORY_FILE)
     except Exception:                                            # noqa: BLE001
         pass                      # history is a convenience, never worth a job
 
@@ -325,6 +329,11 @@ class JobRunner:
                     self._worker = None
                     return
                 job, settings = self._pending.pop(0)
+                # Marked running under the same lock that removed it from the
+                # queue: _renumber asks "is anything running?", and a submit
+                # arriving between the pop and _run() setting the status would
+                # otherwise be told the app was idle.
+                job.status = "running"
             job.queue_position = 0
             if job.id in self._cancel:
                 self._stopped(job)               # cancelled before it ever began
@@ -733,7 +742,12 @@ class JobRunner:
 
             report(0.8, "Checking the result")
             stats.update(mux.verify(video, out_path))
-            stats.update(mux.check_loudness(out_path, video_len))
+            # Measured on the assembled dub, not the finished file: with the
+            # music bed kept, or in duck mode, the original sits underneath and
+            # a completely silent dub still measures loud — which is precisely
+            # the failure this check exists to catch. Cheaper too; no container
+            # demux of a multi-gigabyte mp4.
+            stats.update(mux.check_loudness(raw, video_len))
             if srt:
                 shutil.copy(srt, out_path.with_suffix(".srt"))
 
@@ -746,7 +760,11 @@ class JobRunner:
             if stats.get("audio_warning"):
                 notes.append(stats["audio_warning"])
             stats["notes"] = notes
-            freed = prune_workdir(workdir)             # stems included; they are .wav
+            try:
+                freed = prune_workdir(workdir)     # stems included; they are .wav
+            except Exception:                                    # noqa: BLE001
+                freed = 0        # the video is written; never fail a job over tidying
+
             if freed:
                 stats["working_files_freed"] = round(freed / (1024 ** 2))
 
@@ -799,6 +817,14 @@ class JobRunner:
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
 
+        # Cleared first: the refs folder is shared by every run that clones this
+        # audio, so clips for speakers that no longer exist would linger and be
+        # offered for playback as if they belonged to this run.
+        refs_dir = audio_dir / "refs"
+        if refs_dir.is_dir():
+            for stale in refs_dir.glob("*.wav"):
+                stale.unlink(missing_ok=True)
+
         captured = 0
         for speaker in speaker_ids:
             ref = diarize_backend.pick_reference(segments, speaker, audio, rate)
@@ -819,7 +845,12 @@ class JobRunner:
         job.message = message
         job.finished = time.time()
         if detail:
-            (JOBS / job.id / "error.log").write_text(detail)
+            try:
+                path = JOBS / job.id
+                path.mkdir(parents=True, exist_ok=True)
+                (path / "error.log").write_text(detail)
+            except OSError:
+                pass          # raising here would kill the worker mid-queue
         self._emit(job)
 
 
