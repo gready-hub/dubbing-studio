@@ -220,7 +220,7 @@
         <label for="anthropic_model" style="margin-top:10px">Claude model</label>
         <input type="text" id="anthropic_model" placeholder="claude-sonnet-4-5">
         <p class="hint">The key is saved in plain text in
-          <code id="settingsPathA">settings.json</code> on this computer, so that
+          <code class="settingsPath">settings.json</code> on this computer, so that
           the app can translate without asking for it again. Anyone with access to
           your account can read it.</p>
       </div>
@@ -230,7 +230,7 @@
         <label for="openai_model" style="margin-top:10px">OpenAI model</label>
         <input type="text" id="openai_model" placeholder="gpt-4o">
         <p class="hint">The key is saved in plain text in
-          <code id="settingsPathO">settings.json</code> on this computer, so that
+          <code class="settingsPath">settings.json</code> on this computer, so that
           the app can translate without asking for it again. Anyone with access to
           your account can read it.</p>
       </div>
@@ -422,8 +422,8 @@ async function boot(){
     .map(([k,l])=>`<option value="${k}">${l}</option>`).join("");
 
   applySettings(STATE.settings);
-  ["settingsPathA","settingsPathO"].forEach(id => {
-    if($(id)) $(id).textContent = STATE.settings_path || "settings.json";
+  document.querySelectorAll(".settingsPath").forEach(el => {
+    el.textContent = STATE.settings_path || "settings.json";
   });
   $("modelHint").textContent =
     `Leave blank to use ${STATE.machine.suggested_model}, chosen for your ${STATE.machine.ram_gb} GB of memory.`;
@@ -438,20 +438,20 @@ async function boot(){
   listen();
 }
 
+const BOOL_SETTINGS = ["write_srt","separate_audio","diarize","keep_music"];
+// Value is the default to fall back on. The server coerces each one to the type
+// of the dataclass field, so sending a float for an int setting is fine.
+const NUM_SETTINGS = {speed: 1.0, expected_speakers: -1, duck_db: -18, max_stretch: 1.55};
 const TEXT_SETTINGS = ["voice","audio_mode","glossary","translator","ollama_model",
   "anthropic_key","openai_key","anthropic_model","openai_model","target_language",
   "custom_glossary","keep_video_quality","asr_model","voice_mode"];
 
 function applySettings(s){
   TEXT_SETTINGS.forEach(k => { if($(k)) $(k).value = s[k] ?? ""; });
-  $("speed").value = String(s.speed ?? 1.0);
-  $("write_srt").value = String(!!s.write_srt);
-  $("separate_audio").value = String(!!s.separate_audio);
-  $("diarize").value = String(!!s.diarize);
-  $("keep_music").value = String(!!s.keep_music);
-  $("expected_speakers").value = String(s.expected_speakers ?? -1);
-  $("duck_db").value = String(s.duck_db ?? -18);
-  $("max_stretch").value = String(s.max_stretch ?? 1.55);
+  BOOL_SETTINGS.forEach(k => { if($(k)) $(k).value = String(!!s[k]); });
+  Object.entries(NUM_SETTINGS).forEach(([k, dflt]) => {
+    if($(k)) $(k).value = String(s[k] ?? dflt);
+  });
   renderPresets(s.preset);
   translatorChanged();
 }
@@ -491,14 +491,8 @@ document.addEventListener("change", e => {
 async function saveSettings(){
   const data = {};
   TEXT_SETTINGS.forEach(k => { if($(k)) data[k] = $(k).value; });
-  data.speed = parseFloat($("speed").value);
-  data.write_srt = $("write_srt").value === "true";
-  data.separate_audio = $("separate_audio").value === "true";
-  data.diarize = $("diarize").value === "true";
-  data.keep_music = $("keep_music").value === "true";
-  data.expected_speakers = parseInt($("expected_speakers").value, 10);
-  data.duck_db = parseFloat($("duck_db").value);
-  data.max_stretch = parseFloat($("max_stretch").value);
+  BOOL_SETTINGS.forEach(k => { if($(k)) data[k] = $(k).value === "true"; });
+  Object.keys(NUM_SETTINGS).forEach(k => { if($(k)) data[k] = parseFloat($(k).value); });
   await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
                              body:JSON.stringify({data})});
   $("savedMsg").textContent = "Saved";
@@ -531,9 +525,7 @@ async function start(){
   }
 }
 
-async function cancelJob(){
-  if(CURRENT) await api(`/api/job/${CURRENT}/cancel`,{method:"POST"});
-}
+const cancelJob = () => CURRENT && stopJob(CURRENT);
 
 function showError(msg){
   const b = $("setupBanner");
@@ -546,12 +538,18 @@ function listen(){
   const es = new EventSource("/api/events");
   es.onmessage = e => {
     const job = JSON.parse(e.data);
+    // /api/events replays every known job on connect, and reconnects every few
+    // seconds if the stream drops. Firing storage() per message meant one full
+    // walk of the jobs tree per replayed job, every time. Only a job that has
+    // just *changed* state is worth the walk.
+    const settled = JOBS[job.id]?.status !== job.status
+                    && (job.status === "done" || job.status === "cancelled");
     JOBS[job.id] = job;
     if(!CURRENT || job.id === CURRENT || job.status === "running") CURRENT = job.id;
     if(job.id === CURRENT) render(job);
     renderHistory();
     renderQueue();
-    if(job.status === "done" || job.status === "cancelled") storage();
+    if(settled) storage();
   };
   es.onerror = () => setTimeout(()=>{ es.close(); listen(); }, 4000);
 }
@@ -618,10 +616,14 @@ function render(job){
   if(job.status==="error") showError(job.error);
 }
 
+let queueSig = null;
 function renderQueue(){
   const waiting = Object.values(JOBS)
     .filter(j=>j.status==="queued")
     .sort((a,b)=>(a.queue_position||0)-(b.queue_position||0));
+  const sig = waiting.map(j=>`${j.id}:${j.message}`).join("|");
+  if(sig === queueSig) return;
+  queueSig = sig;
   $("queuePanel").classList.toggle("hidden", waiting.length===0);
   $("queue").innerHTML = waiting.map(j=>`
     <div class="past">
@@ -635,10 +637,14 @@ function renderQueue(){
 // the running one has to wait for its current step.
 const stopJob = id => api(`/api/job/${encodeURIComponent(id)}/cancel`,{method:"POST"});
 
+let historySig = null;
 function renderHistory(){
   const past = Object.values(JOBS)
     .filter(j=>j.status==="done" && j.id!==CURRENT)
     .sort((a,b)=>b.started-a.started);
+  const sig = past.map(j=>j.id).join("|");
+  if(sig === historySig) return;
+  historySig = sig;
   $("historyPanel").classList.toggle("hidden", past.length===0);
   $("history").innerHTML = past.map(j=>`
     <div class="past">
@@ -701,6 +707,14 @@ async function audition(){
 function renderReferences(job){
   const box = $("aRefs");
   const refs = job.references || [];
+  // render() runs on every progress message, and rewriting innerHTML destroys
+  // and recreates the <audio> elements — which restarts any clip being played.
+  // The references only exist to be listened to *while* the job runs, so
+  // rebuilding them unprompted made the feature unusable. Only redraw when the
+  // set actually changes.
+  const key = refs.join("|");
+  if(box.dataset.refs === key) return;
+  box.dataset.refs = key;
   box.innerHTML = refs.length
     ? `<p class="hint" style="margin:10px 0 4px">Cloning from ${refs.length} `
       + `reference clip${refs.length===1?"":"s"} taken from the original. Listen `

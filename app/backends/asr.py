@@ -19,6 +19,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from ..config import MODELS
+from ..notes import note
 
 Progress = Optional[Callable[[float, str], None]]
 
@@ -150,6 +151,8 @@ def _cpu_count() -> int:
 # -------------------------------------------------------------- Whisper
 
 WHISPER_MLX = "mlx-community/whisper-large-v3-mlx"
+WHISPER_CPU = "large-v3"
+WHISPER_CPU_COMPUTE = "int8"
 
 
 def _transcribe_whisper_mlx(audio: Path, progress: Progress = None) -> list[dict]:
@@ -174,7 +177,7 @@ def _transcribe_whisper_cpu(audio: Path, progress: Progress = None) -> list[dict
 
     if progress:
         progress(0.05, "Loading Whisper (first run downloads about 1.5 GB)")
-    model = WhisperModel("large-v3", device="cpu", compute_type="int8",
+    model = WhisperModel(WHISPER_CPU, device="cpu", compute_type=WHISPER_CPU_COMPUTE,
                          cpu_threads=max(2, _cpu_count() - 1))
     segments, info = model.transcribe(str(audio), vad_filter=True, beam_size=1)
     out = []
@@ -192,23 +195,63 @@ def _transcribe_whisper_cpu(audio: Path, progress: Progress = None) -> list[dict
 
 # ---------------------------------------------------------------- public
 
+def _fetch_whisper_mlx() -> None:
+    import mlx_whisper                                           # noqa: F401
+    from huggingface_hub import snapshot_download
+    snapshot_download(WHISPER_MLX)
+
+
+def _fetch_whisper_cpu() -> None:
+    from faster_whisper import WhisperModel
+    WhisperModel(WHISPER_CPU, device="cpu", compute_type=WHISPER_CPU_COMPUTE)
+
+
+def _fetch_mlx() -> None:
+    from parakeet_mlx import from_pretrained
+    from_pretrained(MLX_MODEL)
+
+
+def _ladder(use_mlx: bool, model: str) -> list[tuple[str, Callable, Callable]]:
+    """The engines transcribe() will try, in order: (label, run, fetch).
+
+    Shared with prefetch() deliberately. They were separate lists once, and the
+    copies disagreed: warming up fetched only the engine expected to win, so a
+    fallback — which is reached exactly when the primary is failing — still
+    stopped the job mid-stage to download half a gigabyte.
+    """
+    ladder: list[tuple[str, Callable, Callable]] = []
+    if model == "whisper":
+        if use_mlx:
+            ladder.append(("Whisper (Apple GPU)", _transcribe_whisper_mlx, _fetch_whisper_mlx))
+        ladder.append(("Whisper (CPU)", _transcribe_whisper_cpu, _fetch_whisper_cpu))
+    if use_mlx:
+        ladder.append(("Parakeet (Apple GPU)", _transcribe_mlx, _fetch_mlx))
+    ladder.append(("Parakeet (portable)", _transcribe_onnx, _ensure_onnx_models))
+    return ladder
+
+
+def prefetch(use_mlx: bool, model: str = "parakeet", progress: Progress = None) -> None:
+    """Fetch every engine transcribe() might reach, including its fallbacks."""
+    for label, _, fetch in _ladder(use_mlx, model):
+        if progress:
+            progress(0.0, f"Fetching {label}")
+        fetch()
+
+
 def transcribe(audio_wav: Path, use_mlx: bool, model: str = "parakeet",
                progress: Progress = None) -> list[dict]:
     """model: "parakeet" (fast) or "whisper" (more accurate, slower)."""
-    attempts = []
-    if model == "whisper":
-        attempts = [_transcribe_whisper_mlx] if use_mlx else []
-        attempts.append(_transcribe_whisper_cpu)
-    if use_mlx:
-        attempts.append(_transcribe_mlx)
-    attempts.append(_transcribe_onnx)
+    ladder = _ladder(use_mlx, model)
 
     last_error = None
-    for n, attempt in enumerate(attempts):
+    for n, (label, attempt, _) in enumerate(ladder):
         try:
             return attempt(audio_wav, progress)
         except Exception as exc:                                 # noqa: BLE001
             last_error = exc
-            if progress and n + 1 < len(attempts):
-                progress(0.0, f"Falling back to another engine ({exc})")
+            if n + 1 < len(ladder):
+                note(progress, f"{label} wouldn't run, so a different speech "
+                               f"engine was used instead ({exc}).")
+                if progress:
+                    progress(0.0, f"Falling back to another engine ({exc})")
     raise RuntimeError(f"Transcription failed: {last_error}")

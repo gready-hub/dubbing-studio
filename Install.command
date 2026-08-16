@@ -225,7 +225,7 @@ fi
 step "6 of 8  Speech models"
 say "  Fetching the models the app will need, so the first video doesn't stop"
 say "  part way through to download them."
-python -m app.warmup balanced 2>&1 | tee -a "$LOG" | grep -v '^\s*$' || \
+python -m app.warmup 2>&1 | tee -a "$LOG" | grep -v '^\s*$' || \
   warn "Some speech models could not be fetched; they'll download on first use."
 
 # -------------------------------------------------------------- 7. Ollama
@@ -303,8 +303,10 @@ if (( ${#WARNINGS[@]} == 0 )); then
 
   Keep this folder where it is — the app runs from here.
 
-  The speech models are already downloaded, so the first
-  video goes straight to work.
+  The models for your chosen quality setting are already
+  downloaded, so the first video goes straight to work.
+  Switching to a different setting later fetches whatever
+  that one needs, once.
 
 DONE
 else

@@ -41,6 +41,11 @@ def _ensure_models(progress: Progress = None) -> tuple[Path, Path]:
     return seg_dir / "model.onnx", emb
 
 
+def prefetch(progress: Progress = None) -> None:
+    """Fetch the segmentation and embedding models diarize() needs."""
+    _ensure_models(progress)
+
+
 def diarize(audio_wav: Path, expected_speakers: int = -1,
             threshold: float = 0.5, progress: Progress = None) -> list[dict]:
     """Returns [{"start", "end", "speaker"}]. Empty list if it can't run."""

@@ -94,11 +94,22 @@ def _ollama_up() -> bool:
         return False
 
 
+def in_docker() -> bool:
+    """Separate from detect_machine() because startup needs only this.
+
+    The full detection forks sysctl, scans PATH twice and makes an HTTP request
+    to Ollama with a 1.5s timeout — and in a container OLLAMA_HOST points at the
+    host, so an unreachable one delayed the server binding by that much before
+    it had answered a single question.
+    """
+    return Path("/.dockerenv").exists() or os.environ.get("DUBBING_STUDIO_DOCKER") == "1"
+
+
 def detect_machine() -> Machine:
     system = platform.system()
     arch = platform.machine()
-    in_docker = Path("/.dockerenv").exists() or os.environ.get("DUBBING_STUDIO_DOCKER") == "1"
-    apple_silicon = system == "Darwin" and arch == "arm64" and not in_docker
+    docker = in_docker()
+    apple_silicon = system == "Darwin" and arch == "arm64" and not docker
     return Machine(
         system=system,
         arch=arch,
@@ -108,7 +119,7 @@ def detect_machine() -> Machine:
         has_ffmpeg=shutil.which("ffmpeg") is not None,
         has_ytdlp=shutil.which("yt-dlp") is not None or _module_available("yt_dlp"),
         has_ollama=_ollama_up(),
-        in_docker=in_docker,
+        in_docker=docker,
     )
 
 

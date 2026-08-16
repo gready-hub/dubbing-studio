@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from .proc import stream
+
 Progress = Optional[Callable[[float, str], None]]
 
 _PCT = re.compile(r"\[download\]\s+([\d.]+)%")
@@ -89,30 +91,17 @@ def download(url: str, workdir: Path, quality: str = "best",
     # A 403 on the media fetch, straight after a metadata probe that succeeded,
     # is throttling rather than a bad link — the same request goes through a
     # moment later. Retrying here beats making the user notice and re-paste.
+    def show(line: str) -> None:
+        m = _PCT.search(line)
+        if m and progress:
+            progress(0.02 + 0.96 * float(m.group(1)) / 100,
+                     f"Downloading — {m.group(1)}%")
+
     attempts = 3
     for attempt in range(1, attempts + 1):
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
-        tail: list[str] = []
-        try:
-            for line in proc.stdout:                             # type: ignore[union-attr]
-                tail.append(line)
-                tail[:] = tail[-25:]
-                m = _PCT.search(line)
-                if m and progress:
-                    progress(0.02 + 0.96 * float(m.group(1)) / 100,
-                             f"Downloading — {m.group(1)}%")
-        except BaseException:
-            # A cancel arrives through the progress callback; don't leave yt-dlp
-            # pulling a gigabyte of video for a job that has already stopped.
-            proc.kill()
-            proc.wait()
-            raise
-        proc.wait()
-        if proc.returncode == 0:
+        code, problem = stream(cmd, show, tail_lines=25)
+        if code == 0:
             break
-
-        problem = "".join(tail)
         if attempt >= attempts or not _looks_transient(problem):
             raise RuntimeError(_friendly(problem))
         if progress:

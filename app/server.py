@@ -16,7 +16,8 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .config import (BUILTIN_GLOSSARIES, OUTPUT_DIR, PRESETS, SETTINGS_FILE,
-                     Settings, VOICES, detect_machine, suggest_ollama_model)
+                     Settings, VOICES, detect_machine, in_docker,
+                     suggest_ollama_model)
 from .pipeline import runner
 
 STATIC = Path(__file__).parent / "static"
@@ -209,7 +210,7 @@ def voice_preview(voice: str, speed: float = 1.0):
     them.
     """
     global _preview_engine
-    from .config import BASE, MODELS, VOICES
+    from .config import BASE, VOICES
     if not any(v["id"] == voice for v in VOICES):
         raise HTTPException(404, "No such voice.")
 
@@ -220,18 +221,25 @@ def voice_preview(voice: str, speed: float = 1.0):
         # that while a job is running competes with it for the GPU and pushed
         # this machine deep into swap — the interface stopped answering for
         # minutes. An already-rendered preview costs nothing and is still served.
-        if any(j.status in ("queued", "running") for j in runner.jobs.values()):
+        if runner.busy():
             raise HTTPException(409, "Try that once the current video has finished — "
                                      "playing a new voice now would slow it down.")
         out.parent.mkdir(parents=True, exist_ok=True)
         import soundfile as sf
         from .backends import tts as tts_backend
-        # Serialised and reused: loading Kokoro costs seconds, and two clicks in
-        # quick succession would otherwise load it twice at once.
+        # Serialised: two clicks in quick succession would otherwise load the
+        # model twice at once. Released again afterwards — keeping it resident
+        # would leave a second Kokoro in memory for the life of the process,
+        # competing with every later job for exactly the resource the guard
+        # above exists to protect. Previews are cached on disk, so the only
+        # thing being given up is a faster first render of each voice.
         with _preview_lock:
             if _preview_engine is None:
                 _preview_engine = tts_backend.load_tts(detect_machine().fast_path)
-            audio, rate = _preview_engine.say(PREVIEW_TEXT, voice, speed)
+            try:
+                audio, rate = _preview_engine.say(PREVIEW_TEXT, voice, speed)
+            finally:
+                _preview_engine = None
         if not getattr(audio, "size", 0):
             raise HTTPException(500, "The voice produced no sound.")
         sf.write(out, audio, rate)
@@ -266,9 +274,10 @@ def storage() -> dict:
     """
     from .config import JOBS
     from .pipeline import dir_size
-    folders = [p for p in JOBS.iterdir() if p.is_dir()] if JOBS.is_dir() else []
-    return {"bytes": dir_size(JOBS) if JOBS.is_dir() else 0,
-            "jobs": len(folders),
+    if not JOBS.is_dir():
+        return {"bytes": 0, "jobs": 0, "path": str(JOBS)}
+    return {"bytes": dir_size(JOBS),
+            "jobs": sum(1 for p in JOBS.iterdir() if p.is_dir()),
             "path": str(JOBS)}
 
 
@@ -283,7 +292,7 @@ def clear_storage() -> dict:
     from .config import JOBS
     from .pipeline import dir_size
 
-    if any(j.status in ("queued", "running") for j in runner.jobs.values()):
+    if runner.busy():
         raise HTTPException(409, "Something is still running — wait for it to finish.")
 
     freed = dir_size(JOBS) if JOBS.is_dir() else 0
@@ -363,12 +372,12 @@ def main() -> None:
     # could reach it — the README's localhost:8765 answered nothing at all.
     # Everywhere else, stay on loopback: this is a personal app with no
     # authentication, and it has no business being reachable from the network.
-    in_docker = detect_machine().in_docker
-    host = "0.0.0.0" if in_docker else "127.0.0.1"               # noqa: S104
-    url = f"http://localhost:{port}" if in_docker else f"http://127.0.0.1:{port}"
+    docker = in_docker()
+    host, shown = ("0.0.0.0", "localhost") if docker else ("127.0.0.1", "127.0.0.1")  # noqa: S104
+    url = f"http://{shown}:{port}"
 
     print(f"\n  Dubbing Studio is running.\n  Open this in your browser:  {url}\n")
-    if "--no-browser" not in sys.argv and not in_docker:
+    if "--no-browser" not in sys.argv and not docker:
         try:
             webbrowser.open(url)
         except Exception:                                        # noqa: BLE001

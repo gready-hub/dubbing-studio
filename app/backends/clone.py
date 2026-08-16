@@ -30,6 +30,17 @@ def available() -> bool:
         return False
 
 
+def prefetch(progress: Progress = None) -> None:
+    """Fetch the Chatterbox checkpoint before a job needs it.
+
+    Warming up never fetched this at all, so the Best preset — the only one that
+    clones, and the one with the largest download — still stopped mid-job for
+    it, which is the exact stall the warm-up exists to remove.
+    """
+    from chatterbox.tts import ChatterboxTTS
+    ChatterboxTTS.from_pretrained(device=_device())
+
+
 def _device() -> str:
     try:
         import torch

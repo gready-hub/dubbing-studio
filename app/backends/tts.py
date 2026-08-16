@@ -13,6 +13,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from ..config import MODELS, ONNX_VOICE_IDS
+from ..notes import note
 
 Progress = Optional[Callable[[float, str], None]]
 
@@ -24,6 +25,11 @@ SAMPLE_RATE = 24000
 
 class MlxTTS:
     name = "Apple GPU (MLX)"
+    # Stated rather than left to be guessed at: the pipeline fixes one rate for
+    # the whole track before the first line is spoken, and it used to reach for
+    # this attribute, not find it on two of the three engines, and fall through
+    # to a module constant that happened to agree.
+    sample_rate = SAMPLE_RATE
 
     def __init__(self) -> None:
         from mlx_audio.tts.utils import load_model
@@ -48,6 +54,7 @@ class MlxTTS:
 
 class OnnxTTS:
     name = "Portable (CPU)"
+    sample_rate = SAMPLE_RATE
 
     def __init__(self, threads: int = 0) -> None:
         import os
@@ -93,8 +100,24 @@ def load_tts(use_mlx: bool, progress: Progress = None):
                 progress(0.0, "Loading the voice on the GPU")
             return MlxTTS()
         except Exception as exc:  # noqa: BLE001
+            note(progress, "The Apple GPU voice wouldn't load, so the portable "
+                           f"one was used instead ({exc}).")
             if progress:
                 progress(0.0, f"GPU voice unavailable ({exc}); using the portable engine")
     if progress:
         progress(0.0, "Loading the voice")
     return OnnxTTS()
+
+
+def prefetch(use_mlx: bool, progress: Progress = None) -> None:
+    """Fetch and warm whatever load_tts() would pick, plus the fallback.
+
+    Goes through load_tts rather than reproducing its choice, so MlxTTS's
+    deliberate say("Ready.") — which forces Kokoro's lazily-built phonemiser —
+    happens here too. Warming up by calling load_model() directly skipped
+    exactly that, which is the stall this is meant to remove.
+    """
+    engine = load_tts(use_mlx, progress)
+    if not isinstance(engine, OnnxTTS):
+        # Still the engine a mid-job failure drops to, so it needs its weights.
+        OnnxTTS()

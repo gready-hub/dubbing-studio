@@ -6,16 +6,22 @@ progress. A progress bar that sits still for twenty minutes is indistinguishable
 from a hang, and the one thing the user can see — the stage name — says
 "Listening to the original", which is not what is happening.
 
-Run at the end of installation, so the wait happens once, while the installer is
-already visibly downloading things, and the first real job goes straight to
-work. Nothing here is required: every fetch is allowed to fail, and the pipeline
-still downloads on demand exactly as before.
+Each backend says what *it* needs, through its own `prefetch()`, built from the
+same fallback ladder it uses at run time. This module only decides which
+backends a preset will reach. It used to reconstruct the per-backend model lists
+itself, reaching into private helpers to do it, and the two copies promptly
+disagreed — it fetched only the engine expected to win, so the fallbacks, which
+are reached precisely when the primary is failing, still stalled the job.
+
+Nothing here is required: every fetch may fail, and the pipeline still downloads
+on demand exactly as before.
 
     python -m app.warmup [preset]
 """
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from typing import Callable
 
 from .config import PRESETS, Settings, detect_machine
@@ -33,80 +39,50 @@ def warm(preset: str = "balanced", on_step: Step = _say) -> list[str]:
     machine = detect_machine()
     failed: list[str] = []
 
-    def attempt(label: str, fn) -> None:
+    @contextmanager
+    def attempt(label: str):
         on_step(f"{label}…")
         try:
-            fn()
+            yield
         except Exception as exc:                                 # noqa: BLE001
             failed.append(label)
             on_step(f"{label} — couldn't fetch it now ({type(exc).__name__})")
 
-    if machine.fast_path:
-        # The Apple-GPU path is what this machine will actually use, so fetch
-        # those rather than the portable fallbacks it will never reach.
-        def parakeet() -> None:
-            from parakeet_mlx import from_pretrained
-            from .backends.asr import MLX_MODEL
-            from_pretrained(MLX_MODEL)
+    with attempt("Speech recognition"):
+        from .backends import asr
+        asr.prefetch(machine.fast_path, settings.asr_model)
 
-        def kokoro_mlx() -> None:
-            from mlx_audio.tts.utils import load_model
-            from .backends.tts import MLX_TTS_MODEL
-            load_model(MLX_TTS_MODEL)
-
-        if settings.asr_model == "parakeet":
-            attempt("Speech recognition (Parakeet)", parakeet)
-        attempt("Voice (Kokoro)", kokoro_mlx)
-    else:
-        def onnx_asr() -> None:
-            from .backends.asr import _ensure_onnx_models
-            _ensure_onnx_models()
-
-        def onnx_tts() -> None:
-            from .backends.tts import OnnxTTS
-            OnnxTTS()
-
-        attempt("Speech recognition (Parakeet)", onnx_asr)
-        attempt("Voice (Kokoro)", onnx_tts)
-
-    if settings.asr_model == "whisper":
-        def whisper() -> None:
-            if machine.fast_path:
-                import mlx_whisper                               # noqa: F401
-                from huggingface_hub import snapshot_download
-                from .backends.asr import WHISPER_MLX
-                snapshot_download(WHISPER_MLX)
-            else:
-                from faster_whisper import WhisperModel
-                WhisperModel("large-v3", device="cpu", compute_type="int8")
-
-        attempt("Whisper transcription (about 3 GB)", whisper)
+    with attempt("Voices"):
+        from .backends import tts
+        tts.prefetch(machine.fast_path)
 
     if settings.diarize:
-        def diar() -> None:
-            from .backends.diarize import _ensure_models
-            _ensure_models()
-
-        attempt("Telling speakers apart", diar)
+        with attempt("Telling speakers apart"):
+            from .backends import diarize
+            diarize.prefetch()
 
     if settings.separate_audio:
-        def demucs_weights() -> None:
-            from demucs.pretrained import get_model
-            from .backends.separate import MODEL
-            get_model(MODEL)
+        with attempt("Separating speech from music"):
+            from .backends import separate
+            separate.prefetch()
 
-        attempt("Separating speech from music (Demucs)", demucs_weights)
+    if settings.voice_mode == "clone":
+        with attempt("Cloning the original voices"):
+            from .backends import clone
+            clone.prefetch()
 
     return failed
 
 
 def main() -> int:
-    preset = sys.argv[1] if len(sys.argv) > 1 else "balanced"
+    # Whatever is actually selected, not a hardcoded guess — otherwise the one
+    # preset that gets warmed is the one the user may not be using.
+    preset = sys.argv[1] if len(sys.argv) > 1 else Settings.load().preset
     if preset not in PRESETS:
-        preset = "balanced"
+        preset = "balanced"                       # "custom" has no model list
     failed = warm(preset)
     if failed:
-        print(f"  {len(failed)} model(s) will download on first use instead.",
+        print(f"  {len(failed)} of these will download on first use instead.",
               flush=True)
     return 0                      # never fatal: the app fetches on demand anyway
 

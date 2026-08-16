@@ -9,11 +9,11 @@ between releases while the command line stays stable.
 """
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Optional
+
+from ..steps.proc import stream
 
 Progress = Optional[Callable[[float, str], None]]
 
@@ -31,6 +31,12 @@ def available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def prefetch(progress: Progress = None) -> None:
+    """Fetch the Demucs weights separate() shells out to."""
+    from demucs.pretrained import get_model
+    get_model(MODEL)
 
 
 def _device(prefer_gpu: bool) -> str:
@@ -74,37 +80,27 @@ def separate(audio: Path, workdir: Path, prefer_gpu: bool = True,
            "--two-stems", "vocals", "-n", MODEL,
            "-d", device, "-o", str(out_root), str(audio)]
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1)
-    tail: list[str] = []
     passes = MODEL_PASSES.get(MODEL, 1)
-    done_passes, last_pct = 0, -1
-    try:
-        for line in proc.stdout:                                 # type: ignore[union-attr]
-            tail.append(line)
-            tail[:] = tail[-30:]
-            # Demucs prints a percentage bar; surface it rather than looking stalled.
-            if progress and "%" in line:
-                digits = "".join(c for c in line.split("%")[0][-4:] if c.isdigit())
-                if digits:
-                    pct = min(100, int(digits))
-                    if pct < last_pct:        # the bar restarted: next model in the bag
-                        done_passes = min(done_passes + 1, passes - 1)
-                    last_pct = pct
-                    overall = (done_passes + pct / 100) / passes
-                    shown = min(99, int(overall * 100))
-                    progress(0.05 + 0.94 * overall,
-                             f"Separating speech from music — {shown}%")
-    except BaseException:
-        # The progress callback is how a cancel reaches us. Without this the
-        # separation carried on in the background after the job had stopped,
-        # holding the GPU for several more minutes.
-        proc.kill()
-        proc.wait()
-        raise
-    proc.wait()
+    state = {"done_passes": 0, "last_pct": -1}
 
-    if proc.returncode != 0 or not speech.exists():
+    def show(line: str) -> None:
+        # Demucs prints a percentage bar; surface it rather than looking stalled.
+        if not progress or "%" not in line:
+            return
+        digits = "".join(c for c in line.split("%")[0][-4:] if c.isdigit())
+        if not digits:
+            return
+        pct = min(100, int(digits))
+        if pct < state["last_pct"]:           # the bar restarted: next model in the bag
+            state["done_passes"] = min(state["done_passes"] + 1, passes - 1)
+        state["last_pct"] = pct
+        overall = (state["done_passes"] + pct / 100) / passes
+        progress(0.05 + 0.94 * overall,
+                 f"Separating speech from music — {min(99, int(overall * 100))}%")
+
+    code, _ = stream(cmd, show)
+
+    if code != 0 or not speech.exists():
         if progress:
             progress(1.0, "Separation didn't work; carrying on with the full soundtrack")
         return None
@@ -113,6 +109,7 @@ def separate(audio: Path, workdir: Path, prefer_gpu: bool = True,
         progress(1.0, "Speech separated from the soundtrack")
     return speech, background
 
-
-def cleanup(workdir: Path) -> None:
-    shutil.rmtree(workdir / "stems", ignore_errors=True)
+# No cleanup() here any more. The stems are ordinary .wav files inside the job
+# folder, so prune_workdir() already removes them when a job succeeds — and by
+# deleting them first, the separate pass was hiding its own bytes from the
+# "working files freed" figure the user is shown.
