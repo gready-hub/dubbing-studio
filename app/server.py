@@ -158,8 +158,13 @@ def _ollama_has(model: str) -> bool:
     try:
         with urllib.request.urlopen(f"{ollama_host()}/api/tags", timeout=2) as r:
             tags = json.loads(r.read()).get("models", [])
-        base = model.split(":")[0]
-        return any(m.get("name", "").split(":")[0] == base for m in tags)
+        # The whole tag, not the family. This compared base names, so having
+        # qwen3:8b installed reported qwen3:32b as present — the setup check
+        # went green and the job then died on a 404 from Ollama part way through
+        # translating. A green light that precedes a failure is worse than a red
+        # one, because the red one carries the command that fixes it.
+        wanted = model if ":" in model else f"{model}:latest"
+        return any(m.get("name", "") == wanted for m in tags)
     except Exception:
         return False
 
