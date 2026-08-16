@@ -272,8 +272,47 @@ def test_server():
     r = client.get("/api/doctor")
     check("doctor endpoint responds", r.status_code == 200 and "checks" in r.json())
 
+    # What a failed download actually says to the person reading it. The failed
+    # panel shows this verbatim, so anything yt-dlp phrases for itself ends up
+    # in front of someone who cannot act on it.
+    from app.steps.download import _friendly
+    dead = _friendly("ERROR: [generic] nope: Unable to download webpage: HTTP Error "
+                     "404: File not found (caused by <HTTPError 404: File not found>)")
+    check("a dead link is explained in plain English",
+          "typed correctly" in dead and "ERROR" not in dead, dead)
+    check("an offline machine is told so",
+          "internet connection" in _friendly("ERROR: unable to open: "
+                                             "nodename nor servname provided"))
+    check("a 403 keeps its own explanation",
+          "temporary" in _friendly("ERROR: unable to download: HTTP Error 403: Forbidden"))
+    odd = _friendly("ERROR: [youtube] abc: Something nobody anticipated "
+                    "(caused by <SomeError: blah>)")
+    check("anything unrecognised is passed on, minus the scaffolding",
+          odd == "Something nobody anticipated", odd)
+
     r = client.get("/api/job/nope/video")
     check("missing job video 404s", r.status_code == 404)
+
+    # The preset is read back off the switches rather than stored as an
+    # assertion about them. It used to be the latter, so choosing Balanced and
+    # then turning separation off left it saying "balanced" and the segmented
+    # control in the interface claiming a preset the settings no longer were.
+    from app.config import PRESETS, Settings
+    for name in PRESETS:
+        check(f"{name} settings identify as {name}",
+              Settings().apply_preset(name).matching_preset() == name)
+    off = Settings().apply_preset("balanced")
+    off.separate_audio = False
+    check("changing a stage switch reads as custom", off.matching_preset() == "custom")
+
+    r = client.post("/api/settings", json={"data": {"preset": "balanced"}})
+    check("picking a preset saves it", r.json()["preset"] == "balanced")
+    r = client.post("/api/settings", json={"data": {"separate_audio": False}})
+    check("turning a switch off flips the saved preset to custom",
+          r.json()["preset"] == "custom", r.json()["preset"])
+    r = client.post("/api/settings", json={"data": {"separate_audio": True}})
+    check("and turning it back on returns to the named preset",
+          r.json()["preset"] == "balanced", r.json()["preset"])
 
 
 # ======================================================= 4. full pipeline run
@@ -900,6 +939,18 @@ def test_preview():
     try:
         s = Settings().apply_preset("fast")
         s.translator = "ollama"
+
+        # Elapsed time is time spent working, not time since the link was
+        # pasted. A job that sat behind another and then ran reported the wait
+        # as part of its own duration, which made "Took" wrong and the estimate
+        # of the time remaining wrong by the same margin.
+        waiting = pipeline.Job(id="x", url="u")
+        check("a job that has not started reports no elapsed time",
+              waiting.public()["elapsed"] == 0)
+        waiting.began = time.time() - 30
+        waiting.finished = waiting.began + 10
+        check("a finished job reports the time it ran, not the time it waited",
+              waiting.public()["elapsed"] == 10, str(waiting.public()["elapsed"]))
 
         check("a sample and the full run are different jobs",
               pipeline._job_id(URL, True) != pipeline._job_id(URL, False))

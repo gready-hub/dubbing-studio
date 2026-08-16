@@ -292,14 +292,32 @@ class Settings:
     asr_model: str = "parakeet"          # parakeet | whisper
     voice_mode: str = "fixed"            # fixed | clone
 
+    # The four switches a preset is a name for. Anything else is a preference
+    # that sits alongside a preset rather than defining one.
+    PRESET_KEYS = ("separate_audio", "diarize", "asr_model", "voice_mode")
+
     def apply_preset(self, name: str) -> "Settings":
         spec = PRESETS.get(name)
         if not spec:
             return self
         self.preset = name
-        for key in ("separate_audio", "diarize", "asr_model", "voice_mode"):
+        for key in self.PRESET_KEYS:
             setattr(self, key, spec[key])
         return self
+
+    def matching_preset(self) -> str:
+        """The preset these settings actually are, or "custom".
+
+        This field used to be an assertion rather than an observation: three
+        comments described a "custom" value and nothing ever set it, so choosing
+        Balanced and then turning separation off left the preset saying
+        "balanced" and the segmented control in the interface claiming a preset
+        the settings no longer matched. Derived, it cannot drift.
+        """
+        for name, spec in PRESETS.items():
+            if all(getattr(self, key) == spec[key] for key in self.PRESET_KEYS):
+                return name
+        return "custom"
 
     def voice_for(self, speaker: int, male: bool | None = None) -> str:
         """First speaker gets the chosen voice; others get distinct ones.

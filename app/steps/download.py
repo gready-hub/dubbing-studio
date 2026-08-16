@@ -62,8 +62,40 @@ def _friendly(stderr: str) -> str:
         return "That link isn't one yt-dlp recognises."
     if "http error 429" in s or "too many requests" in s:
         return "The site is rate-limiting downloads. Wait a few minutes and try again."
+    # A link that goes nowhere is one of the commonest ways this fails — a typo,
+    # a stale bookmark, half a URL pasted — and it used to fall through to
+    # yt-dlp's own words, which is where the interface got "ERROR: [generic]
+    # does-not-exist: Unable to download webpage: HTTP Error 404: File not found
+    # (caused by <HTTPError 404: File not found>)".
+    if "http error 404" in s or "unable to download webpage" in s:
+        return ("That link couldn't be opened. Check it is typed correctly and that "
+                "the video is still there.")
+    if ("name or service not known" in s or "nodename nor servname" in s
+            or "temporary failure in name resolution" in s):
+        return "That address couldn't be reached — check your internet connection."
     tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
-    return tail[-1] if tail else "The download failed."
+    return _tidy(tail[-1]) if tail else "The download failed."
+
+
+def _tidy(line: str) -> str:
+    """Make yt-dlp's last line readable without pretending to understand it.
+
+    Whatever is left over after the cases above is genuinely unknown, so it is
+    passed on rather than replaced — but the scaffolding around it is noise to
+    everyone: the ERROR: prefix, the extractor name in brackets, and the wrapped
+    Python exception repeated in parentheses at the end.
+    """
+    line = re.sub(r"^ERROR:\s*", "", line.strip())
+    head = re.match(r"^\[[^\]]+\]\s*", line)
+    if head:
+        line = line[head.end():]
+        # yt-dlp prints the video's own id straight after the extractor name.
+        # Kept id-shaped deliberately: a message that merely happens to start
+        # with a word and a colon — or with a URL, which is full of them — must
+        # not lose its first clause to this.
+        line = re.sub(r"^[\w.\-]{1,64}:\s+", "", line, count=1)
+    line = re.sub(r"\s*\(caused by .*\)\s*$", "", line)
+    return line.strip() or "The download failed."
 
 
 def download(url: str, workdir: Path, quality: str = "best",

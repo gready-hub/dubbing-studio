@@ -323,6 +323,7 @@ class Job:
     output: str = ""
     stats: dict = field(default_factory=dict)
     started: float = field(default_factory=time.time)
+    began: float = 0.0                   # when it reached the front of the queue
     finished: float = 0.0
     engine: str = ""
     preset: str = ""
@@ -341,7 +342,14 @@ class Job:
 
     def public(self) -> dict:
         d = asdict(self)
-        d["elapsed"] = round((self.finished or time.time()) - self.started)
+        # Time spent working, not time since the link was pasted. A job that sat
+        # twenty minutes behind another and then ran for five reported
+        # twenty-five, so "Took" was wrong — and an estimate of the time
+        # remaining, which divides elapsed by the fraction done, would be wrong
+        # by the same margin in the same direction. Nothing is elapsed while a
+        # job is still waiting its turn.
+        d["elapsed"] = (round((self.finished or time.time()) - self.began)
+                        if self.began else 0)
         return d
 
 
@@ -505,6 +513,7 @@ class JobRunner:
                 # arriving between the pop and _run() setting the status would
                 # otherwise be told the app was idle.
                 job.status = "running"
+                job.began = time.time()
             job.queue_position = 0
             if job.id in self._cancel:
                 self._stopped(job)               # cancelled before it ever began

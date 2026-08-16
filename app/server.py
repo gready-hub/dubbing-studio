@@ -175,12 +175,10 @@ def save_settings(patch: SettingsPatch) -> dict:
     data = dict(patch.data)
 
     # A preset change rewrites the stage switches; explicit switches sent in the
-    # same request win, which is how the interface expresses "custom".
+    # same request win.
     preset = data.pop("preset", None)
     if preset:
         settings.apply_preset(preset)
-        if preset in PRESETS:
-            settings.preset = preset
 
     for key, value in data.items():
         if hasattr(settings, key):
@@ -195,6 +193,10 @@ def save_settings(patch: SettingsPatch) -> dict:
             except (TypeError, ValueError):
                 continue
             setattr(settings, key, value)
+    # Read back off the switches rather than left as whatever was last named, so
+    # that turning one of them off in Advanced shows as "custom" instead of
+    # leaving the control claiming a preset the settings no longer are.
+    settings.preset = settings.matching_preset()
     settings.save()
     return asdict(settings)
 
