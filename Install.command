@@ -257,15 +257,41 @@ if command -v ollama >/dev/null 2>&1; then
     nohup ollama serve >>"$LOG" 2>&1 &
     for _ in $(seq 1 30); do ollama_up && break; sleep 1; done
   fi
-  # Keep these tiers in step with suggest_ollama_model() in app/config.py.
-  if   (( RAM_GB >= 48 )); then MODEL="qwen3:32b"
-  elif (( RAM_GB >= 24 )); then MODEL="qwen3:14b"
-  elif (( RAM_GB >= 16 )); then MODEL="qwen3:8b"
-  else                          MODEL="qwen3:4b"; fi
+  # Largest first, then smaller ones. The top tier is a 20 GB download, which on
+  # a home connection is a long time to be exposed to a dropped one — measured
+  # here, it died at 6% with "unexpected EOF". A smaller model that arrives beats
+  # a better one that doesn't, and the app translates instructional speech well
+  # with any of them. Keep the first entry of each tier in step with
+  # suggest_ollama_model() in app/config.py.
+  if   (( RAM_GB >= 48 )); then LADDER=(qwen3:32b qwen3:14b qwen3:8b)
+  elif (( RAM_GB >= 24 )); then LADDER=(qwen3:14b qwen3:8b)
+  elif (( RAM_GB >= 16 )); then LADDER=(qwen3:8b qwen3:4b)
+  else                          LADDER=(qwen3:4b); fi
+
   if ollama_up; then
-    say "  Downloading $MODEL — chosen to fit your ${RAM_GB} GB. This is a few GB."
-    ollama pull "$MODEL" && ok "$MODEL ready" \
-      || warn "Model download failed. Open the Ollama app, then re-run this installer."
+    # Anything on the ladder already there is the answer: re-running this
+    # installer must not re-download twenty gigabytes to arrive where it is.
+    HAVE=""
+    for m in "${LADDER[@]}"; do
+      if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$m"; then HAVE="$m"; break; fi
+    done
+
+    if [[ -n "$HAVE" ]]; then
+      ok "$HAVE already installed"
+    else
+      total=${#LADDER[@]}; i=0
+      for m in "${LADDER[@]}"; do
+        i=$((i + 1))
+        say "  Downloading $m — chosen to fit your ${RAM_GB} GB. This is a few GB."
+        if ollama pull "$m"; then HAVE="$m"; ok "$m ready"; break; fi
+        warn "That download didn't finish."
+        if (( i < total )); then say "  Trying a smaller model instead…"; fi
+      done
+      if [[ -z "$HAVE" ]]; then
+        warn "No translation model could be downloaded. Open the Ollama app and"
+        warn "re-run this installer, or paste an API key in Settings instead."
+      fi
+    fi
   else
     warn "Ollama isn't responding. Open the Ollama app once, then re-run this installer."
     warn "You can also use a Claude or OpenAI key in Settings instead."
