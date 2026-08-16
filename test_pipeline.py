@@ -9,6 +9,7 @@ the suite synthesises its own speech and is fully self-contained.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,9 +29,18 @@ WORK.mkdir(parents=True, exist_ok=True)
 
 # Point the scratch model folder at the real one so a test run doesn't re-fetch
 # 700 MB of speech models it already has. Jobs and output stay isolated.
+#
+# The scratch home lives under /var/folders, which macOS purges on its own
+# schedule. It deletes the big model files but leaves the directories, so a
+# plain "does it exist" check kept a hollowed-out models folder in place and the
+# suite failed from deep inside sherpa-onnx with "File doesn't exist" — an
+# environment problem wearing a code regression's clothes. A real directory that
+# is not the symlink we intended is therefore replaced, not respected.
 _real_models = Path.home() / "Library" / "Application Support" / "DubbingStudio" / "models"
 _scratch_models = SCRATCH / "models"
-if _real_models.is_dir() and not _scratch_models.exists():
+if _real_models.is_dir() and not _scratch_models.is_symlink():
+    if _scratch_models.is_dir():
+        shutil.rmtree(_scratch_models, ignore_errors=True)
     _scratch_models.parent.mkdir(parents=True, exist_ok=True)
     _scratch_models.symlink_to(_real_models)
 
