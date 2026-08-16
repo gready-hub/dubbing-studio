@@ -47,7 +47,7 @@ ALL_STAGES = [
 ]
 
 
-def _job_id(url: str) -> str:
+def _link_id(url: str) -> str:
     """A stable id per link, so pasting the same one again resumes.
 
     This used to fold in the wall clock, which gave every submission a fresh
@@ -56,6 +56,17 @@ def _job_id(url: str) -> str:
     randomised per process, so the id changed whenever the app restarted.
     """
     return hashlib.sha1(url.strip().encode("utf-8")).hexdigest()[:12]
+
+
+def _job_id(url: str, preview: bool = False) -> str:
+    """Distinct from the work folder, which is keyed on the link alone.
+
+    A preview and the full run of the same link have to be two jobs — they queue
+    separately, they are cancelled separately, and submit() treats one id as one
+    piece of work — while sharing one folder, because the entire value of
+    previewing first is that the download is not paid for twice.
+    """
+    return _link_id(url) + ("-preview" if preview else "")
 
 
 def _fingerprint(*parts) -> str:
@@ -192,6 +203,92 @@ def _resample_to(src: Path, dst: Path, rate: int, mono: bool = True) -> Path:
     return dst
 
 
+# ------------------------------------------------------------------ preview
+
+PREVIEW_SECONDS = 30.0
+# Below this there is nothing to save: the preview would be most of the video,
+# and the user would then wait through almost the same work twice.
+PREVIEW_MIN_VIDEO = 45.0
+# How far in to go looking for the first speech. Bounded because this is a full
+# audio decode: unbounded, an hour of video costs a quiet twenty seconds before
+# the preview has started, which is the opposite of the point.
+PREVIEW_SCAN_SECONDS = 300.0
+# Speech is rarely quieter than this, and title music rarely under it.
+PREVIEW_SILENCE_DB = -40.0
+
+
+def _speech_start(media: Path, duration: float, window: float = PREVIEW_SECONDS) -> float:
+    """Where the talking starts, so a preview isn't 30 seconds of title card.
+
+    Most videos open on a logo, a music sting or a held shot, and a preview of
+    that tells the user nothing about the thing they are trying to judge. ffmpeg
+    already knows where the quiet is — the same silencedetect the finished-audio
+    check uses — so ask it rather than guessing at an offset.
+
+    Only a leading silence counts. A gap in the middle of a conversation is not
+    a lead-in, and treating it as one would drop the window into an arbitrary
+    later part of the video for no reason.
+    """
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "info", "-nostats", "-t", str(PREVIEW_SCAN_SECONDS),
+         "-i", str(media), "-map", "0:a:0",
+         "-af", f"silencedetect=noise={PREVIEW_SILENCE_DB}dB:d=1.0", "-f", "null", "-"],
+        capture_output=True, text=True)
+
+    start = 0.0
+    lead_in = False
+    for line in proc.stderr.splitlines():
+        if "silence_start:" in line:
+            try:
+                begins = float(line.split("silence_start:")[1].strip().split()[0])
+            except (IndexError, ValueError):
+                break
+            # Anything but a silence that is already running when the video
+            # opens means the speech has started; stop looking.
+            if begins > 0.5:
+                break
+            lead_in = True
+        elif "silence_end:" in line and lead_in:
+            try:
+                start = float(line.split("silence_end:")[1].strip().split()[0])
+            except (IndexError, ValueError):
+                start = 0.0
+            break
+
+    # Never past the end: a video whose speech begins in its last few seconds
+    # would otherwise be handed a window with nothing in it.
+    if duration > window:
+        start = min(start, duration - window)
+    return max(0.0, round(start, 2))
+
+
+def _trim(src: Path, dst: Path, start: float, length: float) -> Path:
+    """Cut a window out of the video, re-encoding so it stands on its own.
+
+    Deliberately not -c copy. A stream copy can only cut on a keyframe, so the
+    window would drift from the one that was chosen, and the file would open on
+    a partial frame — which the player in the interface shows as a grey smear
+    for the first second. Re-encoding thirty seconds costs a few seconds and
+    removes both problems.
+
+    -ss ahead of -i so ffmpeg seeks rather than decoding everything before the
+    window; on an hour of video that is the difference between instant and not.
+    """
+    if dst.exists():
+        return dst
+    tmp = dst.with_name(dst.name + ".part")
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}",
+                    "-i", str(src), "-t", f"{length:.2f}",
+                    "-map", "0:v:0", "-map", "0:a:0",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "192k", str(tmp)], check=True)
+    # Moved into place only once ffmpeg has succeeded, so a cancel or a crash
+    # part way through cannot leave a truncated file that the next run treats as
+    # a finished cut.
+    tmp.replace(dst)
+    return dst
+
+
 @dataclass
 class Job:
     id: str
@@ -215,6 +312,8 @@ class Job:
     cancelling: bool = False
     queue_position: int = 0              # 0 = running, or not waiting
     references: list[str] = field(default_factory=list)
+    preview: bool = False                # a 30s taster, not the finished thing
+    preview_from: float = 0.0            # where in the video the window starts
 
     def public(self) -> dict:
         d = asdict(self)
@@ -349,15 +448,17 @@ class JobRunner:
             except Exception:                                    # noqa: BLE001
                 pass
 
-    def submit(self, url: str, settings: Settings) -> Job:
-        job_id = _job_id(url)
+    def submit(self, url: str, settings: Settings, preview: bool = False) -> Job:
+        job_id = _job_id(url, preview)
         with self._lock:
             existing = self.jobs.get(job_id)
             # The same link submitted twice is one job, not two racing over the
-            # same folder.
+            # same folder. A preview and a full run carry different ids, so they
+            # are two jobs — but two previews, or two impatient clicks on "dub
+            # the whole video", are still one.
             if existing and existing.status in ("queued", "running"):
                 return existing
-            job = Job(id=job_id, url=url, preset=settings.preset)
+            job = Job(id=job_id, url=url, preset=settings.preset, preview=preview)
             self.jobs[job_id] = job
             self._cancel.discard(job_id)
             self._pending.append((job, settings))
@@ -475,7 +576,18 @@ class JobRunner:
             raise _Cancelled()
 
     # ------------------------------------------------------------ staging
-    def _plan(self, settings: Settings) -> dict[str, tuple[float, float, str]]:
+    # A preview shrinks every stage except the download, which still fetches the
+    # whole video. Weighted for a full run, the download's 8% left the bar
+    # parked near zero for most of the wait and then sprinting — the single
+    # worst thing a progress bar can do to someone deciding whether to give up.
+    # Not the raw ratio, though: loading Kokoro and Parakeet costs the same
+    # twenty seconds whether there are thirty seconds of audio or thirty
+    # minutes, so the stages after the download never shrink as far as the
+    # duration alone suggests. Capped where that fixed cost starts to dominate.
+    PREVIEW_DOWNLOAD_CAP = 12.0
+
+    def _plan(self, settings: Settings,
+              download_weight: float = 1.0) -> dict[str, tuple[float, float, str]]:
         """Map stage key -> (start_fraction, weight, label) for the stages in use."""
         active = []
         for key, label, cost in ALL_STAGES:
@@ -487,6 +599,8 @@ class JobRunner:
                 cost = int(cost * 2.2)           # cloning is markedly slower
             if key == "transcribe" and settings.asr_model == "whisper":
                 cost = int(cost * 2.0)
+            if key == "download":
+                cost = cost * download_weight
             active.append((key, label, cost))
 
         total = sum(c for _, _, c in active) or 1
@@ -522,11 +636,13 @@ class JobRunner:
     # ---------------------------------------------------------- execution
     def _run(self, job: Job, settings: Settings) -> None:
         machine = detect_machine()
-        workdir = JOBS / job.id
+        # Keyed on the link, not on the job: a preview and the full run of the
+        # same video are two jobs sharing one folder, which is what lets the
+        # full run skip a download the preview has already paid for.
+        workdir = JOBS / _link_id(job.url)
         workdir.mkdir(parents=True, exist_ok=True)
         job.status = "running"
         job.engine = "Apple GPU (MLX)" if machine.fast_path else "Portable (CPU)"
-        plan = self._plan(settings)
         self._emit(job)
 
         stats: dict = {"preset": settings.preset}
@@ -538,6 +654,34 @@ class JobRunner:
 
         try:
             # ---------------------------------------------------- download
+            # Probed before the plan is drawn rather than inside the download,
+            # because on a preview the plan has to know how much of the video
+            # the download covers before it can weight it. Costs nothing: this
+            # is the same call download() made for itself a moment later, now
+            # handed to it.
+            job.message = "Looking up the video…"
+            self._emit(job)
+            info = download.probe(job.url)
+            job.title = info["title"]
+            job.duration = float(info["duration"] or 0)
+            self._emit(job)
+
+            window = PREVIEW_SECONDS if job.preview else 0.0
+            if job.preview and 0 < job.duration <= PREVIEW_MIN_VIDEO:
+                # Sampling most of a short video means waiting through
+                # substantially the same work twice for no information.
+                job.preview, window = False, 0.0
+                notes.append(f"That video is only {_mins(job.duration)} long, so the "
+                             "whole thing was dubbed rather than a sample of it.")
+                self._emit(job)
+
+            # Unweighted when the site reports no duration — live streams and a
+            # few hosts do that, and a plausible-looking bar beats a division by
+            # zero.
+            weight = (min(self.PREVIEW_DOWNLOAD_CAP, job.duration / window)
+                      if window and job.duration else 1.0)
+            plan = self._plan(settings, weight)
+
             # The downloaded video is keyed on the quality that fetched it too:
             # yt-dlp skips a file that is already there, so keying only the audio
             # derived from it would have re-derived everything downstream from
@@ -545,14 +689,34 @@ class JobRunner:
             # one.
             source_dir = _derived_dir(workdir, "source", settings.keep_video_quality)
             report = self._stage(job, plan, "download", notes)
-            video, info = download.download(job.url, source_dir,
-                                            settings.keep_video_quality, report)
-            job.title = info["title"]
-            job.duration = info["duration"] or download.media_duration(video)
+            video, _ = download.download(job.url, source_dir,
+                                         settings.keep_video_quality, report, info)
+            if not job.duration:
+                job.duration = download.media_duration(video)
             self._emit(job)
 
+            # ----------------------------------------------------- preview
+            # The window is cut here, after the whole video has been fetched,
+            # rather than asked of yt-dlp with --download-sections. The download
+            # is 8 of the 100 units of work in ALL_STAGES and everything that
+            # scales with duration comes after it, so fetching only a section
+            # would save that 8% once and then charge the entire download again
+            # the moment the user says yes. Cutting locally leaves source.mp4 in
+            # the shared folder and the full run skips its download outright.
+            media_dir = source_dir
+            if window:
+                report(0.97, "Finding where the speech starts")
+                job.preview_from = _speech_start(video, job.duration, window)
+                media_dir = _derived_dir(workdir, "preview", settings.keep_video_quality,
+                                         job.preview_from, window)
+                report(0.99, f"Taking {int(window)} seconds from {_clock(job.preview_from)}")
+                video = _trim(video, media_dir / "source.mp4", job.preview_from, window)
+                self._emit(job)
+
             # Full-band stereo copy is what Demucs wants; ASR wants 16k mono.
-            full_wav = source_dir / "full.wav"
+            # Derived from the trimmed video on a preview, so the whole-video
+            # conversion — a real cost on an hour of source — never happens.
+            full_wav = media_dir / "full.wav"
             if not full_wav.exists():
                 _resample_to(video, full_wav, 44100, mono=False)
 
@@ -565,7 +729,7 @@ class JobRunner:
                 report = self._stage(job, plan, "separate", notes)
                 # Stems live beside the audio they were cut from: they are cached
                 # by existence too, and would otherwise outlive a quality change.
-                stems = separate_backend.separate(full_wav, source_dir,
+                stems = separate_backend.separate(full_wav, media_dir,
                                                   prefer_gpu=machine.fast_path,
                                                   progress=report)
                 if stems:
@@ -582,8 +746,15 @@ class JobRunner:
             # itself is deliberately *not* in the key — "not asked for" and
             # "asked for and failed" both leave the full downmix, so keying on
             # both would file one set of bytes under two names.
-            audio_dir = _derived_dir(workdir, "speech", settings.keep_video_quality,
-                                     separated)
+            # A preview's audio gets its own namespace rather than an extra
+            # component on the full run's key, so that adding this feature does
+            # not invalidate the transcript and translation of every job already
+            # in the folder — those are keyed on audio_dir.name, and they are
+            # the expensive ones.
+            audio_dir = _derived_dir(
+                workdir, *(("speech-preview", settings.keep_video_quality, separated,
+                            job.preview_from, window) if window else
+                           ("speech", settings.keep_video_quality, separated)))
             speech16 = audio_dir / "speech16k.wav"
             if not speech16.exists():
                 _resample_to(speech_wav, speech16, 16000, mono=True)
@@ -794,12 +965,21 @@ class JobRunner:
             report = self._stage(job, plan, "finish", notes)
             srt = align.write_srt(segments, workdir / "subtitles.srt") if settings.write_srt else None
 
-            stem = f"{_safe_name(job.title)}-{settings.target_language[:2].upper()}"
-            out_path = OUTPUT_DIR / f"{stem}.mp4"
-            counter = 2
-            while out_path.exists():
-                out_path = OUTPUT_DIR / f"{stem}-{counter}.mp4"
-                counter += 1
+            if job.preview:
+                # Deliberately not in the finished-videos folder. A sample is
+                # not a deliverable, and thirty-second stubs sitting beside real
+                # output — under names that differ only by a suffix — is exactly
+                # the mess someone who does not read filenames closely cannot
+                # get themselves out of. It plays in the app and nowhere else.
+                out_path = media_dir / "preview.mp4"
+                out_path.unlink(missing_ok=True)
+            else:
+                stem = f"{_safe_name(job.title)}-{settings.target_language[:2].upper()}"
+                out_path = OUTPUT_DIR / f"{stem}.mp4"
+                counter = 2
+                while out_path.exists():
+                    out_path = OUTPUT_DIR / f"{stem}-{counter}.mp4"
+                    counter += 1
 
             report(0.4, "Combining audio and video")
             mux.mux(video, encoded, out_path, settings.audio_mode, settings.duck_db, srt)
@@ -823,11 +1003,29 @@ class JobRunner:
                              "spoken and were left silent.")
             if stats.get("audio_warning"):
                 notes.append(stats["audio_warning"])
+            if job.preview:
+                stats["preview"] = True
+                stats["preview_from"] = _clock(job.preview_from)
+                # Said plainly, because a good sample invites exactly the wrong
+                # conclusion. Timing is the thing that fails across a whole
+                # video and the thing thirty seconds cannot speak to.
+                notes.append(
+                    f"This is a {int(window)}-second sample taken from "
+                    f"{_clock(job.preview_from)}. It shows the voice, the wording and "
+                    "the sound levels. It can't promise the timing holds for the whole "
+                    "video, and a longer video may have more speakers in it.")
             stats["notes"] = notes
-            try:
-                freed = prune_workdir(workdir)     # stems included; they are .wav
-            except Exception:                                    # noqa: BLE001
-                freed = 0        # the video is written; never fail a job over tidying
+
+            freed = 0
+            if not job.preview:
+                try:
+                    freed = prune_workdir(workdir)  # stems included; they are .wav
+                except Exception:                                # noqa: BLE001
+                    freed = 0    # the video is written; never fail a job over tidying
+            # A preview never prunes: the bulk it would reclaim is the shared
+            # download, which is the one thing the full run behind it is
+            # counting on finding. The sample's own leftovers are thirty seconds
+            # of audio, and the full run clears them along with everything else.
 
             if freed:
                 stats["working_files_freed"] = round(freed / (1024 ** 2))
@@ -837,8 +1035,12 @@ class JobRunner:
             job.status = "done"
             job.finished = time.time()
             job.overall = 1.0
-            job.message = f"Saved to {out_path.parent.name}/{out_path.name}"
-            _record_history(job)
+            job.message = ("Sample ready — have a listen" if job.preview
+                           else f"Saved to {out_path.parent.name}/{out_path.name}")
+            if not job.preview:
+                # Kept out of the history list for the same reason it is kept out
+                # of the videos folder: it is not a thing the user asked to have.
+                _record_history(job)
             self._emit(job)
 
         except _Cancelled:
@@ -927,6 +1129,12 @@ def _mins(seconds: float) -> str:
     if seconds < 90:
         return f"{seconds}s"
     return f"{seconds // 60} min"
+
+
+def _clock(seconds: float) -> str:
+    """A position in the video, written the way a player writes it."""
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 runner = JobRunner()

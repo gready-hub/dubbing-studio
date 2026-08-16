@@ -331,17 +331,23 @@ def test_balanced_end_to_end():
                         "-shortest", "-c:v", "libx264", "-preset", "ultrafast",
                         "-c:a", "aac", str(clip)], check=True)
 
-    def fake_download(url, workdir, quality="best", progress=None):
+    from app.steps import download as dl
+    # Probe as well as download: the pipeline asks for the duration before it
+    # draws the progress plan, so stubbing only the download leaves the real
+    # yt-dlp being asked about a made-up URL.
+    meta = {"title": "Two Speaker Test", "duration": dl.media_duration(clip),
+            "uploader": "t", "thumbnail": ""}
+
+    def fake_download(url, workdir, quality="best", progress=None, info=None):
         import shutil
         workdir.mkdir(parents=True, exist_ok=True)
         dest = workdir / "source.mp4"
         shutil.copy(clip, dest)
         if progress:
             progress(1.0, "Downloaded")
-        from app.steps import download as dl
-        return dest, {"title": "Two Speaker Test", "duration": dl.media_duration(dest),
-                      "uploader": "t", "thumbnail": ""}
+        return dest, dict(meta)
 
+    pipeline.download.probe = lambda url: dict(meta)
     pipeline.download.download = fake_download
 
     LINES = ["Welcome along to the programme this evening.",

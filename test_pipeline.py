@@ -56,6 +56,34 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 
+def stub_download(clip: Path, title: str, duration: float, replace: bool = False):
+    """Stand in for the download step, probe included.
+
+    The pipeline probes the link before it draws the progress plan, because a
+    sample has to know how much of the whole video the download covers before it
+    can weight it. A stub that replaces only download() therefore leaves the real
+    yt-dlp being asked about a made-up URL, and every job dies on its first line.
+
+    Returns (probe, download) for the caller to install; everything after the
+    download is the real thing.
+    """
+    meta = {"title": title, "duration": duration, "uploader": "t", "thumbnail": ""}
+
+    def fake_probe(url):
+        return dict(meta)
+
+    def fake_download(url, workdir, quality="best", progress=None, info=None):
+        workdir.mkdir(parents=True, exist_ok=True)
+        dest = workdir / "source.mp4"
+        if replace or not dest.exists():
+            shutil.copy(clip, dest)
+        if progress:
+            progress(1.0, "Downloaded")
+        return dest, dict(meta)
+
+    return fake_probe, fake_download
+
+
 def speech_wav(dst: Path, seconds: float = 75.0) -> Path:
     """Audio with real speech in it, for the transcription end of the pipeline.
 
@@ -269,18 +297,8 @@ def test_end_to_end():
                         str(clip)], check=True)
     check("test clip exists", clip.exists())
 
-    # Stand in for the download step — everything after it is the real thing.
-    def fake_download(url, workdir, quality="best", progress=None):
-        import shutil
-        workdir.mkdir(parents=True, exist_ok=True)
-        dest = workdir / "source.mp4"
-        shutil.copy(clip, dest)
-        if progress:
-            progress(1.0, "Downloaded")
-        return dest, {"title": "Pipeline Test Clip", "duration": 75.0,
-                      "uploader": "test", "thumbnail": ""}
-
-    pipeline.download.download = fake_download
+    pipeline.download.probe, pipeline.download.download = stub_download(
+        clip, "Pipeline Test Clip", 75.0, replace=True)
 
     # Stand in for the LLM, returning plausible English of a sensible length.
     PHRASES = ["Right, let's carry on with the next round.",
@@ -462,16 +480,7 @@ def test_preset_change_reseparates():
                         "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
                         str(clip)], check=True)
 
-    def fake_download(url, workdir, quality="best", progress=None):
-        import shutil
-        workdir.mkdir(parents=True, exist_ok=True)
-        dest = workdir / "source.mp4"
-        if not dest.exists():
-            shutil.copy(clip, dest)
-        if progress:
-            progress(1.0, "Downloaded")
-        return dest, {"title": "Preset Change", "duration": 8.0,
-                      "uploader": "t", "thumbnail": ""}
+    fake_probe, fake_download = stub_download(clip, "Preset Change", 8.0)
 
     def fake_separate(audio, workdir, prefer_gpu=True, progress=None):
         stems = Path(workdir) / "stems" / "stub"
@@ -497,10 +506,12 @@ def test_preset_change_reseparates():
                if l and l[0].isdigit() and "|" in l]
         return "\n".join(f"{i}|A tone, and then some more words to say." for i in ids)
 
+    real_probe = pipeline.download.probe
     real_download = pipeline.download.download
     real_separate = pipeline.separate_backend.separate
     real_transcribe = pipeline.asr_backend.transcribe
     real_prune = pipeline.prune_workdir
+    pipeline.download.probe = fake_probe
     pipeline.download.download = fake_download
     pipeline.separate_backend.separate = fake_separate
     pipeline.asr_backend.transcribe = fake_transcribe
@@ -548,6 +559,7 @@ def test_preset_change_reseparates():
               any(abs(hz - STEM_HZ) < 15 for hz in rates),
               str(sorted(round(h) for h in rates)))
     finally:
+        pipeline.download.probe = real_probe
         pipeline.download.download = real_download
         pipeline.separate_backend.separate = real_separate
         pipeline.asr_backend.transcribe = real_transcribe
@@ -616,16 +628,7 @@ def test_mixed_sample_rates():
                 raise RuntimeError("the cloning model fell over")
             return _tone(300, 1.2, 32000), 32000
 
-    def fake_download(url, workdir, quality="best", progress=None):
-        import shutil
-        workdir.mkdir(parents=True, exist_ok=True)
-        dest = workdir / "source.mp4"
-        if not dest.exists():
-            shutil.copy(clip, dest)
-        if progress:
-            progress(1.0, "Downloaded")
-        return dest, {"title": "Rate Switch", "duration": 10.0,
-                      "uploader": "t", "thumbnail": ""}
+    fake_probe, fake_download = stub_download(clip, "Rate Switch", 10.0)
 
     def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
         if progress:
@@ -638,10 +641,12 @@ def test_mixed_sample_rates():
                if l and l[0].isdigit() and "|" in l]
         return "\n".join(f"{i}|This is line number {i} speaking." for i in ids)
 
+    real_probe = pipeline.download.probe
     real_download = pipeline.download.download
     real_transcribe = pipeline.asr_backend.transcribe
     real_make = pipeline.JobRunner._make_engine
     real_prune = pipeline.prune_workdir
+    pipeline.download.probe = fake_probe
     pipeline.download.download = fake_download
     pipeline.asr_backend.transcribe = fake_transcribe
     pipeline.JobRunner._make_engine = lambda *a, **k: (RateSwitchingEngine(), False)
@@ -685,6 +690,7 @@ def test_mixed_sample_rates():
         check("the gap between the lines stayed quiet",
               loud_between(3.6, 4.8) < 0.01, f"rms {loud_between(3.6, 4.8):.4f}")
     finally:
+        pipeline.download.probe = real_probe
         pipeline.download.download = real_download
         pipeline.asr_backend.transcribe = real_transcribe
         pipeline.JobRunner._make_engine = real_make

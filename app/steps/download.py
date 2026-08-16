@@ -67,9 +67,14 @@ def _friendly(stderr: str) -> str:
 
 
 def download(url: str, workdir: Path, quality: str = "best",
-             progress: Progress = None) -> tuple[Path, dict]:
+             progress: Progress = None, info: dict | None = None) -> tuple[Path, dict]:
+    """info: a probe() result the caller already has, to save asking twice.
+
+    The preview needs the duration before it can weight the progress bar, which
+    means probing before this stage rather than inside it.
+    """
     workdir.mkdir(parents=True, exist_ok=True)
-    info = probe(url)
+    info = info or probe(url)
     if progress:
         progress(0.02, f"Found “{info['title']}”")
 

@@ -29,6 +29,7 @@ app = FastAPI(title="Dubbing Studio")
 
 class JobRequest(BaseModel):
     url: str
+    preview: bool = False
 
 
 class SettingsPatch(BaseModel):
@@ -205,7 +206,7 @@ def create_job(req: JobRequest) -> dict:
         raise HTTPException(400, "ffmpeg isn't installed — re-run the installer.")
     if not machine.has_ytdlp:
         raise HTTPException(400, "yt-dlp isn't installed — re-run the installer.")
-    return runner.submit(url, Settings.load()).public()
+    return runner.submit(url, Settings.load(), preview=req.preview).public()
 
 
 @app.post("/api/job/{job_id}/cancel")
@@ -330,6 +331,12 @@ def job_video(job_id: str):
     job = runner.jobs.get(job_id)
     if not job or not job.output:
         raise HTTPException(404, "Not ready.")
+    # A sample lives in the working folder, so clearing that folder — or the
+    # full run of the same link tidying up after itself — can take it away while
+    # the panel offering it is still on screen. Checked rather than assumed, so
+    # the player gets a clean 404 to react to instead of a stalled request.
+    if not Path(job.output).is_file():
+        raise HTTPException(404, "That file has been cleared away.")
     return FileResponse(job.output, media_type="video/mp4")
 
 
