@@ -23,7 +23,18 @@ set -uo pipefail
 
 REPO="gready-hub/dubbing-studio"
 BRANCH="${DUBBING_STUDIO_BRANCH:-main}"
-DEST="${DUBBING_STUDIO_DIR:-$HOME/Dubbing Studio}"
+# Where to install. Piped from curl there is no script on disk, so this is the
+# default location; run from inside an install — which is what the app's own
+# "Update now" does — it is that install, wherever the user happens to keep it.
+DEST="${DUBBING_STUDIO_DIR:-}"
+if [[ -z "$DEST" ]]; then
+  HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || HERE=""
+  if [[ -n "$HERE" && -f "$HERE/app/pipeline.py" && -f "$HERE/Install.command" ]]; then
+    DEST="$HERE"
+  else
+    DEST="$HOME/Dubbing Studio"
+  fi
+fi
 TARBALL="https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz"
 
 BOLD=$'\033[1m'; GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
@@ -65,12 +76,24 @@ if [[ -d "$DEST/.venv" ]]; then
   mv "$DEST/.venv" "$TMP/venv-keep" 2>/dev/null && ok "Keeping the existing Python setup"
 fi
 
+MOVED=""
 if [[ -e "$DEST" ]]; then
   rm -rf "$TMP/old" && mv "$DEST" "$TMP/old" || {
     bad "Couldn't replace the existing folder at: $DEST"; exit 1; }
+  MOVED="yes"
 fi
 mkdir -p "$(dirname "$DEST")"
-mv "$SRC" "$DEST" || { bad "Couldn't put the app in: $DEST"; exit 1; }
+if ! mv "$SRC" "$DEST"; then
+  # The old install is sitting in a temporary folder that the exit trap is about
+  # to delete. Putting it back is the difference between a failed update and no
+  # app at all.
+  bad "Couldn't put the app in: $DEST"
+  if [[ -n "$MOVED" ]] && mv "$TMP/old" "$DEST" 2>/dev/null; then
+    [[ -d "$TMP/venv-keep" ]] && mv "$TMP/venv-keep" "$DEST/.venv"
+    say "  Your existing version has been left exactly as it was."
+  fi
+  exit 1
+fi
 [[ -d "$TMP/venv-keep" ]] && mv "$TMP/venv-keep" "$DEST/.venv"
 
 # What was installed, so the app can notice when it is behind. Best effort — a
@@ -83,7 +106,8 @@ curl -fsSL "https://api.github.com/repos/$REPO/commits/$BRANCH" 2>/dev/null \
 # from an earlier zip download might, and one quarantined file in the tree is
 # enough to produce the dialog this route exists to avoid.
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
-chmod +x "$DEST/Install.command" 2>/dev/null || true
+chmod +x "$DEST/Install.command" "$DEST/Update.command" \
+         "$DEST/Uninstall.command" "$DEST/install.sh" 2>/dev/null || true
 ok "Installed to $DEST"
 
 # Used by the test suite, and genuinely useful on its own: update the code
@@ -93,6 +117,12 @@ if [[ -n "${DUBBING_STUDIO_FETCH_ONLY:-}" ]]; then
   ok "Code updated. Skipping setup, as asked."
   exit 0
 fi
+
+# Removed here rather than left to the exit trap, which never fires: exec
+# replaces this process. On an update the folder holds the whole previous
+# version, so without this every update leaves a copy of it in the home folder.
+rm -rf "$TMP"
+trap - EXIT
 
 say ""
 exec "$DEST/Install.command"

@@ -195,10 +195,13 @@
   <p class="sub">Paste a video link. Get it back speaking English.</p>
 
   <div id="setupBanner" class="banner bad hidden"></div>
-  <div id="updateBanner" class="banner info hidden">
-    <span id="updateText"></span>
-    <button class="ghost" style="padding:6px 12px;font-size:13px;margin-left:10px"
+  <div id="updateBanner" class="banner info hidden"
+       style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <span id="updateText" style="flex:1;min-width:180px"></span>
+    <button class="ghost" style="padding:6px 12px;font-size:13px"
             onclick="runUpdate()">Update now</button>
+    <button class="ghost" style="padding:6px 12px;font-size:13px"
+            onclick="$('updateBanner').classList.add('hidden')">Not now</button>
   </div>
 
   <!-- ---------------------------------------------------------- new job -->
@@ -1035,10 +1038,23 @@ async function checkVersion(){
   try{
     const v = await api("/api/version");
     if(!v.known || !v.update) return;
-    $("updateText").textContent =
-      `A newer version is available (${v.current} → ${v.latest}).`;
+    // No revision hashes. They were the first thing anyone saw on opening the
+    // app and they mean nothing outside a terminal; a date is readable, and the
+    // hashes stay on the tooltip for whoever wants them.
+    $("updateText").textContent = v.date
+      ? `An update is available, from ${niceDate(v.date)}.`
+      : "An update is available.";
+    $("updateBanner").title = `${v.current} → ${v.latest}`;
     $("updateBanner").classList.remove("hidden");
   }catch(err){ /* never worth bothering anyone about */ }
+}
+
+// "2026-08-16" -> "16 August". Nothing turns on it being exact, so a value that
+// will not parse is simply left out rather than shown as Invalid Date.
+function niceDate(iso){
+  const d = new Date(iso + "T00:00:00");
+  return isNaN(d) ? iso
+    : d.toLocaleDateString(undefined, {day:"numeric", month:"long"});
 }
 
 async function runUpdate(){

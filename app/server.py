@@ -431,23 +431,35 @@ def version() -> dict:
     try:
         req = urllib.request.Request(
             f"https://api.github.com/repos/{REPO}/commits/main",
-            headers={"Accept": "application/vnd.github.sha", "User-Agent": "dubbing-studio"})
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": "dubbing-studio"})
         with urllib.request.urlopen(req, timeout=4) as r:
-            latest = r.read().decode().strip()
+            head = json.loads(r.read())
+        latest = (head.get("sha") or "").strip()
+        # A date is something anyone can read. The revisions are carried too, but
+        # only for whoever goes looking for them.
+        when = (head.get("commit", {}).get("committer", {}).get("date") or "")[:10]
     except Exception:                                            # noqa: BLE001
         return {"known": False}
     return {"known": True, "current": current[:7], "latest": latest[:7],
-            "update": len(latest) == 40 and latest != current}
+            "date": when, "update": len(latest) == 40 and latest != current}
 
 
 @app.post("/api/update")
 def run_update(request: Request) -> dict:
-    """Hand the installer to Terminal. Same script as a first install."""
+    """Hand the updater to Terminal.
+
+    Update.command, not Install.command. The latter sets up dependencies and
+    never fetches code, so pressing this ran a full reinstall, changed nothing,
+    left the recorded version untouched, and the banner correctly went on saying
+    an update was available.
+    """
     _local_only(request)
     from . import storage as store
-    script = store.APP_DIR / "Install.command"
+    script = store.APP_DIR / "Update.command"
     if not script.is_file():
-        raise HTTPException(404, "The installer isn't in the app folder.")
+        raise HTTPException(404, "The updater isn't in the app folder. Re-install "
+                                 "from the README to get it.")
     script.chmod(0o755)
     subprocess.run(["open", "-a", "Terminal", str(script)], check=False)
     return {"ok": True}
