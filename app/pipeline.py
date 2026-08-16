@@ -167,6 +167,7 @@ class Job:
     preset: str = ""
     speakers: int = 0
     cancelling: bool = False
+    queue_position: int = 0              # 0 = running, or not waiting
     references: list[str] = field(default_factory=list)
 
     def public(self) -> dict:
@@ -270,6 +271,13 @@ class JobRunner:
         self._lock = threading.Lock()
         self._listeners: list[Callable[[dict], None]] = []
         self._cancel: set[str] = set()
+        # One job at a time, and the rest wait their turn. Every heavy stage
+        # already saturates the GPU and several gigabytes of model, so two jobs
+        # at once do not finish in half the time — they contend and swap. This
+        # used to start a thread per link, so pasting a second link silently ran
+        # both at once and made each of them slower.
+        self._pending: list[tuple[Job, Settings]] = []
+        self._worker: threading.Thread | None = None
 
     def subscribe(self, fn: Callable[[dict], None]) -> None:
         self._listeners.append(fn)
@@ -296,9 +304,52 @@ class JobRunner:
                 return existing
             job = Job(id=job_id, url=url, preset=settings.preset)
             self.jobs[job_id] = job
-        self._cancel.discard(job_id)
-        threading.Thread(target=self._run, args=(job, settings), daemon=True).start()
+            self._cancel.discard(job_id)
+            self._pending.append((job, settings))
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(target=self._work, daemon=True)
+                self._worker.start()
+        self._renumber()
         return job
+
+    def _work(self) -> None:
+        """Drain the queue, one job at a time, then retire."""
+        while True:
+            with self._lock:
+                if not self._pending:
+                    self._worker = None
+                    return
+                job, settings = self._pending.pop(0)
+            job.queue_position = 0
+            if job.id in self._cancel:
+                self._stopped(job)               # cancelled before it ever began
+            else:
+                try:
+                    self._run(job, settings)
+                except Exception as exc:                         # noqa: BLE001
+                    # _run handles its own failures; this is so one bad job can
+                    # never take the worker down and strand everything behind it.
+                    self._fail(job, str(exc), traceback.format_exc())
+            self._renumber()
+
+    def _renumber(self) -> None:
+        """Tell each waiting job where it now is in the queue."""
+        with self._lock:
+            waiting = [job for job, _ in self._pending]
+        for position, job in enumerate(waiting, 1):
+            job.queue_position = position
+            job.message = ("Next — waiting for the current video to finish"
+                           if position == 1 else
+                           f"Waiting — {position - 1} ahead of it")
+            self._emit(job)
+
+    def _stopped(self, job: Job) -> None:
+        job.status = "cancelled"
+        job.cancelling = False
+        job.queue_position = 0
+        job.message = "Cancelled"
+        job.finished = time.time()
+        self._emit(job)
 
     def public_jobs(self) -> list[dict]:
         """Live jobs plus previously finished ones, newest first.
@@ -324,7 +375,17 @@ class JobRunner:
         name the stage being waited on.
         """
         self._cancel.add(job_id)
+        with self._lock:
+            keep = [(j, s) for j, s in self._pending if j.id != job_id]
+            was_waiting = len(keep) != len(self._pending)
+            self._pending = keep
         job = self.jobs.get(job_id)
+        if job is not None and was_waiting:
+            # Never started, so there is nothing to wind down and no reason to
+            # make the user wait for a stage that isn't running.
+            self._stopped(job)
+            self._renumber()
+            return
         if job and job.status in ("queued", "running") and not job.cancelling:
             job.cancelling = True
             stage = job.stage_label or "the current step"

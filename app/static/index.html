@@ -357,6 +357,14 @@
     </div>
   </div>
 
+  <!-- ----------------------------------------------------------- queue -->
+  <div class="panel hidden" id="queuePanel">
+    <b>Waiting to start</b>
+    <p class="hint">One video is dubbed at a time — two at once only makes both
+      slower.</p>
+    <div id="queue" style="margin-top:6px"></div>
+  </div>
+
   <!-- --------------------------------------------------------- storage -->
   <div class="panel" id="storagePanel">
     <div class="past">
@@ -424,6 +432,7 @@ async function boot(){
   const live = STATE.jobs.find(j => j.status==="running" || j.status==="queued");
   if(live){ CURRENT = live.id; render(live); }
   renderHistory();
+  renderQueue();
   doctor();
   storage();
   listen();
@@ -506,9 +515,15 @@ async function start(){
   try{
     const job = await api("/api/job",{method:"POST",headers:{"Content-Type":"application/json"},
                                       body:JSON.stringify({url})});
-    CURRENT = job.id; JOBS[job.id] = job;
-    $("done").classList.add("hidden");
-    render(job);
+    JOBS[job.id] = job;
+    // Don't steal the view from a job that is actually running — the new one
+    // is queued behind it and shows up in the waiting list instead.
+    if(!Object.values(JOBS).some(j=>j.status==="running")){
+      CURRENT = job.id;
+      $("done").classList.add("hidden");
+      render(job);
+    }
+    renderQueue();
   }catch(err){
     showError(err.message);
   }finally{
@@ -535,6 +550,7 @@ function listen(){
     if(!CURRENT || job.id === CURRENT || job.status === "running") CURRENT = job.id;
     if(job.id === CURRENT) render(job);
     renderHistory();
+    renderQueue();
     if(job.status === "done" || job.status === "cancelled") storage();
   };
   es.onerror = () => setTimeout(()=>{ es.close(); listen(); }, 4000);
@@ -601,6 +617,23 @@ function render(job){
 
   if(job.status==="error") showError(job.error);
 }
+
+function renderQueue(){
+  const waiting = Object.values(JOBS)
+    .filter(j=>j.status==="queued")
+    .sort((a,b)=>(a.queue_position||0)-(b.queue_position||0));
+  $("queuePanel").classList.toggle("hidden", waiting.length===0);
+  $("queue").innerHTML = waiting.map(j=>`
+    <div class="past">
+      <div style="min-width:0"><b>${escapeHtml(j.title || j.url)}</b>
+        <small>${escapeHtml(j.message)}</small></div>
+      <button class="ghost" onclick="stopJob('${escapeAttr(j.id)}')">Stop</button>
+    </div>`).join("");
+}
+
+// Stopping something that has not started yet takes effect at once; stopping
+// the running one has to wait for its current step.
+const stopJob = id => api(`/api/job/${encodeURIComponent(id)}/cancel`,{method:"POST"});
 
 function renderHistory(){
   const past = Object.values(JOBS)
