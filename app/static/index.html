@@ -33,7 +33,11 @@
     background:var(--bg);border:1px solid var(--line);border-radius:10px;outline:none}
   input:focus,select:focus,textarea:focus{border-color:var(--accent)}
   textarea{min-height:90px;resize:vertical;font-size:13px;line-height:1.5}
-  .row{display:flex;gap:10px;align-items:stretch}
+  /* Wraps rather than squashing: the link box shares this row with two buttons,
+     and in a narrow window an un-wrapped row shrank the input until the URL in
+     it was unreadable. */
+  .row{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap}
+  .row input{min-width:min(100%,260px)}
   .row input{flex:1}
   button{font:inherit;font-weight:600;font-size:15px;cursor:pointer;border-radius:10px;
          border:1px solid transparent;padding:12px 20px;transition:opacity .15s,transform .05s}
@@ -131,10 +135,12 @@
     <div class="row">
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=…"
              autocomplete="off" spellcheck="false">
+      <button class="ghost" id="tryBtn" onclick="start(true)">Try 30 seconds</button>
       <button class="primary" id="go" onclick="start()">Dub it</button>
     </div>
-    <p class="hint" id="quickInfo">Works with YouTube and most other video sites.
-      Only download videos you own or have permission to use.</p>
+    <p class="hint" id="quickInfo"><b>Try 30 seconds</b> dubs a short sample first, so you
+      can hear the voice before waiting for a long video. Works with YouTube and most other
+      video sites. Only download videos you own or have permission to use.</p>
 
     <div class="preset-wrap">
       <div class="segmented" id="presets"></div>
@@ -165,10 +171,9 @@
     <p class="msg" id="dPath"></p>
     <div id="dNotes"></div>
     <video id="dVideo" controls preload="none"></video>
-    <div style="display:flex;gap:8px;margin:16px 0 4px;flex-wrap:wrap">
-      <button class="primary" onclick="reveal()">Show in Finder</button>
-      <button class="ghost" onclick="reset()">Dub another</button>
-    </div>
+    <p class="hint hidden" id="dGone">That sample has been cleared away — samples live in
+      the working files, which get tidied up. Run it again to make a new one.</p>
+    <div style="display:flex;gap:8px;margin:16px 0 4px;flex-wrap:wrap" id="dActions"></div>
     <details style="margin-top:14px">
       <summary>Quality report</summary>
       <div id="dStats" style="margin-top:10px"></div>
@@ -405,10 +410,18 @@
 </div>
 
 <script>
-const STAGES = [
-  ["download","Download"],["transcribe","Listen"],["translate","Translate"],
-  ["synthesize","Speak"],["assemble","Fit"],["finish","Save"]
-];
+// Short names for the chip row. Which of them a job shows comes from the job
+// itself, since that depends on the preset — this list used to be fixed and had
+// no entry for separation or speaker detection, so nothing was highlighted for
+// the whole of Demucs and the row looked dead at the very moment the user is
+// wondering whether anything is happening.
+const STAGE_LABELS = {
+  download:"Download", separate:"Separate", diarize:"Speakers",
+  transcribe:"Listen", translate:"Translate", synthesize:"Speak",
+  assemble:"Fit", finish:"Save"
+};
+// Until the job reports its own plan, which it does as soon as it starts.
+const DEFAULT_STAGES = ["download","transcribe","translate","synthesize","assemble","finish"];
 let STATE = null, CURRENT = null, JOBS = {};
 
 const $ = id => document.getElementById(id);
@@ -519,14 +532,17 @@ async function saveSettings(){
 }
 
 /* ------------------------------------------------------------------ jobs */
-async function start(){
+async function start(preview){
   const url = $("url").value.trim();
   if(!url) return;
-  $("go").disabled = true;
+  // Both buttons, not just the one pressed: while a submission is in flight the
+  // other one is equally a way to start a second job by accident.
+  const buttons = [$("go"), $("tryBtn")];
+  buttons.forEach(b=>{ b.disabled = true; });
   $("setupBanner").classList.add("hidden");
   try{
     const job = await api("/api/job",{method:"POST",headers:{"Content-Type":"application/json"},
-                                      body:JSON.stringify({url})});
+                                      body:JSON.stringify({url, preview:!!preview})});
     JOBS[job.id] = job;
     // Don't steal the view from a job that is actually running — the new one
     // is queued behind it and shows up in the waiting list instead.
@@ -539,8 +555,18 @@ async function start(){
   }catch(err){
     showError(err.message);
   }finally{
-    $("go").disabled = false;
+    buttons.forEach(b=>{ b.disabled = false; });
   }
+}
+
+/* The whole point of the sample: having heard it, commit without re-pasting
+   anything. Two clicks are one job — the id a full run gets is the same either
+   time, and submit() hands back the job already queued under it. */
+function dubWhole(){
+  const job = JOBS[CURRENT];
+  if(!job) return;
+  $("url").value = job.url;
+  start(false);
 }
 
 const cancelJob = () => CURRENT && stopJob(CURRENT);
@@ -578,14 +604,17 @@ function render(job){
   $("done").classList.toggle("hidden", job.status!=="done");
 
   if(running){
-    $("aTitle").textContent = job.title || "Working…";
+    $("aTitle").textContent = (job.preview ? "Sample — " : "")
+                            + (job.title || "Working…");
     $("aMsg").textContent = job.message;
     $("aBar").style.width = (job.overall*100).toFixed(1)+"%";
     $("aPct").textContent = Math.round(job.overall*100)+"%";
     $("aElapsed").textContent = job.elapsed ? fmt(job.elapsed)+" elapsed" : "";
-    const at = STAGES.findIndex(s=>s[0]===job.stage);
-    $("aStages").innerHTML = STAGES.map((s,i)=>
-      `<span class="chip ${i===at?"on":(i<at?"done":"")}">${s[1]}</span>`).join("");
+    const stages = (job.stages && job.stages.length) ? job.stages : DEFAULT_STAGES;
+    const at = stages.indexOf(job.stage);
+    $("aStages").innerHTML = stages.map((key,i)=>
+      `<span class="chip ${i===at?"on":(i<at?"done":"")}">${
+        escapeHtml(STAGE_LABELS[key] || key)}</span>`).join("");
     // A cancel can only take effect between steps, so say it has been heard
     // rather than leaving the button looking unpressed for several minutes.
     $("cancelBtn").disabled = !!job.cancelling;
@@ -594,12 +623,35 @@ function render(job){
   }
 
   if(job.status==="done"){
-    $("dTitle").textContent = job.title;
+    const sample = !!job.preview;
+    $("dTitle").textContent = (sample ? "Sample — " : "") + job.title;
     $("dPath").textContent = job.message;
     const vid = $("dVideo");
     if(vid.dataset.job !== job.id){
       vid.dataset.job = job.id;
+      // A sample lives in the working files, which Clear working files — and
+      // the full run of the same link tidying up after itself — can take away
+      // while this panel is still on screen. Say so instead of leaving a broken
+      // player the user has no way to interpret.
+      vid.onerror = () => {
+        vid.classList.add("hidden");
+        $("dGone").classList.remove("hidden");
+      };
+      vid.classList.remove("hidden");
+      $("dGone").classList.add("hidden");
       vid.src = `/api/job/${job.id}/video`;
+    }
+    // Rebuilt only when the job changes: render() runs on every message from
+    // the event stream, and replacing the buttons under a cursor that is on its
+    // way down to one of them loses the click.
+    const actions = $("dActions");
+    if(actions.dataset.job !== job.id){
+      actions.dataset.job = job.id;
+      actions.innerHTML = sample
+        ? `<button class="primary" onclick="dubWhole()">Dub the whole video</button>
+           <button class="ghost" onclick="reset()">Start again</button>`
+        : `<button class="primary" onclick="reveal()">Show in Finder</button>
+           <button class="ghost" onclick="reset()">Dub another</button>`;
     }
     const s = job.stats || {};
     const yn = v => v === true ? "yes" : v === false ? "no" : "—";
@@ -611,6 +663,9 @@ function render(job){
         + (s.notes || []).map(n=>`<div>${escapeHtml(n)}</div>`).join("") + `</div>`
       : "";
     $("dStats").innerHTML = [
+      // Only for a sample, and first, because every number under it describes
+      // thirty seconds rather than the video.
+      ...(sample ? [["Sample taken from", s.preview_from ?? "0:00"]] : []),
       ["Quality preset", s.preset ?? "—"],
       ["Speakers found", s.speakers ?? "—"],
       ["Voices used", s.voices ?? "—"],
@@ -624,9 +679,13 @@ function render(job){
       ["Dubbed audio level", s.peak_db == null ? "—"
         : `peak ${s.peak_db} dB, average ${s.mean_db} dB`],
       ["Silent stretches", s.silent_seconds == null ? "—"
-        : `${s.silent_seconds}s (${Math.round((s.silent_share ?? 0)*100)}% of the video)`],
+        : `${s.silent_seconds}s (${Math.round((s.silent_share ?? 0)*100)}% of the `
+          + `${sample ? "sample" : "video"})`],
       ["Engine", s.engine ?? "—"],
-      ["Working files freed", s.working_files_freed ? s.working_files_freed+" MB" : "—"],
+      // A sample never prunes — it would delete the download the full run is
+      // about to reuse — so the row would read "—" every time.
+      ...(sample ? [] : [["Working files freed",
+                          s.working_files_freed ? s.working_files_freed+" MB" : "—"]]),
       ["Took", fmt(job.elapsed)]
     ].map(([k,v])=>`<div class="stat"><span>${k}</span><span>${v}</span></div>`).join("");
   }
@@ -643,9 +702,12 @@ function renderQueue(){
   if(sig === queueSig) return;
   queueSig = sig;
   $("queuePanel").classList.toggle("hidden", waiting.length===0);
+  // Tagged, because a sample and the full run of the same link are two rows
+  // with the same title, and without it the waiting list reads as a duplicate.
   $("queue").innerHTML = waiting.map(j=>`
     <div class="past">
-      <div style="min-width:0"><b>${escapeHtml(j.title || j.url)}</b>
+      <div style="min-width:0"><b>${escapeHtml(j.title || j.url)}${
+        j.preview ? '<span class="tag">sample</span>' : ""}</b>
         <small>${escapeHtml(j.message)}</small></div>
       <button class="ghost" onclick="stopJob('${escapeAttr(j.id)}')">Stop</button>
     </div>`).join("");
@@ -657,8 +719,11 @@ const stopJob = id => api(`/api/job/${encodeURIComponent(id)}/cancel`,{method:"P
 
 let historySig = null;
 function renderHistory(){
+  // Samples are excluded for the same reason they never reach the videos
+  // folder: this list offers to reveal a file in Finder, and a sample's file is
+  // a working intermediate that is meant to be thrown away.
   const past = Object.values(JOBS)
-    .filter(j=>j.status==="done" && j.id!==CURRENT)
+    .filter(j=>j.status==="done" && j.id!==CURRENT && !j.preview)
     .sort((a,b)=>b.started-a.started);
   const sig = past.map(j=>j.id).join("|");
   if(sig === historySig) return;

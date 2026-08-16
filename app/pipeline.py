@@ -256,9 +256,12 @@ def _speech_start(media: Path, duration: float, window: float = PREVIEW_SECONDS)
             break
 
     # Never past the end: a video whose speech begins in its last few seconds
-    # would otherwise be handed a window with nothing in it.
-    if duration > window:
-        start = min(start, duration - window)
+    # would otherwise be handed a window with nothing in it. Guarded on a known
+    # duration rather than on it exceeding the window, so that a video shorter
+    # than the window — or a host that reports no duration at all — falls back
+    # to the beginning instead of skipping past what little there is.
+    if duration > 0:
+        start = min(start, max(0.0, duration - window))
     return max(0.0, round(start, 2))
 
 
@@ -276,7 +279,10 @@ def _trim(src: Path, dst: Path, start: float, length: float) -> Path:
     """
     if dst.exists():
         return dst
-    tmp = dst.with_name(dst.name + ".part")
+    # Keeps the .mp4 on the end: ffmpeg picks the container from the extension,
+    # and a bare ".part" leaves it with nothing to infer from and no output at
+    # all.
+    tmp = dst.with_suffix(".part.mp4")
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}",
                     "-i", str(src), "-t", f"{length:.2f}",
                     "-map", "0:v:0", "-map", "0:a:0",
@@ -314,6 +320,12 @@ class Job:
     references: list[str] = field(default_factory=list)
     preview: bool = False                # a 30s taster, not the finished thing
     preview_from: float = 0.0            # where in the video the window starts
+    # The stages this job actually runs, in order. The interface used to hold
+    # its own fixed list, which omitted separation and speaker detection — so
+    # for the whole of Demucs, often the longest part of a Balanced run, no chip
+    # was highlighted and the row looked inert at exactly the moment the user is
+    # asking whether anything is happening.
+    stages: list[str] = field(default_factory=list)
 
     def public(self) -> dict:
         d = asdict(self)
@@ -681,6 +693,7 @@ class JobRunner:
             weight = (min(self.PREVIEW_DOWNLOAD_CAP, job.duration / window)
                       if window and job.duration else 1.0)
             plan = self._plan(settings, weight)
+            job.stages = list(plan)
 
             # The downloaded video is keyed on the quality that fetched it too:
             # yt-dlp skips a file that is already there, so keying only the audio
@@ -705,11 +718,14 @@ class JobRunner:
             # the shared folder and the full run skips its download outright.
             media_dir = source_dir
             if window:
-                report(0.97, "Finding where the speech starts")
+                # Both at 1.0: the download has already reported itself finished,
+                # and a bar that steps backwards to make room for a message is
+                # worse than a bar that holds still while the message changes.
+                report(1.0, "Finding where the speech starts")
                 job.preview_from = _speech_start(video, job.duration, window)
                 media_dir = _derived_dir(workdir, "preview", settings.keep_video_quality,
                                          job.preview_from, window)
-                report(0.99, f"Taking {int(window)} seconds from {_clock(job.preview_from)}")
+                report(1.0, f"Taking {int(window)} seconds from {_clock(job.preview_from)}")
                 video = _trim(video, media_dir / "source.mp4", job.preview_from, window)
                 self._emit(job)
 
@@ -1053,6 +1069,16 @@ class JobRunner:
                     if "ffmpeg" in str(missing) or "ffprobe" in str(missing)
                     else f"A required program is missing: {missing}")
             self._fail(job, hint)
+        except subprocess.CalledProcessError as exc:
+            # str() on this is the entire command line, arguments and temporary
+            # paths and all. Shown in the interface it reads as a crash rather
+            # than as a video that could not be processed, and there is nothing
+            # in it a non-technical user can act on. The full command still goes
+            # to error.log, where it is worth having.
+            tool = Path(str(exc.cmd[0])).name if exc.cmd else "a helper program"
+            self._fail(job, f"{tool} couldn't process that video — it may be in a "
+                            f"format that can't be read. (Error {exc.returncode}.)",
+                       traceback.format_exc())
         except Exception as exc:                                 # noqa: BLE001
             self._fail(job, str(exc), traceback.format_exc())
 

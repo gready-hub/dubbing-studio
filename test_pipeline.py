@@ -807,6 +807,167 @@ def test_segments_and_voices():
     check("the choice still avoids the primary voice", female != "bf_emma", female)
 
 
+# ======================= 10. a 30-second sample before the whole video
+def test_preview():
+    """A sample must be cheap to take and must not pretend to be the real thing.
+
+    Three things make it worth having, and each is a way it can silently stop
+    being worth having: the window has to land on speech rather than on the
+    title card, the download it pays for has to survive for the full run behind
+    it, and its output must not leak into the finished videos or the history —
+    a thirty-second stub filed beside real output is a mess the user cannot
+    reason their way out of.
+    """
+    print("\n[10] A sample before committing to the whole video")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.config import HISTORY_FILE, JOBS as JOBS_DIR, OUTPUT_DIR, Settings
+
+    work = WORK / "preview"
+    work.mkdir(parents=True, exist_ok=True)
+
+    # 90 seconds that open on 20 of silence — the title card this feature exists
+    # to skip past — and then talk steadily.
+    LEAD_IN, TOTAL = 20.0, 90.0
+    clip = work / "clip.mp4"
+    if not clip.exists():
+        rate = 24000
+        track = np.concatenate([np.zeros(int(LEAD_IN * rate), dtype=np.float32),
+                                _tone(220, TOTAL - LEAD_IN, rate)])
+        sf.write(work / "audio.wav", track, rate)
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-i", str(work / "audio.wav"), "-map", "0:v", "-map", "1:a",
+                        "-t", f"{TOTAL:g}", "-c:v", "libx264", "-preset", "ultrafast",
+                        "-c:a", "aac", str(clip)], check=True)
+
+    # ---------------------------------------------- choosing the window
+    found = pipeline._speech_start(clip, TOTAL)
+    check("the window skips a silent opening", 18.0 <= found <= 22.0, f"{found:g}s")
+
+    # A video whose speech starts near the end must not be handed a window that
+    # runs off it.
+    clamped = pipeline._speech_start(clip, 35.0)
+    check("the window is clamped to the end of the video", clamped <= 5.01, f"{clamped:g}s")
+
+    # An unknown duration — some hosts report none — falls back rather than
+    # dividing or subtracting its way into nonsense.
+    check("an unknown duration still gives a usable window",
+          pipeline._speech_start(clip, 0.0) >= 0.0)
+
+    # ------------------------------------------- weighting the progress bar
+    # A sample shrinks every stage but the download, which still fetches the
+    # whole video. Left at its full-run share the bar sat near zero for most of
+    # the wait and then sprinted, which is the one thing a progress bar must not
+    # do to someone deciding whether to give up.
+    balanced = Settings().apply_preset("balanced")
+    plain = pipeline.runner._plan(balanced)
+    heavy = pipeline.runner._plan(balanced, 6.0)
+    check("a sample gives the download a far larger share of the bar",
+          heavy["download"][1] > plain["download"][1] * 3,
+          f"{plain['download'][1]:.2f} -> {heavy['download'][1]:.2f}")
+    check("the stages after it are pushed later to make room",
+          heavy["transcribe"][0] > plain["transcribe"][0],
+          f"{plain['transcribe'][0]:.2f} -> {heavy['transcribe'][0]:.2f}")
+    check("the weights still add up to one",
+          abs(sum(w for _, w, _ in heavy.values()) - 1.0) < 1e-6)
+    check("the plan names only the stages this preset runs",
+          set(pipeline.runner._plan(Settings().apply_preset("fast"))) ==
+          {"download", "transcribe", "translate", "synthesize", "assemble", "finish"})
+
+    # ------------------------------------------------- a sample end to end
+    URL = "https://example.com/sample-me"
+    shutil_rmtree(JOBS_DIR / pipeline._link_id(URL))
+    fake_probe, fake_download = stub_download(clip, "Sample Me", TOTAL)
+
+    def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
+        if progress:
+            progress(1.0, "Heard 2 lines")
+        return [{"start": 1.0, "end": 4.0, "text": "primera linea"},
+                {"start": 8.0, "end": 11.0, "text": "segunda linea"}]
+
+    def fake_llm(prompt, model=None, host=None, key=None):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        return "\n".join(f"{i}|This is a line of dubbed speech." for i in ids)
+
+    real_probe, real_download = pipeline.download.probe, pipeline.download.download
+    real_transcribe = pipeline.asr_backend.transcribe
+    pipeline.download.probe, pipeline.download.download = fake_probe, fake_download
+    pipeline.asr_backend.transcribe = fake_transcribe
+    T._call_ollama = fake_llm
+
+    try:
+        s = Settings().apply_preset("fast")
+        s.translator = "ollama"
+
+        check("a sample and the full run are different jobs",
+              pipeline._job_id(URL, True) != pipeline._job_id(URL, False))
+        check("but they share one work folder",
+              pipeline._link_id(URL) == pipeline._job_id(URL, False))
+
+        job = pipeline.runner.submit(URL, s, preview=True)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < 600:
+            time.sleep(1)
+        check("the sample completed", job.status == "done", f"{job.status}: {job.error}")
+        if job.status != "done":
+            return
+
+        out = Path(job.output)
+        length = pipeline.download.media_duration(out)
+        check("the sample is about thirty seconds",
+              abs(length - pipeline.PREVIEW_SECONDS) < 2.0, f"{length:.1f}s")
+        check("it was taken from where the speech starts",
+              18.0 <= job.preview_from <= 22.0, f"{job.preview_from:g}s")
+        check("the report says it is a sample", job.stats.get("preview") is True)
+
+        # Not a deliverable: not in the videos folder, not in the history.
+        check("it did not land in the finished videos folder",
+              not list(OUTPUT_DIR.glob("Sample-Me*")),
+              str([p.name for p in OUTPUT_DIR.glob("Sample-Me*")]))
+        history = json.loads(HISTORY_FILE.read_text()) if HISTORY_FILE.exists() else []
+        check("it was not recorded in the history",
+              not any(h.get("output") == job.output for h in history))
+
+        # And the download it paid for is still there for the full run behind it.
+        workdir = JOBS_DIR / pipeline._link_id(URL)
+        sources = list(workdir.glob("derived/*/source.mp4"))
+        check("the shared download survived the sample",
+              any("preview" not in str(p) and p.stat().st_size > 0 for p in sources)
+              and len(sources) >= 2, f"{len(sources)} source files")
+
+        # ------------------------------------- too short to be worth sampling
+        SHORT_URL = "https://example.com/too-short"
+        shutil_rmtree(JOBS_DIR / pipeline._link_id(SHORT_URL))
+        short = work / "short.mp4"
+        if not short.exists():
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(clip),
+                            "-ss", "25", "-t", "12", "-c:v", "libx264",
+                            "-preset", "ultrafast", "-c:a", "aac", str(short)], check=True)
+        pipeline.download.probe, pipeline.download.download = stub_download(
+            short, "Too Short", 12.0)
+
+        brief = pipeline.runner.submit(SHORT_URL, s, preview=True)
+        t0 = time.time()
+        while brief.status in ("queued", "running") and time.time() - t0 < 600:
+            time.sleep(1)
+        check("a video shorter than the window completed",
+              brief.status == "done", f"{brief.status}: {brief.error}")
+        if brief.status == "done":
+            check("it was dubbed whole rather than sampled", brief.preview is False)
+            check("and it says why",
+                  any("only" in n and "whole thing" in n
+                      for n in brief.stats.get("notes", [])),
+                  str(brief.stats.get("notes")))
+            check("so it did reach the finished videos folder",
+                  Path(brief.output).parent == OUTPUT_DIR, brief.output)
+    finally:
+        pipeline.download.probe = real_probe
+        pipeline.download.download = real_download
+        pipeline.asr_backend.transcribe = real_transcribe
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -817,6 +978,7 @@ if __name__ == "__main__":
     test_mixed_sample_rates()
     test_cleanup()
     test_segments_and_voices()
+    test_preview()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")
