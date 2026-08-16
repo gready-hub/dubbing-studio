@@ -376,6 +376,26 @@ def job_video(job_id: str):
     return FileResponse(job.output, media_type="video/mp4")
 
 
+@app.post("/api/uninstall")
+def open_uninstaller(request: Request) -> dict:
+    """Open the uninstaller in Terminal.
+
+    Not performed here. Removing the app means removing the Python environment
+    this process is running inside, and the last thing it deletes is the folder
+    holding the script doing the deleting — neither is something a web request
+    should be halfway through. The script shows what it will remove, separates
+    what belongs to this app from what the rest of the Mac shares, and asks.
+    """
+    _local_only(request)
+    from . import storage as store
+    script = store.APP_DIR / "Uninstall.command"
+    if not script.is_file():
+        raise HTTPException(404, "The uninstaller isn't in the app folder.")
+    script.chmod(0o755)
+    subprocess.run(["open", "-a", "Terminal", str(script)], check=False)
+    return {"ok": True}
+
+
 @app.post("/api/reveal")
 def reveal(body: dict) -> dict:
     path = Path(body.get("path", str(OUTPUT_DIR)))

@@ -1138,11 +1138,29 @@ def test_storage():
     # --- a breakdown, not one figure
     keys = [g["key"] for g in store.groups()]
     check("every place the app writes to is accounted for",
-          set(keys) == {"jobs", "models", "previews", "ollama", "output"}, str(keys))
-    finished = next(g for g in store.groups() if g["key"] == "output")
-    check("finished videos are never offered for deletion", not finished["clearable"])
+          set(keys) == {"jobs", "models", "previews", "hfmodels", "venv",
+                        "ollama", "output"}, str(keys))
+    by_key = {g["key"]: g for g in store.groups()}
+    check("finished videos are never offered for deletion",
+          not by_key["output"]["clearable"])
     check("the translation model is shown but not deletable",
-          not next(g for g in store.groups() if g["key"] == "ollama")["clearable"])
+          not by_key["ollama"]["clearable"])
+    # Deleting it would remove the interpreter running the request. It is in the
+    # list because it is one of the largest things on disk; Uninstall removes it.
+    check("the Python environment is shown but not deletable",
+          not by_key["venv"]["clearable"])
+
+    # The model cache is shared with anything else on the machine that uses
+    # Hugging Face, so only the repositories this app fetches are counted.
+    ours = {p.name for p in store.model_cache_dirs()}
+    check("only this app's model repositories are counted",
+          all(n.startswith(store.OUR_MODEL_REPOS) for n in ours), str(sorted(ours)))
+    if store.HF_HUB.is_dir():
+        every = {p.name for p in store.HF_HUB.iterdir() if p.is_dir()}
+        check("another tool's models are left out of the total",
+              ours <= every and all(not n.startswith(store.OUR_MODEL_REPOS)
+                                    for n in every - ours),
+              str(sorted(every - ours)))
 
     # --- clearing one job at a time
     a, b = JOBS / "aaaaaaaaaaaa", JOBS / "bbbbbbbbbbbb"

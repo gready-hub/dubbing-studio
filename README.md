@@ -1,150 +1,212 @@
 # Dubbing Studio
 
-Paste a video link. Get the video back speaking English.
+**Paste a video link. Get the video back speaking English.**
 
 Everything runs on your own machine. No account, no upload, no subscription.
 
 ---
 
-## Installing on a Mac
+## Install
 
-Open **Terminal** (press ⌘-Space, type `Terminal`, press return), paste this line
-and press return:
+Open **Terminal** — press <kbd>⌘</kbd><kbd>Space</kbd>, type `Terminal`, press
+return — then paste this and press return:
 
-```
+```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/gready-hub/dubbing-studio/main/install.sh)"
 ```
 
-That is the whole thing. It downloads the app, puts it in a folder that works,
-installs everything it needs and builds **Dubbing Studio** into your
-Applications folder. It takes 10–20 minutes the first time, mostly downloading;
-you can leave it and come back. It asks for your Mac password once, when it
-installs Homebrew — that is normal, Homebrew is the standard way software is
-installed on a Mac and it needs permission to create its folder.
+That's it. It takes 10–20 minutes the first time, mostly downloading. You can
+leave it and come back.
 
-Running the same line again later updates the app and keeps everything else,
-so it is also how you upgrade.
+| | |
+|---|---|
+| **You'll be asked for** | your Mac password, once, when Homebrew installs |
+| **You'll end up with** | **Dubbing Studio** in your Applications folder |
+| **To update later** | run the same line again |
+| **Needs** | macOS, an internet connection, and 10–25 GB free — it picks a translation model to match your Mac's memory, and bigger Macs get bigger models |
 
-### Why not just download the zip?
+<details>
+<summary>Prefer to install by hand?</summary>
 
-You can — the folder is on GitHub — but the Terminal line above avoids three
-things that go wrong:
+Download the zip from GitHub, unzip it, and move the folder somewhere like
+`/Users/you/Dubbing Studio` — **not** Downloads, Desktop, Documents or iCloud
+Drive, which macOS blocks the app from reading. Then right-click
+**Install.command**, choose **Open**, and click **Open** again in the dialog.
 
-- **The warning dialog.** Everything a browser downloads is tagged by macOS as
-  coming from an unidentified developer. Avoiding that dialog properly needs an
-  Apple Developer account and notarisation; nothing fetched by `curl` is tagged
-  in the first place, so there is no dialog to get past.
-- **Where the folder ends up.** macOS refuses to let a locally-built app read
-  Downloads, Desktop, Documents or iCloud Drive, and it refuses *silently* — so
-  a folder left where it landed installs an app that then simply never opens.
-  The Terminal line picks a folder that works.
-- **The unzipping, and finding the file inside it.**
-
-If you would still rather do it by hand: download the zip, unzip it, move the
-folder to somewhere like `/Users/you/Dubbing Studio` — **not** Downloads,
-Desktop, Documents or iCloud Drive — then right-click **Install.command**,
-choose **Open**, and click **Open** again in the dialog.
+The Terminal line above exists to skip all of that. Files a browser downloads
+are tagged by macOS as coming from an unidentified developer; files fetched by
+`curl` are not, so there is no dialog. It also picks the folder for you.
+</details>
 
 ---
 
-## Using it
+## Use it
 
-1. Open Dubbing Studio.
-2. Paste a video link into the box.
-3. Press **Dub it**.
+1. Open **Dubbing Studio**
+2. Paste a video link
+3. Press **Try 30 seconds** — or **Dub it** if you already know what you want
 
-Finished videos are saved to **Movies → Dubbed**, and the app shows a **Show in
-Finder** button when it's done.
+> **Try 30 seconds** dubs a short sample from where the speech starts, so you can
+> hear the voice, the wording and the levels before committing to a long video.
+> Liking it? One button turns it into the full dub, and the download isn't
+> repeated.
 
-### How long it takes
+Finished videos are saved to **Movies → Dubbed**. Samples are not — they play in
+the app and nowhere else.
 
-This depends far more on the preset than on the video, and translation is usually
-the slowest part. Measured on an M1 with 16 GB, dubbing a three-minute clip using
-the built-in local translation model:
+### The two questions on the front panel
 
-| Preset | Time for 3 minutes of video | Roughly |
-|---|---|---|
-| Fast | about 3 minutes | the video's own length |
-| Balanced | about 15 minutes | five times the video's length |
-| Best quality | longer again — see the note on cloning below | |
+| Question | Why it matters |
+|---|---|
+| **What kind of video is this?** | Locks specialist terms so they translate consistently. Built-in lists for crochet (US and UK), cooking and woodworking. Without one, the same stitch or ingredient comes out three different ways across a video. |
+| **Who's speaking?** | *One person* is faster and can't mistake one presenter for several. Pick *Several people* for interviews — each gets their own voice. |
 
-A newer or larger Mac will beat this comfortably, and switching **Translated by**
-to an API key removes the single biggest chunk of time from every preset. The
-first video is slower still, because it fetches the speech models (about 700 MB,
-one time only).
+---
 
-Start anything long and leave it. A run that fails or is cancelled picks up where
-it left off when you paste the same link again.
+## How it works
+
+```mermaid
+flowchart TD
+    URL([Paste a link]) --> DL["<b>Download</b><br/>yt-dlp"]
+    DL --> SEP["<b>Separate speech from music</b><br/>Demucs"]
+    SEP -->|speech| ASR["<b>Transcribe</b><br/>Parakeet, or Whisper"]
+    SEP -->|speech| DIA["<b>Tell speakers apart</b><br/>pyannote + 3D-Speaker"]
+    SEP -.->|music and effects| MIX
+    ASR --> TRA["<b>Translate</b><br/>Ollama, Claude or OpenAI"]
+    TRA --> TTS["<b>Speak each line</b><br/>Kokoro, or Chatterbox to clone"]
+    DIA -.->|a voice per speaker| TTS
+    TTS --> FIT["<b>Fit each line</b><br/>into the gap the original speaker left"]
+    FIT --> MIX["<b>Mix</b>"]
+    MIX --> MUX["<b>Combine with the picture</b><br/>ffmpeg — video copied, never re-encoded"]
+    MUX --> OUT([Dubbed video])
+
+    classDef optional stroke-dasharray:5 5
+    class SEP,DIA optional
+```
+
+Dashed stages are switchable — separation by the quality preset, speaker
+detection by the **Who's speaking?** question.
+
+**Timing** is the part that decides whether a dub feels right. Each translated
+line is spoken, then fitted into the slot the original speaker used. A line too
+long for its gap is compressed with a pitch-preserving filter up to 1.55×;
+past that it runs over and the following pauses absorb it. Lines never start
+before their original timestamp, so narration stays locked to the picture.
+
+The quality report after each job says how much of that had to happen. Few
+compressions and near-zero drift means a clean fit.
+
+<details>
+<summary>Where the work is kept, and what invalidates it</summary>
+
+Every stage caches into the job folder, so re-running a link picks up where it
+left off. Each artefact is keyed on the settings that produced it — reaching a
+stale one is impossible rather than merely unlikely.
+
+| Artefact | Re-made when you change |
+|---|---|
+| `source.mp4` | video quality |
+| separated audio | quality, or whether separation ran |
+| `segments.json` | the audio above, or the transcription engine |
+| `translated.json` | the transcript, translator, model, target language, glossary |
+| `lines/*.wav` | the translation, voice, speed, engine, speakers |
+
+A job that succeeds drops its bulky intermediates and keeps the expensive ones —
+transcript, translation, rendered lines. A job that **fails** keeps everything,
+because that is when you re-run the link.
+</details>
 
 ---
 
 ## Quality presets
 
-The three buttons under the link box decide how much work goes in.
+| Preset | What it does | Speed |
+|---|---|---|
+| **Fast** | One voice, no separation | About the video's own length |
+| **Balanced** *(default)* | Splits speech from music so the soundtrack survives | About 5× the video's length |
+| **Best quality** | Also Whisper, and each speaker's voice cloned | Considerably slower |
 
-**Fast** — one voice, no separation. Right for a single person talking to camera
-with no music. Quickest by a distance.
+Measured on an M1 with 16 GB using the local translation model. A newer Mac
+beats this comfortably, and switching **Translated by** to an API key removes
+the biggest chunk of time from every preset. The first video is slower still —
+it fetches about 700 MB of speech models, one time only.
 
-**Balanced** *(default)* — splits the speech away from the music and effects
-before dubbing, so replacing the voices doesn't wipe the soundtrack, and detects
-multiple speakers so an interview gets two distinct voices instead of one
-narrator reading both parts. This is the setting that makes the app work on
-general video rather than just talking heads.
+Start anything long and leave it.
 
-**Best quality** — as Balanced, plus Whisper for transcription and a cloned voice
-per speaker, so the dub keeps the original speakers' own voices. Considerably
-slower: cloning generates speech at around four times slower than real time on an
-M1, so it is the preset to choose deliberately for something short, not the one
-to leave running on a feature-length video.
-
-### On voice cloning
-
-Cloning carries the speaker's accent across languages. That is usually what you
-want — it preserves who they are. But for instructional content, where someone is
-following along with numbers or steps, a neutral built-in voice is often easier
-to understand than an accented clone. Worth trying both on anything you care
-about.
-
-Cloning someone's voice is also not the same act as picking a stock one. Fine for
-private use; think about it before publishing.
+> [!NOTE]
+> **On cloning.** It carries the speaker's accent across languages, which is
+> usually what you want. For instructional content — where someone is following
+> numbers or steps — a neutral built-in voice is often easier to understand.
+> Cloning a real person's voice is also not the same act as picking a stock one.
+> Fine privately; think about it before publishing.
 
 ---
 
-## Settings worth knowing about
+## Settings
 
-**Subject vocabulary** is the one that matters most. Translation models guess at
-specialist terms and guess inconsistently — the same stitch, tool or ingredient
-comes out three different ways across one video. Picking a vocabulary locks those
-terms down. There are built-in lists for crochet (US and UK conventions), cooking
-and woodworking, and you can add your own lines under Advanced in the form
-`source -> translation`.
+**Original audio**
 
-**Original audio** decides what happens to the original speaker:
+| Option | Result |
+|---|---|
+| Replace completely | Cleanest listen; the original is gone |
+| Keep quietly underneath | The usual documentary treatment — tone and background survive |
+| Keep as a second track | Both in the file, switchable in VLC or IINA |
 
-- *Replace completely* — cleanest listen, original is gone.
-- *Keep quietly underneath* — the usual documentary treatment; you still hear
-  their tone and any background sound.
-- *Keep as a second track* — both tracks in the file, switchable in a player like
-  VLC or IINA.
+**Translated by**
 
-**Translated by** picks who does the translating:
+| Option | Trade-off |
+|---|---|
+| Local model | Free, private, offline. Installed for you |
+| Claude or OpenAI | Noticeably better on specialist material. A few pence per video |
 
-- *Local model* — free, private, works offline. Installed for you.
-- *Claude or OpenAI API* — noticeably better on specialist material. Costs a few
-  pence per video. Paste a key and it's used instead.
-
-**Where an API key is kept.** In plain text, in
-`~/Library/Application Support/DubbingStudio/settings.json`, so the app can
-translate without asking for it every time. The file is readable only by your
-user account, and it is listed in `.gitignore` so it cannot be committed by
-accident — but it is not encrypted, and anyone who can log in as you can read it.
-The macOS Keychain was the alternative and was not used: it would put a system
-authorisation prompt in front of every job. If that trade isn't right for you,
-leave the key blank and use the local model.
+> [!WARNING]
+> An API key is stored in plain text at
+> `~/Library/Application Support/DubbingStudio/settings.json`, readable only by
+> your user account and never committed. It is not encrypted — anyone who can
+> log in as you can read it. If that isn't an acceptable trade, leave the key
+> blank and use the local model.
 
 ---
 
-## Running it anywhere else (Docker)
+## Disk space
+
+The **Disk space** panel breaks down everything the app is holding, with a bar
+so the big one is obvious at a glance:
+
+| | Typical | Safe to clear |
+|---|---|---|
+| Downloaded AI models | 3–6 GB | Yes — re-fetched when next needed |
+| Translation model | 2.5–20 GB | Held by Ollama; remove it from there |
+| Python environment | ~1.7 GB | Removed by Uninstall |
+| Working files | grows per job | Yes — one video at a time, or all |
+| Speech models | ~700 MB | Yes |
+| Finished videos | yours | **Never touched by this app** |
+
+A job is refused up front if there isn't room for it, with the numbers. An hour
+of video needs roughly 6 GB while it runs; most of that is released when it
+finishes.
+
+---
+
+## Uninstall
+
+Double-click **Uninstall** in the app folder, or press **Uninstall…** in the
+Disk space panel. It shows what it will delete, with sizes, and asks before
+touching anything.
+
+| | |
+|---|---|
+| **Removed** | The app, its Python environment, its models, settings, history and working files |
+| **Kept** | Your dubbed videos in Movies → Dubbed |
+| **Listed, not removed** | Homebrew, ffmpeg, yt-dlp, Ollama and its models |
+
+That last row is the point: those are installed system-wide and other software
+on your Mac may be using them. The uninstaller prints their sizes and the exact
+command for each, and leaves the decision to you.
+
+---
+
+## Docker
 
 For Windows, Linux, or handing to someone else:
 
@@ -155,80 +217,55 @@ docker compose up --build
 
 Then open <http://localhost:8765>. Finished videos land in `docker/output`.
 
-**One caveat.** Docker cannot reach the Mac's GPU, so the container runs on CPU
-only and is roughly five times slower than the native app. A local translation
-model is impractical at that speed, so use an API key in Settings for the Docker
-version.
+> [!IMPORTANT]
+> Docker cannot reach the Mac's GPU, so the container runs on CPU only and is
+> roughly five times slower. Use an API key in Settings for the Docker version —
+> a local translation model is impractical at that speed.
 
 ---
 
 ## When something goes wrong
 
-Open **Setup check** in the app. It lists what's missing and the exact command to
-fix it.
+Open **Setup check** in the app. It lists what's missing and the command to fix
+it.
 
-**"Could not reach Ollama"** — open the Ollama app, wait a few seconds, try again.
+| Symptom | Cause |
+|---|---|
+| "Could not reach Ollama" | Open the Ollama app, wait a few seconds, try again |
+| "Translation only returned N of M lines" | The local model is too small. Use a bigger one in Settings, or an API key |
+| Downloads but nothing is heard | No speech in the video, or speech buried in loud music |
+| More speakers found than really exist | Set **Who's speaking?** to *One person*, or say how many under Advanced |
 
-**"Translation only returned N of M lines"** — the local model is too small for
-the job. Put a bigger one in Settings (`qwen3:14b` if you have 24 GB of memory or
-more) or switch to an API key.
-
-**The video downloads but nothing is heard** — the video may have no speech, or
-speech the recogniser can't pick out of loud music.
-
-**Something crashed** — the log is at `~/Library/Logs/DubbingStudio.log`, and each
-job keeps its own working files under
-`~/Library/Application Support/DubbingStudio/jobs`.
-
-Jobs resume. If one fails partway through, running the same link again reuses the
-transcription and translation it already finished rather than starting over.
-
-**Disk space.** A job succeeds and then drops its bulky intermediates — the
-downloaded video, the separated stems and the full-band audio, which for an hour
-of video come to well over a gigabyte. What stays is the transcript, the
-translation and the rendered lines, which are the expensive parts to recompute
-and a small fraction of the size. A job that *failed* keeps everything, because
-that is exactly when you re-run the link. The main window shows the running
-total with a **Clear** button beside it; clearing never touches finished videos.
+Logs are at `~/Library/Logs/DubbingStudio.log`; each job keeps its working files
+under `~/Library/Application Support/DubbingStudio/jobs`.
 
 ---
 
-## A word on what you download
-
-This tool will fetch whatever link you give it, which is a question of what you're
-entitled to download rather than what's technically possible. Downloading from
-YouTube generally breaches their terms of service unless it's your own content,
-it's offered for download, or the licence permits it. Dubbing someone's video also
-creates a derivative work. Your call — worth making deliberately.
-
----
-
-## What's under the bonnet
+## Built on
 
 | Stage | Tool |
 |---|---|
 | Download | yt-dlp |
-| Speech / music separation | Demucs (htdemucs_ft) |
+| Separation | Demucs (htdemucs_ft) |
 | Speaker detection | pyannote segmentation 3.0 + 3D-Speaker embeddings |
-| Speech recognition | Parakeet TDT 0.6b v3 (25 languages), or Whisper large-v3 |
-| Translation | your local Ollama model, or Claude / OpenAI |
-| Speech synthesis | Kokoro-82M, or Chatterbox for cloned voices |
+| Transcription | Parakeet TDT 0.6b v3 (25 languages), or Whisper large-v3 |
+| Translation | a local Ollama model, or Claude / OpenAI |
+| Synthesis | Kokoro-82M, or Chatterbox for cloned voices |
 | Audio and video | ffmpeg |
 
-On Apple Silicon the two AI models run through **MLX**, Apple's GPU framework.
+On Apple Silicon the AI models run through **MLX**, Apple's GPU framework.
 Everywhere else the same models run on CPU via **ONNX Runtime**, which is what
 makes the Docker build possible.
 
-The window is macOS's built-in WebView rather than a bundled copy of Chrome, which
-is why the app is a few megabytes instead of a few hundred.
+The window is macOS's built-in WebView rather than a bundled browser, which is
+why the app is a few megabytes rather than a few hundred.
 
-### How the timing works
+---
 
-Each translated line is spoken and then fitted into the slot the original speaker
-used. If a line comes out too long for its gap it's compressed with a
-pitch-preserving filter, up to 1.55× — beyond that it's allowed to run over and
-following pauses absorb it. Lines never start before their original timestamp, so
-narration stays locked to what's on screen.
+## What you download
 
-The quality report after each job tells you how much of that had to happen. Few
-compressions and near-zero drift means a clean fit.
+This fetches whatever link you give it, which makes it a question of what you're
+entitled to download rather than what's technically possible. Downloading from
+YouTube generally breaches their terms unless it's your own content, it's
+offered for download, or the licence permits it. Dubbing someone's video also
+creates a derivative work. Your call — worth making deliberately.

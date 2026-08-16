@@ -20,6 +20,34 @@ from .config import BASE, JOBS, MODELS, OUTPUT_DIR, ollama_host
 
 PREVIEWS = BASE / "previews"
 
+# The app's own folder, and the Python environment inside it. Between them these
+# are larger than everything under Application Support, and neither was visible
+# anywhere — a breakdown that omits the biggest items is not a breakdown.
+APP_DIR = Path(__file__).resolve().parent.parent
+VENV = APP_DIR / ".venv"
+
+# Where the model libraries put their downloads. Shared with any other tool on
+# the machine that uses Hugging Face, so only the repositories this app actually
+# fetches are counted or removed — someone else's models are not ours to total
+# up, let alone delete.
+HF_HUB = Path.home() / ".cache" / "huggingface" / "hub"
+OUR_MODEL_REPOS = (
+    "models--mlx-community--parakeet-tdt",
+    "models--mlx-community--Kokoro-82M",
+    "models--mlx-community--whisper",
+    "models--prince-canuma--Kokoro-82M",
+    "models--adefossez--HTDemucs",
+    "models--ResembleAI--chatterbox",
+)
+
+
+def model_cache_dirs() -> list[Path]:
+    """The Hugging Face repositories this app is responsible for."""
+    if not HF_HUB.is_dir():
+        return []
+    return [p for p in HF_HUB.iterdir()
+            if p.is_dir() and p.name.startswith(OUR_MODEL_REPOS)]
+
 # Peak working-file cost per second of video. Measured rather than guessed: a
 # 10m35s job at 720p peaked at 390 MB before it pruned itself, which is roughly
 # 615 KB for every second of video. The higher qualities carry more pixels
@@ -123,6 +151,17 @@ def groups() -> list[dict]:
          "bytes": dir_size(PREVIEWS) if PREVIEWS.is_dir() else 0,
          "clearable": True, "path": str(PREVIEWS),
          "hint": "One short clip per voice you've listened to."},
+        {"key": "hfmodels", "label": "Downloaded AI models",
+         "bytes": sum(dir_size(p) for p in model_cache_dirs()),
+         "clearable": True, "path": str(HF_HUB) if HF_HUB.is_dir() else "",
+         "hint": "The recogniser, the voices and the music separator, as fetched "
+                 "from Hugging Face. Safe to delete; the next video downloads "
+                 "what it needs again. Other apps' models here are left alone."},
+        {"key": "venv", "label": "Python environment",
+         "bytes": dir_size(VENV) if VENV.is_dir() else 0,
+         "clearable": False, "path": str(APP_DIR),
+         "hint": "The libraries the app runs on, inside its own folder. Removed "
+                 "by Uninstall rather than from here — it is what is running."},
         {"key": "ollama", "label": "Translation model", "bytes": _ollama_bytes(),
          "clearable": False, "path": "",
          "hint": "Held by Ollama, not by this app. Remove it from there if you "
@@ -154,6 +193,12 @@ def clear(what: str, keep: set[str] | None = None) -> int:
         for folder in JOBS.iterdir():
             if not folder.is_dir() or folder.name in keep:
                 continue
+            freed += dir_size(folder)
+            shutil.rmtree(folder, ignore_errors=True)
+        return freed
+    if what == "hfmodels":
+        freed = 0
+        for folder in model_cache_dirs():
             freed += dir_size(folder)
             shutil.rmtree(folder, ignore_errors=True)
         return freed

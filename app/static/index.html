@@ -147,6 +147,20 @@
      rows already carry a wrapping explanation and two buttons. */
   .qty{font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;
        margin-left:8px}
+  /* One glance answers the question people actually open this panel with —
+     which of these is the big one. The rows below double as its legend. */
+  .usage{display:flex;height:10px;border-radius:99px;overflow:hidden;
+         background:var(--line);margin:2px 0 18px;gap:1px}
+  .usage i{display:block;height:100%;transition:width .35s ease;min-width:2px}
+  .swatch{display:inline-block;width:9px;height:9px;border-radius:3px;
+          margin-right:8px;vertical-align:middle;flex:none}
+  .usage-empty{color:var(--muted);font-size:12.5px;margin:2px 0 14px}
+  .danger-row{border-top:1px solid var(--line);margin-top:14px;padding-top:16px;
+              display:flex;justify-content:space-between;align-items:center;
+              gap:12px;flex-wrap:wrap;font-size:14px}
+  .danger-row > div{flex:1;min-width:200px}
+  .danger-row b{display:block;font-weight:600}
+  .danger-row small{color:var(--muted);font-size:12.5px;display:block;max-width:56ch}
   .preset-wrap{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
   .segmented{display:flex;gap:4px;background:var(--bg);border:1px solid var(--line);
              border-radius:11px;padding:4px}
@@ -472,11 +486,22 @@
   <div class="panel quiet" id="storagePanel">
     <details id="storageWrap">
       <summary id="storageSummary">Disk space</summary>
-      <div id="storageGroups" style="margin-top:10px"></div>
+      <p class="usage-empty" id="usageTotal"></p>
+      <div class="usage" id="usage"></div>
+      <div id="storageGroups"></div>
       <details id="jobsWrap" class="hidden" style="margin-top:12px">
         <summary id="jobsSummary">Working files, video by video</summary>
         <div id="storageJobs" style="margin-top:6px"></div>
       </details>
+      <div class="danger-row">
+        <div style="min-width:0">
+          <b>Remove Dubbing Studio</b>
+          <small>Deletes the app, its models and its working files. Your dubbed
+            videos are kept, and anything the rest of your Mac shares — Homebrew,
+            ffmpeg, Ollama — is listed rather than removed.</small>
+        </div>
+        <button class="ghost" onclick="uninstall()">Uninstall…</button>
+      </div>
     </details>
   </div>
 
@@ -1010,6 +1035,13 @@ const fmtBytes = b => b >= 1073741824 ? (b/1073741824).toFixed(1)+" GB"
                     : b >= 1048576    ? Math.round(b/1048576)+" MB"
                     : Math.round(b/1024)+" KB";
 
+// Warm, distinguishable, and quiet enough to sit in a panel that is not the
+// point of the app. Keyed by group so a colour always means the same thing.
+const SPACE_COLOURS = {
+  jobs:"#b45309", models:"#d97706", hfmodels:"#f59e0b", previews:"#fcd34d",
+  venv:"#78716c", ollama:"#a16207", output:"#15803d"
+};
+
 /* One Clear button that emptied every job at once was the whole of it. Between
    the speech models, the model Ollama holds on this app's behalf, the working
    files and the finished videos, a few hours of use is tens of gigabytes — and
@@ -1023,11 +1055,26 @@ function paintStorage(s){
   // Opened by itself when it matters, since a collapsed panel is no warning.
   if(s.low) $("storageWrap").open = true;
 
-  $("storageGroups").innerHTML = (s.groups || []).map(g => `
+  const groups = s.groups || [];
+  const total = groups.reduce((n, g) => n + (g.bytes || 0), 0);
+  // A stacked bar, so which one is the fat one is the first thing you see
+  // rather than something you work out by reading seven numbers.
+  $("usage").innerHTML = groups.filter(g => g.bytes > 0).map(g =>
+    `<i style="width:${(g.bytes / total * 100).toFixed(2)}%;background:${SPACE_COLOURS[g.key]
+      || "var(--muted)"}" title="${escapeAttr(g.label)} — ${fmtBytes(g.bytes)}"></i>`).join("");
+  $("usage").classList.toggle("hidden", !total);
+  $("usageTotal").textContent = total
+    ? `${fmtBytes(total)} in total` : "Nothing stored yet.";
+
+  $("storageGroups").innerHTML = groups.map(g => `
     <div class="past">
-      <div style="min-width:0">
-        <b>${escapeHtml(g.label)} <span class="qty">${fmtBytes(g.bytes)}</span></b>
-        <small>${escapeHtml(g.hint)}</small>
+      <div style="min-width:0;display:flex;align-items:flex-start">
+        <span class="swatch" style="background:${SPACE_COLOURS[g.key] || "var(--muted)"};
+              margin-top:5px"></span>
+        <div style="min-width:0">
+          <b>${escapeHtml(g.label)} <span class="qty">${fmtBytes(g.bytes)}</span></b>
+          <small>${escapeHtml(g.hint)}</small>
+        </div>
       </div>
       <div style="display:flex;gap:8px;flex-shrink:0">
         ${g.path ? `<button class="ghost" onclick="revealPath('${escapeAttr(g.path)}')"
@@ -1049,6 +1096,15 @@ function paintStorage(s){
         onclick="clearStorage('job:${escapeAttr(j.id)}','${escapeAttr(j.title)}')"
         >Clear</button>
     </div>`).join("");
+}
+
+/* Handed to Terminal rather than done here: removing the app means removing the
+   Python environment this page is being served from. */
+async function uninstall(){
+  if(!confirm("Open the uninstaller?\n\nIt shows exactly what it will delete and "
+            + "asks again before removing anything. Your dubbed videos are kept.")) return;
+  try{ await api("/api/uninstall",{method:"POST"}); }
+  catch(err){ showError(err.message); }
 }
 
 async function storage(){
