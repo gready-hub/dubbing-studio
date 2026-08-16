@@ -291,6 +291,49 @@ right answer rather than a workaround.
 
 ---
 
+## 11. The 30-second sample — **Run, end to end, through the interface**
+
+Driven with Playwright against a real 2m44s video served over HTTP: yt-dlp,
+ffmpeg, Demucs, sherpa-onnx, Parakeet, Ollama and Kokoro all ran for real, and
+nothing was stubbed.
+
+| | |
+|---|---|
+| Window chosen | 0:18, skipping an 18-second silent opening |
+| Output | 30.0s, 749 frames preserved, 0.04s A/V drift |
+| Dub | 3 lines, 1 compressed at 1.02x, 0s timing drift |
+| Played in the app | yes — currentTime advanced, 640x360 |
+| History panel | stayed hidden |
+| Videos folder | untouched |
+| Committing to the full run | started against the same job folder |
+
+Photographed in every state it can reach — idle in light, dark and at 430px
+wide; running; running with a queue behind it; mid-separation; done; done at
+430px; and with the sample's file deleted from under the panel. No page errors
+in any of them. The finished-video panel was photographed alongside to confirm
+it is unchanged.
+
+**Three defects the run exposed, all pre-existing and all now fixed.**
+
+- The stage chips went blank for the whole of Demucs. The interface kept its own
+  fixed stage list, which had no entry for separation or speaker detection, so
+  nothing was highlighted through the longest part of a Balanced run. The job
+  now reports the stages it plans to run and the row is drawn from that.
+- A failed helper program showed the user a raw ffmpeg command line. `str()` on
+  a `CalledProcessError` is the whole invocation; in the interface it reads as a
+  crash rather than as a video that could not be read.
+- The Ollama check compared model families rather than tags, so a machine with
+  `qwen3:8b` was told `qwen3:32b` was present. Every setup check said ready and
+  the job then died on a 404 part way through translating.
+
+**Not run.** Sampling a video that needs cloning (Best preset), and sampling
+anything inside Docker.
+
+**What a sample cannot tell you**, stated in the panel rather than left to be
+discovered: timing is the failure mode that shows up across a whole video, and
+thirty seconds cannot speak to it — §9 above is the evidence. A longer video may
+also contain more speakers than the window does.
+
 ## Things worth knowing that are not in the list above
 
 - **`submit()` ran every link at once.** A thread per job, with only the *same*
