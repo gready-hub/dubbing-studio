@@ -123,6 +123,36 @@ def label_segments(segments: list[dict], turns: list[dict]) -> list[dict]:
     return segments
 
 
+def median_pitch(samples: np.ndarray, rate: int,
+                 lo_hz: float = 70.0, hi_hz: float = 350.0) -> float:
+    """Median fundamental over the voiced frames, by autocorrelation. 0 if unsure.
+
+    Framed rather than taken across the whole clip: one autocorrelation over a
+    whole line also spans its silences and onsets, which moves the estimate by
+    tens of hertz. An FFT peak is no good either — it finds harmonics, not the
+    fundamental.
+    """
+    audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+    win, hop = int(0.04 * rate), int(0.02 * rate)
+    lo, hi = int(rate / hi_hz), int(rate / lo_hz)
+    if audio.size < win or hi >= win:
+        return 0.0
+
+    found: list[float] = []
+    for start in range(0, audio.size - win, hop):
+        frame = audio[start:start + win]
+        if float(np.sqrt((frame ** 2).mean())) < 0.02:           # between words
+            continue
+        frame = frame - frame.mean()
+        corr = np.correlate(frame, frame, mode="full")[win - 1:]
+        if hi >= corr.size or corr[0] <= 0:
+            continue
+        peak = int(np.argmax(corr[lo:hi])) + lo
+        if corr[peak] > 0.3 * corr[0]:                           # voiced, not noise
+            found.append(rate / peak)
+    return float(np.median(found)) if found else 0.0
+
+
 def pick_reference(segments: list[dict], speaker: int, audio: np.ndarray, rate: int,
                    min_s: float = 6.0, max_s: float = 14.0) -> np.ndarray | None:
     """Longest continuous run of one speaker, for use as a voice-cloning reference.

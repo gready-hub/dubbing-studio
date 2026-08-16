@@ -288,6 +288,7 @@ class Settings:
     keep_music: bool = True              # mix the music/effects back underneath
     diarize: bool = True                 # detect multiple speakers
     expected_speakers: int = -1          # -1 = work it out automatically
+    merge_lines: bool = True             # join lines that run straight together
     asr_model: str = "parakeet"          # parakeet | whisper
     voice_mode: str = "fixed"            # fixed | clone
 
@@ -300,11 +301,21 @@ class Settings:
             setattr(self, key, spec[key])
         return self
 
-    def voice_for(self, speaker: int) -> str:
-        """First speaker gets the chosen voice; others get distinct ones."""
+    def voice_for(self, speaker: int, male: bool | None = None) -> str:
+        """First speaker gets the chosen voice; others get distinct ones.
+
+        When `male` is known — measured from the speaker's own pitch — the
+        alternatives are drawn from voices of that sex. Handing a deep-voiced
+        man a bright female voice is the most obvious way a multi-speaker dub
+        announces that nobody checked, and the pitch is right there in the audio.
+        """
         if speaker <= 0:
             return self.voice
         pool = [v for v in SPEAKER_VOICE_POOL if v != self.voice]
+        if male is not None:
+            # Kokoro's ids encode it: bf_/af_ are female, bm_/am_ are male.
+            wanted = [v for v in pool if v.split("_")[0].endswith("m" if male else "f")]
+            pool = wanted or pool
         return pool[(speaker - 1) % len(pool)]
 
     @classmethod

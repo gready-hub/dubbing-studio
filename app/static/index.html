@@ -336,6 +336,16 @@
             <p class="hint">Used only by “Keep quietly underneath”.</p>
           </div>
           <div>
+            <label for="merge_lines">Run-on lines</label>
+            <select id="merge_lines">
+              <option value="true">Join lines that run together</option>
+              <option value="false">Keep them exactly as heard</option>
+            </select>
+            <p class="hint">Fast dialogue arrives as many very short lines with no
+              gap between them, and each has to be squeezed to fit. Joining them
+              gives the translation room. Material with real pauses is unaffected.</p>
+          </div>
+          <div>
             <label for="max_stretch">Hardest allowed squeeze</label>
             <select id="max_stretch">
               <option value="1.3">Gentle — 1.3x</option>
@@ -438,7 +448,7 @@ async function boot(){
   listen();
 }
 
-const BOOL_SETTINGS = ["write_srt","separate_audio","diarize","keep_music"];
+const BOOL_SETTINGS = ["write_srt","separate_audio","diarize","keep_music","merge_lines"];
 // Value is the default to fall back on. The server coerces each one to the type
 // of the dataclass field, so sending a float for an int setting is fine.
 const NUM_SETTINGS = {speed: 1.0, expected_speakers: -1, duck_db: -18, max_stretch: 1.55};

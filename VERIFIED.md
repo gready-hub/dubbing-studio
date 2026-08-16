@@ -243,6 +243,54 @@ is measured; "does it sound right" is not among them.
 
 ---
 
+## 10. How this compares to the other open-source dubbing projects
+
+Looked at [VideoLingo](https://github.com/Huanshere/VideoLingo),
+[open-dubbing](https://github.com/Softcatala/open-dubbing) (Softcatalà),
+[SoniTranslate](https://github.com/R3gm/SoniTranslate) and
+[KrillinAI](https://github.com/krillinai/KrillinAI).
+
+**Already ahead of the field.** The translation prompt is length-aware — it
+gives the model the slot in seconds and caps the result at 2.6 words per second
+of it — where most projects translate first and then fix the duration by
+speeding the audio up. The finished job is verified (frame counts, A/V drift,
+and now peak/RMS and silent share); open-dubbing states plainly that it reports
+no evaluation metrics, and VideoLingo documents none. Jobs resume off
+fingerprinted caches; the others largely start over.
+
+Worth recording: **VideoLingo does not attempt multi-speaker dubbing at all**,
+on the grounds that speaker separation "is not sufficiently reliable". That is
+independent confirmation of section 9's 28-speakers-for-seven-characters result,
+and an argument that the fallback-plus-`expected_speakers` design here is the
+right answer rather than a workaround.
+
+**Taken from them, and measured:**
+
+- *Joining run-on lines*, which the ASR literature does when consecutive
+  utterances abut. Against the real run in section 9: 113 lines → 62, median
+  slot 2.00s → 3.60s, and slots under 1.5s 41 → 7. That attacks the exact cause
+  of that run's 61 compressed lines. Material with real pauses is untouched,
+  because its gaps are far wider than the threshold.
+- *Voices matched to the speaker's pitch*, which open-dubbing does with a gender
+  classifier. Done here with a median F0 over the voiced frames, so it needs no
+  new dependency — additional speakers previously drew from the voice pool
+  round-robin, which could hand a deep-voiced man a bright female voice.
+
+**Considered and not taken, for now:**
+
+- *Syllable-based length targeting.* Descript found reliable syllable counting
+  was what made duration targeting work, since English word lengths vary too
+  much for words-per-second to be tight. A real improvement on the current
+  prompt, but it changes every translation.
+- *Re-translating a line instead of over-compressing it.* Section 9 hard-squeezed
+  15 lines at the cap; asking for a shorter line would beat squeezing the audio.
+  It needs a measure-then-retranslate loop, so it is a change to how translation
+  is driven rather than a tweak.
+- *VideoLingo's translate-reflect-adapt*, which triples the LLM calls. Hard to
+  justify against a local model that is already the slow stage.
+
+---
+
 ## Things worth knowing that are not in the list above
 
 - **`submit()` ran every link at once.** A thread per job, with only the *same*

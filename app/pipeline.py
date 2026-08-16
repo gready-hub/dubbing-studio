@@ -31,6 +31,7 @@ from .backends import separate as separate_backend
 from .backends import tts as tts_backend
 from .backends.translate import translate as run_translate, TranslationError
 from .steps import align, download, mux
+from .steps.segments import merge_adjacent
 
 # (key, label, relative cost) — relative costs are turned into weights for
 # whichever stages a given job actually runs.
@@ -129,6 +130,51 @@ def _match_rate(audio, src_rate: int, dst_rate: int) -> np.ndarray:
         _resample_to(src, dst, int(dst_rate), mono=True)
         out, _ = sf.read(dst, dtype="float32")
     return np.asarray(out, dtype=np.float32).reshape(-1)
+
+
+FEMALE_ABOVE_HZ = 165.0     # conventional split; between typical male and female F0
+
+
+def _voice_map(settings: Settings, segments: list[dict], speaker_ids: list[int],
+               speech_wav: Path) -> dict[int, str]:
+    """Give each speaker a voice roughly matching their own pitch.
+
+    Additional speakers used to be handed voices round-robin from a pool, so a
+    deep-voiced man could be dubbed by a bright female voice — the most obvious
+    way a multi-speaker dub announces that nobody checked. The pitch is right
+    there in the audio, and a median F0 over the voiced frames separates the two
+    groups well enough to pick the right half of the pool.
+
+    Only the longest clip per speaker is read, not the whole soundtrack.
+    """
+    voices: dict[int, str] = {}
+    try:
+        info = sf.info(str(speech_wav))
+        rate = int(info.samplerate)
+    except Exception:                                            # noqa: BLE001
+        return voices
+
+    for speaker in speaker_ids:
+        mine = [s for s in segments if s.get("speaker") == speaker]
+        if not mine:
+            continue
+        longest = max(mine, key=lambda s: s["end"] - s["start"])
+        start = max(0, int(longest["start"] * rate))
+        frames = min(int(6.0 * rate), int((longest["end"] - longest["start"]) * rate))
+        if frames <= 0:
+            continue
+        try:
+            clip, _ = sf.read(str(speech_wav), start=start, frames=frames,
+                              dtype="float32", always_2d=False)
+        except Exception:                                        # noqa: BLE001
+            continue
+        if getattr(clip, "ndim", 1) > 1:
+            clip = clip.mean(axis=1)
+        pitch = diarize_backend.median_pitch(clip, rate)
+        if pitch <= 0:
+            continue                      # unvoiced or too short to judge
+        voices[speaker] = settings.voice_for(speaker, male=pitch < FEMALE_ABOVE_HZ)
+    return voices
 
 
 def _safe_name(text: str) -> str:
@@ -580,10 +626,16 @@ class JobRunner:
             if not segments:
                 raise RuntimeError("No speech was found in that video.")
 
+            # Labelled here so merging can respect who is speaking, and again
+            # after the translation cache below, which carries its own copy.
+            segments = diarize_backend.label_segments(segments, turns)
+            if settings.merge_lines:
+                segments = merge_adjacent(segments)
+
             # --------------------------------------------------- translate
             report = self._stage(job, plan, "translate", notes)
             tcache = workdir / "translated.json"
-            trans_print = _fingerprint(asr_print, settings.translator,
+            trans_print = _fingerprint(asr_print, settings.merge_lines, settings.translator,
                                        settings.resolved_ollama_model(machine.ram_gb),
                                        settings.anthropic_model, settings.openai_model,
                                        settings.target_language, settings.glossary_text())
@@ -626,6 +678,15 @@ class JobRunner:
                 notes.append("The original speakers could not be cloned, so a "
                              "built-in voice was used instead.")
 
+            # Voices matched to each speaker's own pitch, when there is more
+            # than one of them and we are not cloning (a clone already sounds
+            # like the speaker).
+            voice_map: dict[int, str] = {}
+            if not cloning and len(speaker_ids) > 1:
+                voice_map = _voice_map(settings, segments, speaker_ids, speech16)
+            if voice_map:
+                stats["voice_match"] = "by pitch"
+
             # One rate for the whole track, fixed before the first line is spoken.
             project_rate = int(getattr(engine, "sample_rate", tts_backend.SAMPLE_RATE))
             stats["sample_rate"] = project_rate
@@ -643,7 +704,8 @@ class JobRunner:
             # replaying the previous run's.
             speaker_print = _fingerprint(
                 settings.diarize, settings.expected_speakers,
-                "".join(str(s.get("speaker", 0)) for s in segments))
+                "".join(str(s.get("speaker", 0)) for s in segments),
+                "".join(f"{k}{v}" for k, v in sorted(voice_map.items())))
             segdir = workdir / "lines" / _fingerprint(trans_print, settings.voice_mode,
                                                       settings.voice, settings.speed,
                                                       engine.name, project_rate,
@@ -667,7 +729,8 @@ class JobRunner:
                 else:
                     try:
                         audio, rate = engine.say(
-                            text, settings.voice_for(speaker), settings.speed, speaker=speaker)
+                            text, voice_map.get(speaker) or settings.voice_for(speaker),
+                            settings.speed, speaker=speaker)
                     except Exception as exc:                     # noqa: BLE001
                         # A voice that breaks part way through must not cost the
                         # user the whole job. Drop to the portable engine once and
@@ -681,8 +744,9 @@ class JobRunner:
                                 degraded = True
                                 stats["voices"] = f"{engine.name} (fell back mid-job)"
                                 audio, rate = engine.say(
-                                    text, settings.voice_for(speaker), settings.speed,
-                                    speaker=speaker)
+                                    text,
+                                    voice_map.get(speaker) or settings.voice_for(speaker),
+                                    settings.speed, speaker=speaker)
                             except Exception:                    # noqa: BLE001
                                 failed += 1
                                 continue

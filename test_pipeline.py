@@ -738,6 +738,59 @@ def shutil_rmtree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
+# =============================== 9. reshaping and matching the voices
+def test_segments_and_voices():
+    """Two ideas taken from other dubbing projects, checked against real numbers."""
+    print("\n[9] Joining run-on lines, and matching voices by pitch")
+    from app.steps.segments import merge_adjacent
+    from app.backends.diarize import median_pitch
+    from app.config import Settings
+
+    # Fast dialogue: short lines, almost no gap, one speaker.
+    rapid = [{"start": t, "end": t + 0.9, "text": f"line {n}", "speaker": 0}
+             for n, t in enumerate([0.0, 1.0, 2.0, 3.0])]
+    out = merge_adjacent(rapid)
+    check("run-on lines are joined", len(out) == 1, f"{len(rapid)} -> {len(out)}")
+    check("the joined line spans the original run",
+          abs(out[0]["end"] - 3.9) < 1e-6 and out[0]["start"] == 0.0)
+    check("the words are all still there",
+          out[0]["text"] == "line 0 line 1 line 2 line 3", out[0]["text"])
+
+    # A different speaker interrupting must break the run.
+    mixed = [dict(r) for r in rapid]
+    mixed[2]["speaker"] = 1
+    check("a change of speaker breaks the run", len(merge_adjacent(mixed)) == 3,
+          str(len(merge_adjacent(mixed))))
+
+    # Real pauses — the instructional material the app was built for.
+    spaced = [{"start": t, "end": t + 1.5, "text": "x", "speaker": 0}
+              for t in (0.0, 3.0, 6.0)]
+    check("material with real pauses is left alone",
+          len(merge_adjacent(spaced)) == 3, str(len(merge_adjacent(spaced))))
+    check("ids are renumbered for the translator",
+          [s_["i"] for s_ in merge_adjacent(spaced)] == [0, 1, 2])
+
+    # Pitch, on synthesised tones with a known fundamental.
+    sr = 16000
+    for hz in (110.0, 220.0):
+        t = np.linspace(0, 2.0, int(2.0 * sr), endpoint=False)
+        # A couple of harmonics, so it is a plausible voice rather than a sine.
+        wave = (0.5 * np.sin(2 * np.pi * hz * t)
+                + 0.3 * np.sin(4 * np.pi * hz * t)).astype(np.float32)
+        got = median_pitch(wave, sr)
+        check(f"pitch of a {hz:.0f} Hz tone is found", abs(got - hz) < 12,
+              f"{got:.1f} Hz")
+
+    s_ = Settings()
+    s_.voice = "bf_emma"
+    male = s_.voice_for(1, male=True)
+    female = s_.voice_for(1, male=False)
+    check("a low-pitched speaker gets a male voice", male.split("_")[0][-1] == "m", male)
+    check("a high-pitched speaker gets a female voice",
+          female.split("_")[0][-1] == "f", female)
+    check("the choice still avoids the primary voice", female != "bf_emma", female)
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -747,6 +800,7 @@ if __name__ == "__main__":
     test_preset_change_reseparates()
     test_mixed_sample_rates()
     test_cleanup()
+    test_segments_and_voices()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")
