@@ -564,8 +564,14 @@ async function boot(){
   document.querySelectorAll(".settingsPath").forEach(el => {
     el.textContent = STATE.settings_path || "settings.json";
   });
+  // Says that a bigger one is an option, and what it costs, because the field is
+  // a blank box and nothing else in the app hints that it takes a model name.
   $("modelHint").textContent =
-    `Leave blank to use ${STATE.machine.suggested_model}, chosen for your ${STATE.machine.ram_gb} GB of memory.`;
+    `Leave blank to use ${STATE.machine.suggested_model}, chosen for your `
+    + `${STATE.machine.ram_gb} GB of memory. You can name any model Ollama has — `
+    + `qwen3:32b translates specialist material better, but it is a 20 GB `
+    + `download and slower per line. Pull it in Ollama first; if it isn't there, `
+    + `the nearest installed model is used instead and the report says so.`;
 
   STATE.jobs.forEach(j => { JOBS[j.id] = j; });
   const live = STATE.jobs.find(j => j.status==="running" || j.status==="queued");

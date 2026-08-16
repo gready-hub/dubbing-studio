@@ -139,9 +139,13 @@ def suggest_ollama_model(ram_gb: int) -> str:
     paper. A 12B model needs about 8.6 GB resident, which on a 16 GB Mac drives
     the machine deep into swap and makes translation the slowest stage of the job
     by a wide margin — so 16 GB gets an 8B model instead.
+
+    Capped at 14B however much memory there is. The 32B is a 20 GB download, it
+    holds about that much while it runs, and it is slower per line — against
+    line-by-line translation of instructional speech, where a glossary is what
+    actually pins the terminology, none of that buys enough to be the default.
+    Anyone who wants it can name it under Settings, which overrides this.
     """
-    if ram_gb >= 48:
-        return "qwen3:32b"
     if ram_gb >= 24:
         return "qwen3:14b"
     if ram_gb >= 16:

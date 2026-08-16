@@ -263,8 +263,7 @@ if command -v ollama >/dev/null 2>&1; then
   # a better one that doesn't, and the app translates instructional speech well
   # with any of them. Keep the first entry of each tier in step with
   # suggest_ollama_model() in app/config.py.
-  if   (( RAM_GB >= 48 )); then LADDER=(qwen3:32b qwen3:14b qwen3:8b)
-  elif (( RAM_GB >= 24 )); then LADDER=(qwen3:14b qwen3:8b)
+  if   (( RAM_GB >= 24 )); then LADDER=(qwen3:14b qwen3:8b)
   elif (( RAM_GB >= 16 )); then LADDER=(qwen3:8b qwen3:4b)
   else                          LADDER=(qwen3:4b); fi
 

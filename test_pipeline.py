@@ -280,6 +280,28 @@ def test_server():
                      "404: File not found (caused by <HTTPError 404: File not found>)")
     check("a dead link is explained in plain English",
           "typed correctly" in dead and "ERROR" not in dead, dead)
+    # Two files have to agree about which model a given Mac gets: config.py
+    # suggests it and the setup check reports it, while Install.command is what
+    # actually downloads it. A comment asks them to be kept in step; this is what
+    # notices when they aren't.
+    import re as _re
+    from app.config import suggest_ollama_model
+    ladder = _re.findall(r"RAM_GB >= (\d+) \)\); then LADDER=\(([^)]+)\)",
+                         (ROOT / "Install.command").read_text())
+    check("the installer names its memory tiers", len(ladder) >= 2, str(ladder))
+    for ram, models in ladder:
+        first = models.split()[0]
+        check(f"at {ram} GB the installer fetches what the app expects",
+              first == suggest_ollama_model(int(ram)),
+              f"installs {first}, app wants {suggest_ollama_model(int(ram))}")
+    # Each tier falls back to something smaller, so one failed download is not
+    # the end of it.
+    check("every tier but the smallest has something to fall back to",
+          all(len(m.split()) > 1 for _, m in ladder), str(ladder))
+    # Capped deliberately: the 32B is a 20 GB download and slower per line.
+    check("no tier defaults to the 32B model",
+          all("32b" not in suggest_ollama_model(r) for r in (8, 16, 24, 48, 64, 128)))
+
     # Nobody outside this code knows model tags exist, and a machine whose
     # installer pulled a different size used to die on a 404 mid-translation.
     from app.backends import translate as T

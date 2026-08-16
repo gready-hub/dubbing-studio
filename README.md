@@ -23,7 +23,7 @@ leave it and come back.
 | **You'll be asked for** | your Mac password, once, when Homebrew installs |
 | **You'll end up with** | **Dubbing Studio** in your Applications folder |
 | **To update later** | run the same line again |
-| **Needs** | macOS, an internet connection, and 10–25 GB free — it picks a translation model to match your Mac's memory, and bigger Macs get bigger models |
+| **Needs** | macOS, an internet connection, and about 10–18 GB free — it picks a translation model to match your Mac's memory |
 
 <details>
 <summary>Prefer to install by hand?</summary>
@@ -176,7 +176,7 @@ so the big one is obvious at a glance:
 | | Typical | Safe to clear |
 |---|---|---|
 | Downloaded AI models | 3–6 GB | Yes — re-fetched when next needed |
-| Translation model | 2.5–20 GB | Held by Ollama; remove it from there |
+| Translation model | 2.5–9 GB | Held by Ollama; remove it from there |
 | Python environment | ~1.7 GB | Removed by Uninstall |
 | Working files | grows per job | Yes — one video at a time, or all |
 | Speech models | ~700 MB | Yes |
