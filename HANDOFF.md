@@ -1,5 +1,13 @@
 # Dubbing Studio — finish and verify on this Mac
 
+> **Most of this has now been done — see [VERIFIED.md](VERIFIED.md).** It records
+> what was actually executed and what is still only asserted from reading the
+> code, item by item. The short version: the installer, both MLX paths, Demucs on
+> MPS, the `.app`, the native window, a real download and the Docker build have
+> all been run, and the installer and the Docker build were both broken. Voice
+> cloning and `mlx-whisper` remain unexercised. The section below is kept for the
+> context it gives, not as a current to-do list.
+
 ## What this is
 
 `~/Downloads/dubbing-studio` is a local video-dubbing app: paste a video link, get
