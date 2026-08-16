@@ -59,11 +59,37 @@ class Machine:
     has_ytdlp: bool
     has_ollama: bool
     in_docker: bool
+    av1_ok: bool
 
     @property
     def fast_path(self) -> bool:
         """True when we can use Apple's GPU via MLX."""
         return self.apple_silicon and self.has_mlx and not self.in_docker
+
+
+def mac_generation() -> int:
+    """Which Apple silicon generation this is, or 0 for anything else.
+
+    "Apple M4 Pro" -> 4. Intel, or a machine that will not say, gives 0.
+    """
+    try:
+        brand = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                               capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return 0
+    import re
+    m = re.search(r"Apple M(\d+)", brand)
+    return int(m.group(1)) if m else 0
+
+
+# AV1 decodes in hardware from the M3 onwards. Before that a Mac plays an AV1
+# file as sound with no picture — QuickTime reports incompatible parts — which is
+# how a finished 52-minute dub arrived unwatchable on an M1.
+AV1_FROM_GENERATION = 3
+
+
+def can_decode_av1() -> bool:
+    return mac_generation() >= AV1_FROM_GENERATION
 
 
 def _ram_gb() -> int:
@@ -129,6 +155,7 @@ def detect_machine() -> Machine:
         has_ytdlp=shutil.which("yt-dlp") is not None or _module_available("yt_dlp"),
         has_ollama=_ollama_up(),
         in_docker=docker,
+        av1_ok=can_decode_av1(),
     )
 
 

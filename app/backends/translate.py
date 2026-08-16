@@ -36,10 +36,13 @@ Rules you must follow every time:
 3. READ ALOUD BY A MACHINE. Write numbers, units and symbols as words: "2,5 mm"
    becomes "two point five millimetres", "5%" becomes "five percent". No digits, no
    symbols, no parentheses, no bullets.
-4. IMPERFECT INPUT. The source came from speech recognition and contains
+4. NEVER COPY. Returning a line unchanged, or repeating its id or its slot
+   marker back, is a defect — every line must come back in the target language
+   and nothing else.
+5. IMPERFECT INPUT. The source came from speech recognition and contains
    mis-hearings and run-on sentences. Infer the intent from context and translate
    that. Never return an empty line.
-5. FORMAT. Reply with one line per input, exactly as:
+6. FORMAT. Reply with one line per input, exactly as:
    <id>|<translation>
    No preamble, no commentary, no code fences, no blank lines."""
 
@@ -67,10 +70,16 @@ def _build_prompt(batch: list[dict], context: list[str], target: str, glossary: 
 # What the model sometimes puts back at the front of its own answer. The slot
 # marker was already stripped; the id was not, so a reply of "63|id: 63 Blusa de
 # verano..." was spoken aloud with the number in it.
+# Deliberately narrow. An earlier, looser version also matched a bare number and
+# a punctuation-free "line 5", which would have silently eaten the front of "3.
+# Chain three stitches" and "Line 5 of the pattern" — real sentences in the
+# material this app is pointed at. Corrupting a good translation is worse than
+# leaving a rare piece of scaffolding, which the check downstream counts anyway.
 _ECHOED = re.compile(
-    r"^\s*(?:\[[\d.]+s\]"                       # an echoed slot marker
-    r"|(?:id|line|#)\s*[:.]?\s*\d+\s*[-:.|)]*"   # "id: 63", "line 63.", "#63"
-    r"|\d+\s*[|:.)]"                             # a bare "63|" or "63."
+    r"^\s*(?:\[[\d.]+s\]"                     # an echoed slot marker
+    r"|(?:id|line)\s*[:.]\s*\d+\s*[-:.|)]*"   # "id: 63"
+    r"|(?:id|line)\s+\d+\s*[-:.|)]+"           # "id 63." — punctuation required
+    r"|#\s*\d+\s*[-:.|)]*"                     # "#63"
     r")\s*", re.IGNORECASE)
 
 
@@ -269,6 +278,47 @@ def describe_translator(settings, ram_gb: int) -> tuple[str, str]:
     return model, ""
 
 
+def _ask(batch: list[dict], context: list[str], target: str, glossary: str,
+         call) -> dict[int, str]:
+    try:
+        return _parse(call(_build_prompt(batch, context, target, glossary)), batch)
+    except TranslationError:
+        raise
+    except Exception:                                            # noqa: BLE001
+        return {}
+
+
+def _translate_chunk(batch: list[dict], context: list[str], target: str,
+                     glossary: str, call) -> dict[int, str]:
+    """One batch, halved whenever the model cannot manage it whole.
+
+    The retry used to break a batch down only when four or fewer lines were
+    missing, on the reasoning that small prompts almost always land. That is
+    true, and it was applied to the wrong case: a model that starts echoing its
+    input back fails a whole batch at once, and twenty-five missing lines fell
+    outside the rule, so it was asked the identical question twice and then
+    given up on.
+
+    Halving asks a different question each time, and by the time a piece is one
+    line the prompt is small enough that almost anything lands. Bounded by the
+    halving itself — a batch of twenty-five bottoms out in five levels.
+    """
+    got = _ask(batch, context, target, glossary, call)
+    missing = [s for s in batch if s["i"] not in got]
+    if not missing:
+        return got
+
+    if len(batch) == 1:
+        got.update(_ask(batch, context, target, glossary, call))   # one more go
+        return got
+
+    mid = max(1, len(missing) // 2)
+    for half in (missing[:mid], missing[mid:]):
+        if half:
+            got.update(_translate_chunk(half, context, target, glossary, call))
+    return got
+
+
 # ------------------------------------------------------------------- public
 
 def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = None) -> list[dict]:
@@ -307,34 +357,7 @@ def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = 
     for bn, batch in enumerate(batches):
         start = batch[0]["i"]
         context = [s["text"] for s in segments[max(0, start - CONTEXT):start]]
-        prompt = _build_prompt(batch, context, target, glossary)
-
-        got: dict[int, str] = {}
-        for attempt in range(3):
-            try:
-                got = _parse(call(prompt), batch)
-            except TranslationError:
-                raise
-            except Exception:                                        # noqa: BLE001
-                got = {}
-            if len(got) >= len(batch):
-                break
-            # Retry only the stragglers, one at a time — small prompts almost always land.
-            missing = [s for s in batch if s["i"] not in got]
-            if attempt == 2 or not missing:
-                break
-            if len(missing) <= 4:
-                for s in missing:
-                    single = _build_prompt([s], context, target, glossary)
-                    try:
-                        got.update(_parse(call(single), [s]))
-                    except Exception:                                # noqa: BLE001
-                        pass
-                break
-            prompt = _build_prompt(missing, context, target, glossary)
-            batch = missing
-
-        done.update(got)
+        done.update(_translate_chunk(batch, context, target, glossary, call))
         if progress:
             progress((bn + 1) / len(batches),
                      f"Translating with {label} — {min(len(done), len(segments))} of {len(segments)} lines")

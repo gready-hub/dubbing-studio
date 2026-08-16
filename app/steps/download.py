@@ -119,7 +119,7 @@ def _tidy(line: str) -> str:
 
 def download(url: str, workdir: Path, quality: str = "best",
              progress: Progress = None, info: dict | None = None,
-             cookies_from: str = "") -> tuple[Path, dict]:
+             cookies_from: str = "", allow_av1: bool = False) -> tuple[Path, dict]:
     """info: a probe() result the caller already has, to save asking twice.
 
     The preview needs the duration before it can weight the progress bar, which
@@ -130,17 +130,20 @@ def download(url: str, workdir: Path, quality: str = "best",
     if progress:
         progress(0.02, f"Found “{info['title']}”")
 
-    # H.264 first, whatever else is on offer. The video stream is copied rather
-    # than re-encoded, so whatever YouTube hands over is what has to play on the
-    # far end — and its 1080p pick is usually AV1, which no Mac before the M3 can
-    # decode. A real trial produced a 52-minute AV1 file that QuickTime on an M1
-    # opened as audio with no picture. H.264 is larger and universally playable,
-    # and a video that will not play is worth nothing at any size.
-    if quality in ("1080", "720"):
-        cap = f"[height<={quality}]"
-        fmt = (f"bv*[vcodec^=avc1]{cap}+ba/bv*{cap}+ba/b{cap}/b")
+    # The video stream is copied rather than re-encoded, so whatever the site
+    # hands over is what has to play on the far end.
+    #
+    # On a Mac that can decode AV1 — an M3 or newer — take whatever is smallest,
+    # which is usually AV1 and roughly half the size. On anything older, insist
+    # on H.264 first: a real trial took YouTube's 1080p AV1 and produced a
+    # 52-minute file that QuickTime on an M1 opened as sound with no picture.
+    # Larger, and a video that will not play is worth nothing at any size.
+    cap = f"[height<={quality}]" if quality in ("1080", "720") else ""
+    if allow_av1:
+        fmt = f"bv*{cap}+ba/b{cap}/b" if cap else "bv*+ba/b"
     else:
-        fmt = "bv*[vcodec^=avc1]+ba/bv*+ba/b"
+        fmt = (f"bv*[vcodec^=avc1]{cap}+ba/bv*{cap}+ba/b{cap}/b" if cap
+               else "bv*[vcodec^=avc1]+ba/bv*+ba/b")
 
     target = workdir / "source.%(ext)s"
     cmd = _ytdlp_cmd() + [

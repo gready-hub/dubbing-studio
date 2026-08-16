@@ -1386,15 +1386,18 @@ def test_translation_qc():
                       ("[2.0s] Now we chain three.", "Now we chain three."),
                       ("[2.0s] id 63. Now we chain three.", "Now we chain three."),
                       ("#63 Now we chain three.", "Now we chain three."),
-                      ("63) Now we chain three.", "Now we chain three."),
                       ("Now we chain three.", "Now we chain three.")]:
         got = _strip_echo(raw)
         check(f"stripped: {raw[:26]!r}", got == want, got)
 
-    # A number that is part of the sentence is not scaffolding.
-    kept = _strip_echo("3 chain stitches, then turn.")
-    check("a leading number that belongs to the sentence survives",
-          kept == "3 chain stitches, then turn.", kept)
+    # Numbers that belong to the sentence must survive. These are the shapes a
+    # crochet or cookery tutorial actually produces, and eating the front of one
+    # would corrupt a good translation silently.
+    for keep in ("3 chain stitches, then turn.",
+                 "3. Chain three stitches.",
+                 "Line 5 of the pattern is a chain.",
+                 "Row 12) is worked in the back loop."):
+        check(f"kept intact: {keep[:28]!r}", _strip_echo(keep) == keep, _strip_echo(keep))
 
     check("the source handed back is spotted", _looks_untranslated(SRC, SRC))
     check("a real translation is not", not _looks_untranslated("A summer blouse.", SRC))
@@ -1427,6 +1430,29 @@ def test_translation_qc():
     check("and it says so in a sentence", "original language" in qc.summarise(report))
     check("a clean translation says nothing at all",
           qc.summarise(qc.check([{"text": "Hola", "translation": "Hello there."}])) == "")
+
+    # A batch the model cannot manage whole is halved until it can. Twenty-five
+    # missing lines used to fall outside the "small prompts land" rule, so the
+    # identical question was asked twice and then given up on.
+    from app.backends import translate as _T
+    sizes = []
+
+    def flaky(prompt):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        sizes.append(len(ids))
+        if len(ids) > 4:                    # echoes its input above four lines
+            return "\n".join(f"{i}|id: {i} texto original numero {i} sin traducir"
+                              for i in ids)
+        return "\n".join(f"{i}|Chain three and turn, number {i}." for i in ids)
+
+    big = [{"i": n, "start": n, "end": n + 2,
+            "text": f"texto original numero {n} sin traducir"} for n in range(25)]
+    got = _T._translate_chunk(big, [], "English", "", flaky)
+    check("a batch the model chokes on is split until it lands",
+          len(got) == 25, f"{len(got)} of 25")
+    check("and it halves rather than asking the same thing twice",
+          sizes[0] == 25 and max(sizes[1:]) <= 13, str(sizes[:6]))
 
     # --- the codec that made a finished dub unplayable
     from app.steps.mux import WIDELY_PLAYABLE

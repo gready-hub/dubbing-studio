@@ -824,7 +824,8 @@ class JobRunner:
             report = self._stage(job, plan, "download", notes)
             video, _ = download.download(job.url, source_dir,
                                          settings.keep_video_quality, report, info,
-                                         cookies_from=settings.youtube_cookies)
+                                         cookies_from=settings.youtube_cookies,
+                                         allow_av1=machine.av1_ok)
             if not job.duration:
                 job.duration = download.media_duration(video)
             self._emit(job)
