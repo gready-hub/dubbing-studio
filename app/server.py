@@ -349,14 +349,24 @@ async def events():
 def main() -> None:
     import uvicorn
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    url = f"http://127.0.0.1:{port}"
+
+    # Inside a container, 127.0.0.1 is the container's own loopback. Docker
+    # publishes a port by forwarding to the container's external interface, so
+    # binding to loopback left the containerised app listening where nothing
+    # could reach it — the README's localhost:8765 answered nothing at all.
+    # Everywhere else, stay on loopback: this is a personal app with no
+    # authentication, and it has no business being reachable from the network.
+    in_docker = detect_machine().in_docker
+    host = "0.0.0.0" if in_docker else "127.0.0.1"               # noqa: S104
+    url = f"http://localhost:{port}" if in_docker else f"http://127.0.0.1:{port}"
+
     print(f"\n  Dubbing Studio is running.\n  Open this in your browser:  {url}\n")
-    if "--no-browser" not in sys.argv:
+    if "--no-browser" not in sys.argv and not in_docker:
         try:
             webbrowser.open(url)
         except Exception:                                        # noqa: BLE001
             pass
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":
