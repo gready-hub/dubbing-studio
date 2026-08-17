@@ -79,7 +79,7 @@ flowchart TD
     DIA -.->|a voice per speaker| TTS
     TTS --> FIT["<b>Fit each line</b><br/>into the gap the original speaker left"]
     FIT --> MIX["<b>Mix</b>"]
-    MIX --> MUX["<b>Combine with the picture</b><br/>ffmpeg — video copied, never re-encoded"]
+    MIX --> MUX["<b>Combine with the picture</b><br/>ffmpeg — picture copied, not re-encoded"]
     MUX --> OUT([Dubbed video])
 
     classDef optional stroke-dasharray:5 5
@@ -123,10 +123,17 @@ because that is when you re-run the link.
 ## Quality presets
 
 > [!NOTE]
-> Video is downloaded as H.264 wherever the site offers it, and copied into the
-> finished file rather than re-encoded. YouTube's own 1080p pick is usually AV1,
-> which no Mac before the M3 can decode — QuickTime opens those with sound and
-> no picture. H.264 is a larger download and plays everywhere.
+> **The finished file plays anywhere.** The format is chosen from the list the
+> site publishes, not guessed: H.264 video and AAC audio in an MP4, which every
+> Mac, phone, browser and TV of the last decade can open. The picture is copied
+> straight through rather than re-encoded, so nothing is lost.
+>
+> This is preferred over a smaller or sharper file on purpose, because the file
+> outlives the machine that made it. On a 4K video YouTube offers H.264 only up
+> to 1080p, so 1080p H.264 is taken over 2160p AV1 — AV1 needs an M3 or newer,
+> and QuickTime on anything older opens it with sound and no picture. On the rare
+> video offered in no H.264 at all, the picture is converted after dubbing and the
+> report says so.
 
 | Preset | What it does | Speed |
 |---|---|---|
@@ -134,10 +141,16 @@ because that is when you re-run the link.
 | **Balanced** *(default)* | Splits speech from music so the soundtrack survives | About 5× the video's length |
 | **Best quality** | Also Whisper, and each speaker's voice cloned | Considerably slower |
 
-Measured on an M1 with 16 GB using the local translation model. A newer Mac
-beats this comfortably, and switching **Translated by** to an API key removes
-the biggest chunk of time from every preset. The first video is slower still —
-it fetches about 700 MB of speech models, one time only.
+Measured on an M1 with 16 GB using the local translation model. Treat these as a
+rough shape rather than a promise: most of the time goes on translating and
+speaking each line, so what matters is how much speech is in the video, not how
+long it runs. A dense interview can take several times longer than a demonstration
+of the same length with long wordless stretches — one 98-minute instructional
+video finished in about 90 minutes on an M1.
+
+A newer Mac beats this comfortably, and switching **Translated by** to an API key
+removes the biggest chunk of time from every preset. The first video is slower
+still — it fetches about 700 MB of speech models, one time only.
 
 Start anything long and leave it. The Mac is held awake while there is work
 queued, so a job doesn't stall at 40% because nobody touched the trackpad — the
@@ -195,6 +208,7 @@ so the big one is obvious at a glance:
 | Python environment | ~1.7 GB | Removed by Uninstall |
 | Working files | grows per job | Yes — one video at a time, or all |
 | Speech models | ~700 MB | Yes |
+| Voice samples | a few MB | Yes — re-made on demand |
 | Finished videos | yours | **Never touched by this app** |
 
 A job is refused up front if there isn't room for it, with the numbers. An hour
@@ -250,6 +264,22 @@ it.
 | "Translation only returned N of M lines" | The local model is too small. Use a bigger one in Settings, or an API key |
 | Downloads but nothing is heard | No speech in the video, or speech buried in loud music |
 | More speakers found than really exist | Set **Who's speaking?** to *One person*, or say how many under Advanced |
+| "YouTube described the video but refused to send it" | Set **Sign in as** in Settings to the browser you watch YouTube in. See below |
+
+### When YouTube refuses the video
+
+A refusal on the download after the lookup worked is usually throttling, and the
+app retries on its own before saying anything. What it cannot retry past is a
+video that wants a signed-in session — age-restricted, members-only, or simply
+YouTube asking.
+
+**Sign in as** in Settings takes the cookies from a browser you are already
+signed into on this Mac. Nothing is uploaded; they go to YouTube and nowhere
+else. It is off unless you choose a browser, because reading a cookie store is
+not something to do quietly on someone's behalf.
+
+If it still refuses, check yt-dlp is current — **Setup check** flags it when it
+goes stale, and an out-of-date yt-dlp is the single commonest cause.
 
 Logs are at `~/Library/Logs/DubbingStudio.log`; each job keeps its working files
 under `~/Library/Application Support/DubbingStudio/jobs`.
