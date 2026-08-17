@@ -96,8 +96,11 @@ pkill -f "app.server" 2>/dev/null
 
 rm -rf "$SUPPORT"      && ok "Settings, history and working files"
 rm -rf "$BUNDLE"       && ok "Applications shortcut"
-rm -f  "$HOME/Library/Logs/DubbingStudio.log" \
-       "$HOME/Library/Logs/DubbingStudio-install.log" && ok "Logs"
+# Glob rather than a list: the rotating handler leaves DubbingStudio.log.1 and
+# friends behind, and naming each file by hand is how one gets left on the disk.
+rm -f  "$HOME/Library/Logs/DubbingStudio.log"* \
+       "$HOME/Library/Logs/DubbingStudio-install.log" \
+       "$HOME/Library/Logs/DubbingStudio-crash.log" && ok "Logs"
 if (( ${#HF_OURS[@]} )); then
   rm -rf "${HF_OURS[@]}" && ok "Downloaded AI models"
 fi

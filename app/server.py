@@ -19,10 +19,22 @@ from pydantic import BaseModel
 from .config import (BUILTIN_GLOSSARIES, OUTPUT_DIR, PRESETS, SETTINGS_FILE,
                      Settings, VOICES, detect_machine, in_container,
                      suggest_ollama_model)
+from . import diagnostics, logs
 from .pipeline import runner
 
 STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="Dubbing Studio")
+
+
+@app.get("/api/diagnostics")
+def diagnostics_report() -> dict:
+    """Everything needed to work out what went wrong, as pasteable text.
+
+    No job parameter: the failing job is in the recent log entries already, and
+    asking which one would be a question the user cannot answer at the moment
+    they most need this.
+    """
+    return {"text": diagnostics.report()}
 
 
 # ------------------------------------------------------------------ models
@@ -543,6 +555,12 @@ async def events():
 def main() -> None:
     import uvicorn
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+
+    machine = detect_machine()
+    logs.setup()
+    logs.get().info("app start", extra={
+        "port": port, "arch": machine.arch, "ram_gb": machine.ram_gb,
+        "engine": "mlx" if machine.fast_path else "cpu"})
 
     # Inside a container, 127.0.0.1 is the container's own loopback. Docker
     # publishes a port by forwarding to the container's external interface, so

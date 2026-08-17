@@ -12,6 +12,7 @@ re-run of the same link.
 """
 from __future__ import annotations
 
+from .. import logs
 from ..backends.translate import _looks_untranslated, _strip_echo
 
 
@@ -24,6 +25,10 @@ def check(segments: list[dict]) -> dict:
     better one than the original language read aloud in an English voice.
     """
     repaired = untranslated = empty = 0
+    # Every repair is logged with the line it changed, not just counted. The
+    # count says a long video needed patching; the lines say where, so they can
+    # be listened to in the finished dub instead of taken on trust.
+    log = logs.get()
 
     for seg in segments:
         text = (seg.get("translation") or "").strip()
@@ -34,12 +39,19 @@ def check(segments: list[dict]) -> dict:
         cleaned = _strip_echo(text)
         if cleaned != text:
             repaired += 1
+            log.warning("stray scaffolding removed from a translated line",
+                        extra={"at": round(seg.get("start", 0.0), 1),
+                               "was": text[:120], "now": cleaned[:120]})
             text = cleaned
 
         if not text:
             empty += 1
         elif _looks_untranslated(text, seg.get("text", "")):
             untranslated += 1
+            log.warning("line came back untranslated, silenced",
+                        extra={"at": round(seg.get("start", 0.0), 1),
+                               "source": (seg.get("text") or "")[:120],
+                               "returned": text[:120]})
             text = ""
 
         seg["translation"] = text

@@ -24,7 +24,7 @@ from typing import Callable
 import numpy as np
 import soundfile as sf
 
-from . import storage
+from . import logs, storage
 from .config import HISTORY_FILE, JOBS, OUTPUT_DIR, Settings, detect_machine
 from .backends import asr as asr_backend
 from .backends import clone as clone_backend
@@ -345,6 +345,13 @@ class Job:
     # was highlighted and the row looked inert at exactly the moment the user is
     # asking whether anything is happening.
     stages: list[str] = field(default_factory=list)
+    # Seconds each finished stage took. Nothing measured this before, so the only
+    # figure anywhere was the whole run — which answers "was that slow" but never
+    # "slow where", and on a 90-minute job that is the only useful question.
+    # Stages run strictly in sequence, so _stage() closes the previous one's
+    # clock as it opens the next and no separate bookkeeping is needed.
+    stage_times: dict[str, float] = field(default_factory=dict)
+    stage_began: float = 0.0
 
     def public(self) -> dict:
         d = asdict(self)
@@ -356,6 +363,10 @@ class Job:
         # job is still waiting its turn.
         d["elapsed"] = (round((self.finished or time.time()) - self.began)
                         if self.began else 0)
+        # Worked out here rather than from stage_began in the browser: that is an
+        # epoch stamp from this machine's clock, and the two need not agree.
+        d["stage_elapsed"] = (round(time.time() - self.stage_began, 1)
+                              if self.stage_began else 0.0)
         return d
 
 
@@ -718,7 +729,10 @@ class JobRunner:
 
     def _stage(self, job: Job, plan: dict, key: str, notes: list[str] | None = None):
         before, weight, label = plan[key]
+        self._close_stage(job)
         job.stage, job.stage_label = key, label
+        job.stage_began = time.time()
+        logs.get(job.id).info("stage started", extra={"stage": key})
 
         def report(fraction: float, message: str = "") -> None:
             self._check_cancel(job)
@@ -738,8 +752,23 @@ class JobRunner:
         report(0.0, label)
         return report
 
+    def _close_stage(self, job: Job) -> None:
+        """Stop the clock on whatever was running. Called by _stage and at the end."""
+        if not job.stage or not job.stage_began:
+            return
+        spent = round(time.time() - job.stage_began, 1)
+        # Added to, not replaced: a resumed link re-enters a stage it has already
+        # been through, and two visits to "download" are one download's cost.
+        job.stage_times[job.stage] = round(job.stage_times.get(job.stage, 0.0) + spent, 1)
+        job.stage_began = 0.0
+        logs.get(job.id).info("stage finished",
+                              extra={"stage": job.stage, "seconds": spent})
+
     # ---------------------------------------------------------- execution
     def _run(self, job: Job, settings: Settings) -> None:
+        # Set once, so every log record made anywhere beneath this — including in
+        # backends that have no idea a job exists — says which job it belongs to.
+        logs.current_job.set(job.id)
         machine = detect_machine()
         # Keyed on the link, not on the job: a preview and the full run of the
         # same video are two jobs sharing one folder, which is what lets the
@@ -1203,7 +1232,26 @@ class JobRunner:
                            if machine.av1_ok else
                            "QuickTime opens the file with sound but no picture. VLC "
                            "will play it."))
-            if stats.get("audio_warning"):
+            # The silence warning exists to catch a run that died half way, and
+            # it decides on the share of the track that is quiet. That share is
+            # also just what a time-fitted dub looks like: every line starts on
+            # its original timestamp and English is shorter than most of what it
+            # replaces, so the gaps are real and correct. Measured on a 98-minute
+            # crochet tutorial — 92% speech in the original, 38% in the dub, all
+            # 448 lines present and spoken, and the report told her it was "what
+            # a half-failed run looks like".
+            #
+            # So the share alone no longer raises it. If nothing failed to speak
+            # and the check found nothing to silence, every line is there and the
+            # quiet is the shape of the video, not evidence of anything.
+            checked = stats.get("translation_check") or {}
+            everything_spoken = not failed and not checked.get("untranslated") \
+                and not checked.get("empty")
+            if stats.get("audio_present") is False:
+                # Distinct from the above and never suppressed: a track with
+                # nothing audible anywhere is wrong however the lines counted.
+                notes.append(stats["audio_warning"])
+            elif stats.get("audio_warning") and not everything_spoken:
                 notes.append(stats["audio_warning"])
             if job.preview:
                 stats["preview"] = True
@@ -1232,6 +1280,7 @@ class JobRunner:
             if freed:
                 stats["working_files_freed"] = round(freed / (1024 ** 2))
 
+            self._close_stage(job)
             job.stats = stats
             job.output = str(out_path)
             job.status = "done"
@@ -1243,6 +1292,12 @@ class JobRunner:
                 # Kept out of the history list for the same reason it is kept out
                 # of the videos folder: it is not a thing the user asked to have.
                 _record_history(job)
+            logs.get(job.id).info("job finished", extra={
+                "seconds": round(job.finished - job.began, 1),
+                "duration": round(job.duration, 1), "preview": job.preview,
+                "stage_times": job.stage_times, "codec": stats.get("video_codec"),
+                "lines_spoken": stats.get("lines_spoken"),
+                "notes": notes})
             self._emit(job)
 
         except _Cancelled:
@@ -1322,10 +1377,18 @@ class JobRunner:
         return engine, True
 
     def _fail(self, job: Job, message: str, detail: str = "") -> None:
+        self._close_stage(job)
         job.status = "error"
         job.error = message
         job.message = message
         job.finished = time.time()
+        # "reason", not "message": LogRecord already owns that attribute and
+        # raises rather than shadowing it, which turned every failed job into a
+        # second failure inside the logging call.
+        logs.get(job.id).error("job failed", extra={
+            "stage": job.stage, "url": job.url, "reason": message,
+            "detail": (job.error_detail or detail)[-2000:],
+            "stage_times": job.stage_times})
         if detail:
             try:
                 path = JOBS / job.id

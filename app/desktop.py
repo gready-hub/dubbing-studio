@@ -43,6 +43,13 @@ def _wait_until_up(url: str, timeout: float = 40.0) -> bool:
 
 
 def main() -> None:
+    # Before anything else: this is the entry point the app icon uses, and a
+    # crash between here and the window appearing is the one failure with no
+    # interface left to press a button in.
+    from . import logs
+    logs.setup()
+    logs.get().info("app start", extra={"launched_by": "app bundle"})
+
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
 

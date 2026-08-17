@@ -72,7 +72,12 @@ fi
 
 command -v ollama >/dev/null 2>&1 && ! pgrep -qx ollama && open -a Ollama 2>/dev/null
 
-exec python -m app.desktop 2>> "\$HOME/Library/Logs/DubbingStudio.log"
+# A file of its own, not DubbingStudio.log. The app now writes that one itself
+# through a rotating handler, and a second writer appending to the same path
+# keeps its handle on the old inode the moment the handler rotates — so the two
+# quietly overwrite each other's work. This side is the last resort anyway: what
+# lands here is what dies below Python, where nothing can be logged.
+exec python -m app.desktop 2>> "\$HOME/Library/Logs/DubbingStudio-crash.log"
 LAUNCHER
 chmod +x "$CONTENTS/MacOS/DubbingStudio"
 

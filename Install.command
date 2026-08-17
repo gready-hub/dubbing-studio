@@ -15,12 +15,65 @@ LOG="$HOME/Library/Logs/DubbingStudio-install.log"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 
-say()  { printf "%s\n" "$*"; }
-step() { printf "\n${BOLD}%s${RESET}\n" "$*"; }
-ok()   { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
+# Every line the user is told also goes to the log, timestamped and without the
+# colour codes. Before this the log held only what individual commands redirected
+# into it, which in practice was pip: on this machine 136 of its 142 lines were
+# "Requirement already satisfied", and none of them said which step was running
+# when something went wrong.
+note() { printf '%s  %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"; }
+say()  { printf "%s\n" "$*";                       note "$*"; }
+step() { printf "\n${BOLD}%s${RESET}\n" "$*";      note "== $*"; }
+ok()   { printf "  ${GREEN}✓${RESET} %s\n" "$*";   note "ok   $*"; }
 WARNINGS=()
-warn() { WARNINGS+=("$*"); printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
-bad()  { printf "  ${RED}✗${RESET} %s\n" "$*"; }
+warn() { WARNINGS+=("$*"); printf "  ${YELLOW}!${RESET} %s\n" "$*"; note "WARN $*"; }
+bad()  { printf "  ${RED}✗${RESET} %s\n" "$*";     note "FAIL $*"; }
+
+# Put the details straight on the clipboard rather than naming a file. Asking
+# somebody to find ~/Library/Logs — a folder Finder hides by default — and attach
+# the right one of two files is the point at which most people give up and say
+# only "it didn't work". pbcopy is on every Mac.
+copy_details() {
+  local summary
+  summary="$(
+    printf 'Dubbing Studio — install details\n\n'
+    printf 'macOS %s on %s, %s GB memory\n' \
+      "$(sw_vers -productVersion 2>/dev/null)" "$(uname -m)" "${RAM_GB:-?}"
+    printf 'Installed to: %s\n' "$PWD"
+    if (( ${#WARNINGS[@]} )); then
+      printf '\nDid not complete:\n'
+      printf '  - %s\n' "${WARNINGS[@]}"
+    fi
+    printf '\nLast 40 lines of the log:\n'
+    tail -n 40 "$LOG" 2>/dev/null | sed 's/^/  /'
+  )"
+  # Printed rather than say()'d: this is talking *about* the log, and writing it
+  # into the log puts the previous run's "copied to your clipboard" inside the
+  # next run's summary.
+  if printf '%s\n' "$summary" | pbcopy 2>/dev/null; then
+    printf '  The details are on your clipboard — paste them into a message\n'
+    printf '  to whoever helps you with this.\n\n'
+  else
+    printf '  Details are in this file, which you can attach to a message:\n'
+    printf '  %s\n\n' "$LOG"
+  fi
+}
+
+# One ending for every way this can fail. The checks that stop the install had a
+# "press return" of their own, which is where the clipboard needs to happen too —
+# a missing Homebrew is far likelier than an unexpected crash. Routed through
+# here so each of them gets it without repeating itself, and so the trap below
+# cannot prompt a second time on the way out.
+HANDLED=0
+finish_badly() {
+  (( HANDLED )) && return 0
+  HANDLED=1
+  copy_details
+  read -r -p "Press return to close this window."
+}
+
+# And a failure nowhere near a check. Without this an installer that died
+# mid-step closed the window leaving nothing behind at all.
+trap 'code=$?; (( code )) && { bad "Setup stopped unexpectedly (error $code)."; finish_badly; }' EXIT
 
 clear
 cat <<'BANNER'
@@ -37,6 +90,9 @@ BANNER
 if [[ "$(uname)" != "Darwin" ]]; then
   bad "This installer is for macOS. On Windows or Linux, use the Docker version"
   say "    in the docker/ folder instead."
+  # Handled here, so the exit trap does not add a second prompt and a clipboard
+  # summary to a message that is already the complete answer.
+  HANDLED=1
   read -r -p "Press return to close."
   exit 1
 fi
@@ -93,10 +149,10 @@ if command -v brew >/dev/null 2>&1; then
 else
   warn "Installing Homebrew. It will ask for your Mac password — this is normal."
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-    || { bad "Homebrew install failed. See the message above."; read -r -p "Press return."; exit 1; }
+    || { bad "Homebrew install failed. See the message above."; finish_badly; exit 1; }
   brew_shellenv || true
 fi
-command -v brew >/dev/null 2>&1 || { bad "Homebrew still not found."; read -r -p "Press return."; exit 1; }
+command -v brew >/dev/null 2>&1 || { bad "Homebrew still not found."; finish_badly; exit 1; }
 ok "Homebrew ready"
 
 # ------------------------------------------------------- 3. ffmpeg, yt-dlp
@@ -170,7 +226,7 @@ pick_python() {
 if ! PY="$(pick_python)"; then
   bad "No usable Python 3.10 or newer was found."
   say "    Install one with:  brew install python@3.12"
-  read -r -p "Press return."; exit 1
+  finish_badly; exit 1
 fi
 ok "Using $("$PY" -V 2>&1)"
 
@@ -185,13 +241,13 @@ fi
 if [[ ! -x .venv/bin/python ]]; then
   if ! "$PY" -m venv .venv >>"$LOG" 2>&1; then
     bad "Could not create the Python environment. See $LOG"
-    read -r -p "Press return."; exit 1
+    finish_badly; exit 1
   fi
 fi
 # shellcheck disable=SC1091
 if ! source .venv/bin/activate; then
   bad "Could not activate the Python environment."
-  read -r -p "Press return."; exit 1
+  finish_badly; exit 1
 fi
 python -m pip install --quiet --upgrade pip wheel
 REQ="requirements-portable.txt"
@@ -203,7 +259,7 @@ else
   warn "The fast Apple-GPU packages failed; falling back to the portable engine."
   warn "Details: $LOG"
   python -m pip install -r requirements-portable.txt >>"$LOG" 2>&1 \
-    || { bad "Python setup failed. See $LOG"; read -r -p "Press return."; exit 1; }
+    || { bad "Python setup failed. See $LOG"; finish_badly; exit 1; }
 fi
 
 # The Apple-GPU voice phonemises English through spacy and fetches this model the
@@ -364,8 +420,8 @@ DONE
   cat <<DONE
 
   Re-running this installer is safe and will retry them.
-  Full details: $LOG
 
 DONE
+  copy_details
 fi
 read -r -p "Press return to close this window."

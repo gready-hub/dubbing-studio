@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 from typing import Callable, Optional
 
+from .. import logs
 from ..notes import note
 
 Progress = Optional[Callable[[float, str], None]]
@@ -345,8 +346,20 @@ def _translate_chunk(batch: list[dict], context: list[str], target: str,
     if not missing:
         return got
 
+    # Logged because this is the machinery that stops a local model's bad patch
+    # reaching the finished video, and until now it left no trace either way —
+    # so after a run nobody could say whether it had saved the job or never
+    # fired. On a long video these lines are the evidence.
+    log = logs.get()
+    log.warning("translation batch incomplete, halving", extra={
+        "asked": len(batch), "missing": len(missing),
+        "first_missing": missing[0].get("text", "")[:80]})
+
     if len(batch) == 1:
         got.update(_ask(batch, context, target, glossary, call))   # one more go
+        if batch[0]["i"] not in got:
+            log.error("line could not be translated even alone",
+                      extra={"text": batch[0].get("text", "")[:120]})
         return got
 
     mid = max(1, len(missing) // 2)

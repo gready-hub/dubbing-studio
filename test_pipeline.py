@@ -1576,6 +1576,39 @@ def test_translation_qc():
     check("and the surround track's bytes are not counted against the disk check",
           choose_format(SURROUND, "best")["bytes"] == 1733_000_000 + 95_000_000)
 
+    # Which file the pipeline is handed after the download. This was
+    # sorted(glob("source.*"))[0], which is right until an attempt is
+    # interrupted: a refused try leaves source.f137.mp4.part behind, the retry
+    # writes source.mp4, and the stub sorts first. On a real run that turned a
+    # complete 1.7 GB download into "the video is in a format that can't be read".
+    from app.steps.download import _finished_file
+    shed = SCRATCH / "picking"
+    shutil.rmtree(shed, ignore_errors=True)
+    shed.mkdir(parents=True)
+    (shed / "source.f137.mp4.part").write_bytes(b"x" * 10_000)
+    (shed / "source.mp4.ytdl").write_bytes(b"{}")
+    (shed / "source.mp4").write_bytes(b"x" * 1_000_000)
+    check("a leftover .part is never mistaken for the finished download",
+          _finished_file(shed).name == "source.mp4", _finished_file(shed).name)
+    (shed / "source.mp4").unlink()
+    (shed / "source.f137.mp4").write_bytes(b"x" * 900_000)
+    check("an unmerged format is used when there is no merged file",
+          _finished_file(shed).name == "source.f137.mp4")
+    (shed / "source.webm").write_bytes(b"x" * 10)
+    check("but the merged name wins even when it is smaller",
+          _finished_file(shed).name == "source.webm")
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.mp4.part").write_bytes(b"x" * 500)
+    check("a folder holding only working files reports nothing finished",
+          _finished_file(shed) is None)
+
+    # The progress counter cannot be trusted alone across a retry: yt-dlp answers
+    # a resumed attempt with "Resuming download at byte N" and what it counts
+    # from there depends on the format. The file on disk has no such opinion.
+    check("the bytes on disk are used as a floor under the reported count",
+          "def fetched()" in src and "max(done[\"before\"] + got_b, fetched())" in src)
+
     # Picture and sound are two downloads that each count from zero. Summed, so
     # the bar cannot fill up and then start again from nothing near the end —
     # which reads as the job restarting itself.
@@ -1646,6 +1679,186 @@ def test_translation_qc():
           "NEVER COPY" in tsrc)
 
 
+# ============================ 14. something to paste when it goes wrong
+def test_observability():
+    """The whole point is a non-technical user having one thing to send.
+
+    Before this the app wrote nothing anyone could use: the log named in the
+    README held twenty-two lines of the same deprecation warning, and the
+    installer's held pip's "Requirement already satisfied" 136 times.
+    """
+    print("\n[14] Something to paste when it goes wrong")
+    import importlib
+    import logging
+    import logging.handlers
+    from app.config import Settings, detect_machine
+
+    log_dir = SCRATCH / "logs"
+    shutil.rmtree(log_dir, ignore_errors=True)
+    os.environ["DUBBING_STUDIO_LOGS"] = str(log_dir)
+    from app import logs as logs_mod
+    importlib.reload(logs_mod)
+    logs_mod.setup()
+
+    # --- one file, JSON, one object per line, tagged with the job
+    log = logs_mod.get("job-42")
+    log.info("stage started", extra={"stage": "translate"})
+    log.warning("translation batch incomplete, halving",
+                extra={"asked": 25, "missing": 25})
+    logs_mod.get().info("app start", extra={"engine": "mlx"})
+
+    lines = [l for l in logs_mod.LOG_FILE.read_text().splitlines() if l.strip()]
+    check("the log is one JSON object per line",
+          all(isinstance(json.loads(l), dict) for l in lines), f"{len(lines)} lines")
+    first = json.loads(lines[0])
+    check("records carry a time, a level and the event",
+          {"time", "level", "event"} <= set(first), str(sorted(first)))
+    check("a record made during a job knows which job",
+          first.get("job_id") == "job-42")
+    check("and the fields passed at the call site survive",
+          first.get("stage") == "translate", str(first))
+    check("a record made outside a job carries no job id",
+          "job_id" not in json.loads(lines[2]))
+
+    # The translation retry and the quality check sit several layers below the
+    # pipeline and are handed no job id. They are also the two places whose
+    # records matter most, so the job rides on the thread instead.
+    logs_mod.current_job.set("job-99")
+    logs_mod.get().warning("translation batch incomplete, halving",
+                           extra={"asked": 25})
+    tagged = json.loads([l for l in logs_mod.LOG_FILE.read_text().splitlines() if l][-1])
+    check("a backend that knows nothing about jobs still tags its records",
+          tagged.get("job_id") == "job-99", str(tagged))
+    logs_mod.current_job.set("")
+
+    # A field named after one of LogRecord's own attributes used to raise, which
+    # turned a failed job into a second failure inside the call reporting it.
+    logs_mod.get("j").error("job failed", extra={"message": "boom", "name": "x"})
+    last = json.loads([l for l in logs_mod.LOG_FILE.read_text().splitlines() if l][-1])
+    check("a field clashing with LogRecord's own names is renamed, not fatal",
+          last.get("message_") == "boom" and last.get("name") == "app", str(last))
+
+    # --- rotation keeps the file bounded without losing the recent past
+    check("a whole job's records fit in one file before it rotates",
+          logs_mod.MAX_BYTES >= 5 * 1024 ** 2,
+          f"{logs_mod.MAX_BYTES // 1024 ** 2} MB x {logs_mod.BACKUPS}")
+    handler = logging.getLogger("app").handlers[0] if logging.getLogger("app").handlers \
+        else logging.getLogger().handlers[0]
+    check("rotation is the stdlib's, not something hand-rolled",
+          isinstance(handler, logging.handlers.RotatingFileHandler),
+          type(handler).__name__)
+    check("recent() reads the log back as records",
+          len(logs_mod.recent(3)) == 3)
+
+    # --- the report
+    from app import diagnostics
+    settings = Settings.load()
+    settings.anthropic_key = "sk-ant-LEAK-CANARY-1111"
+    settings.openai_key = "sk-proj-LEAK-CANARY-2222"
+    settings.save()
+    text = diagnostics.report(limit=20)
+
+    # The one check that must never fail. /api/state returns these in full, which
+    # is tolerable over localhost and is not tolerable on a clipboard.
+    check("no API key ever reaches the clipboard",
+          "LEAK-CANARY" not in text, "both keys were set")
+    check("but whether one is set is still reported",
+          "anthropic_key: set" in text and "openai_key: set" in text)
+    # Everything except the secrets, rather than a hand-kept list of the
+    # interesting ones — an allowlist quietly omits each setting added after it,
+    # and the missing one is always the one that explains the failure.
+    from dataclasses import asdict as _asdict
+    block = text.split("Settings\n")[1].split("\n\n")[0].splitlines()
+    check("every setting reaches the report, not a chosen few",
+          len(block) == len(_asdict(settings)), f"{len(block)} rows")
+    check("and each is one scannable line, whatever is pasted into it",
+          all(l.startswith("  ") and "\n" not in l for l in block))
+    for section in ("This Mac", "Versions", "Setup check", "Settings", "Recent activity"):
+        check(f"the report has a {section} section", section in text)
+    check("it names the machine's memory", f"{detect_machine().ram_gb} GB" in text)
+    check("it carries the recent log entries",
+          "translation batch incomplete" in text)
+    check("it is text, not JSON — this gets pasted into a chat window",
+          not text.lstrip().startswith("{"))
+    settings.anthropic_key = settings.openai_key = ""
+    settings.save()
+
+    # Whatever dies below Python never reaches the logger, so the bundle keeps
+    # stderr — but in its own file. Appending it to the rotating log gave two
+    # writers one path, and the redirect holds the old inode the moment the
+    # handler rotates, so each quietly overwrites the other's work.
+    launcher = (ROOT / "packaging" / "build_app.sh").read_text()
+    check("stderr is not appended to the file the log handler rotates",
+          "DubbingStudio-crash.log" in launcher
+          and '2>> "\\$HOME/Library/Logs/DubbingStudio.log"' not in launcher)
+    (logs_mod.LOG_DIR / "DubbingStudio-crash.log").write_text("libc++abi: terminating\n")
+    check("and a native crash still reaches the report",
+          "libc++abi: terminating" in diagnostics.report(limit=2))
+    uninstall = (ROOT / "Uninstall.command").read_text()
+    check("uninstall clears the rotated logs too, not just the live one",
+          'DubbingStudio.log"*' in uninstall and "crash.log" in uninstall)
+
+    # --- stage timing
+    from app.pipeline import Job, JobRunner
+    r, job = JobRunner(), Job(id="t", url="u")
+    job.stage, job.stage_began = "download", time.time() - 2.0
+    r._close_stage(job)
+    check("a finished stage records how long it took",
+          1.5 <= job.stage_times.get("download", 0) <= 3.0, str(job.stage_times))
+    check("and the clock is stopped, not left running", job.stage_began == 0.0)
+    job.stage, job.stage_began = "download", time.time() - 1.0
+    r._close_stage(job)
+    check("a stage entered twice adds up rather than overwriting",
+          job.stage_times["download"] >= 2.5, str(job.stage_times))
+    job.stage = ""
+    r._close_stage(job)
+    check("closing when nothing is running is harmless",
+          list(job.stage_times) == ["download"])
+    check("the running stage's elapsed is worked out on this machine's clock",
+          "stage_elapsed" in Job(id="x", url="u").public())
+
+    # The silence warning must not cry wolf. It decides on the share of the
+    # track that is quiet, and that share is also just what a time-fitted dub
+    # looks like: lines start on their original timestamps and English is
+    # shorter than most of what it replaces. Measured on a real 98-minute run —
+    # 92% speech in the original, 38% in the dub, all 448 lines spoken — and the
+    # report told the user it was "what a half-failed run looks like".
+    psrc = (ROOT / "app" / "pipeline.py").read_text()
+    check("a share-of-silence warning is gated on something actually failing",
+          "everything_spoken" in psrc and "checked.get(\"untranslated\")" in psrc)
+    check("but a completely silent track is always reported",
+          'stats.get("audio_present") is False' in psrc)
+
+    # --- the installer
+    inst = (ROOT / "Install.command").read_text()
+    check("every line the user is told also reaches the install log",
+          'note "$*"' in inst and 'note "WARN $*"' in inst)
+    check("a failure puts the details on the clipboard, not a file path",
+          "pbcopy" in inst)
+    check("there is a fallback when the clipboard refuses",
+          "Details are in this file" in inst)
+    check("an unexpected death is caught too, not just the checked failures",
+          "trap 'code=$?" in inst and "finish_badly" in inst)
+    check("and the ending cannot fire twice", "HANDLED" in inst)
+    for script in ("Install.command", "install.sh", "Update.command"):
+        ok = subprocess.run(["bash", "-n", str(ROOT / script)],
+                            capture_output=True).returncode == 0
+        check(f"{script} parses", ok)
+
+    # --- the UI
+    html = (ROOT / "app" / "static" / "index.html").read_text()
+    check("Copy details is reachable without a failure having happened",
+          html.count("showDiagnostics()") >= 2, "header and failed panel")
+    check("the text is shown before it is sent, not just copied",
+          'id="diagText"' in html)
+    check("a refused clipboard tells the user what to do instead",
+          "⌘C" in html)
+    check("the chips show how long each stage took",
+          "stage_times" in html and "stage_elapsed" in html)
+    check("durations reuse the existing formatter rather than a new one",
+          "fmtShort" not in html)
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -1660,6 +1873,7 @@ if __name__ == "__main__":
     test_storage()
     test_keep_awake()
     test_translation_qc()
+    test_observability()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

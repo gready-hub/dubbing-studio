@@ -107,6 +107,13 @@
      was tried and dropped — muted on a filled pill is 3.8:1 at 12px, which is
      worse to read than the green it replaced. */
   .chip.done::before{content:"✓";margin-right:5px;opacity:.75}
+  /* The duration rides inside the pill rather than in a row of its own. Set in
+     tabular figures so a running stage does not jitter the chips beside it every
+     time the seconds tick over, and dimmed so the row still reads as labels
+     first and numbers second. */
+  .chip small{margin-left:6px;opacity:.6;font-size:11px;
+              font-variant-numeric:tabular-nums}
+  .chip.on small{opacity:.85}
   /* Same pill as the stage chips, so it reads as part of that row rather than
      as a stray control. */
   .toggle{font:inherit;font-size:12px;font-weight:500;padding:5px 11px;
@@ -123,6 +130,11 @@
         border-bottom:1px solid var(--line)}
   .stat:last-child{border-bottom:none}
   .stat span:first-child{color:var(--muted)}
+  /* The per-stage breakdown under "Took". Indented and lighter so it reads as a
+     detail of the line above rather than as more rows of the same rank. */
+  .stat.sub{padding-left:16px;font-size:13px;border-bottom:none;padding-top:3px;
+            padding-bottom:3px}
+  .stat.sub span:last-child{font-weight:500;color:var(--muted)}
   .stat span:last-child{font-variant-numeric:tabular-nums;font-weight:600}
   video{width:100%;border-radius:10px;margin-top:14px;background:#000;display:block}
   .check{display:flex;align-items:flex-start;gap:10px;padding:9px 0;font-size:14px;
@@ -208,6 +220,10 @@
            what will happen while dubbing, which is when the assertion is held. -->
       <button class="toggle hidden" id="aAwake" onclick="toggleAwake()"></button>
       <span class="engine" id="engine">…</span>
+      <!-- Always reachable, not only after a visible failure: "it finished but
+           the voice is wrong" is a report worth sending too, and there is no
+           error panel to hang a button on for it. -->
+      <button class="icon-btn" onclick="showDiagnostics()">Copy details</button>
       <button class="icon-btn" onclick="toggle('settings')">Settings</button>
     </div>
   </header>
@@ -323,6 +339,9 @@
     <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
       <button class="primary" onclick="retry()">Try again</button>
       <button class="ghost" onclick="reset()">Start over</button>
+      <!-- Same call as the one in the header, with no job argument: the failure
+           is already in the recent log entries, tagged with its id. -->
+      <button class="ghost" onclick="showDiagnostics()">Copy details</button>
     </div>
   </div>
 
@@ -522,6 +541,31 @@
       <button class="primary" onclick="saveSettings()">Save</button>
       <button class="ghost" onclick="toggle('settings')">Close</button>
       <span id="savedMsg" class="hint" style="align-self:center;margin:0"></span>
+    </div>
+  </div>
+
+  <!-- ----------------------------------------------------- diagnostics -->
+  <!-- The text is shown, not just copied. Someone is about to send this to
+       another person, and being able to read it first is the difference between
+       trusting the button and not pressing it. It is also the fallback: if the
+       clipboard is refused, the text is right there to select by hand. -->
+  <div class="panel hidden" id="diagnostics">
+    <p class="job-title">Details to send</p>
+    <p class="hint" style="margin-top:6px">Paste this into a message to whoever
+      helps you with this app. It describes your Mac and what the app has been
+      doing. It contains no passwords or API keys.</p>
+    <!-- tabindex so the clipboard fallback can put the cursor here: a pre is
+         not focusable on its own, and "select the text above" is no help if
+         nothing can be focused to select. -->
+    <pre id="diagText" tabindex="0" style="max-height:320px;overflow:auto;font-size:11px;
+         line-height:1.5;white-space:pre-wrap;word-break:break-word;
+         background:var(--accent-soft);border:1px solid var(--line);
+         border-radius:10px;padding:12px;margin-top:12px">Gathering…</pre>
+    <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
+      <button class="primary" id="diagCopy" onclick="copyDiagnostics()">Copy</button>
+      <button class="ghost" onclick="toggle('diagnostics')">Close</button>
+      <span id="diagMsg" class="hint" style="margin:0" role="status"
+            aria-live="polite"></span>
     </div>
   </div>
 
@@ -888,9 +932,18 @@ function render(job){
     $("aElapsed").textContent = parts.join(" · ");
     const stages = (job.stages && job.stages.length) ? job.stages : DEFAULT_STAGES;
     const at = stages.indexOf(job.stage);
-    $("aStages").innerHTML = stages.map((key,i)=>
-      `<span class="chip ${i===at?"on":(i<at?"done":"")}">${
-        escapeHtml(STAGE_LABELS[key] || key)}</span>`).join("");
+    const times = job.stage_times || {};
+    $("aStages").innerHTML = stages.map((key,i)=>{
+      // The chip says how long it took, so "where did the hour go" is answered
+      // by the row already on screen rather than by a log. The running one
+      // counts up, which is also the only thing on the panel that proves a long
+      // silent stage — Demucs, mostly — is still working.
+      const spent = i===at ? (times[key]||0) + (job.stage_elapsed||0)
+                  : (i<at ? times[key] : 0);
+      const clock = spent > 0 ? `<small>${fmt(spent)}</small>` : "";
+      return `<span class="chip ${i===at?"on":(i<at?"done":"")}">${
+        escapeHtml(STAGE_LABELS[key] || key)}${clock}</span>`;
+    }).join("");
     // A cancel can only take effect between steps, so say it has been heard
     // rather than leaving the button looking unpressed for several minutes.
     $("cancelBtn").disabled = !!job.cancelling;
@@ -964,7 +1017,17 @@ function render(job){
       ...(sample ? [] : [["Working files freed",
                           s.working_files_freed ? s.working_files_freed+" MB" : "—"]]),
       ["Took", fmt(job.elapsed)]
-    ].map(([k,v])=>`<div class="stat"><span>${k}</span><span>${v}</span></div>`).join("");
+    ].map(([k,v])=>`<div class="stat"><span>${k}</span><span>${v}</span></div>`).join("")
+      // Longest first, and only the stages that took real time. "Took 1h 32m"
+      // on its own invites the question this answers, and answering it is what
+      // makes a preset choice an informed one rather than a guess. Indented with
+      // a class, not with spaces in the text — HTML would collapse those.
+      + Object.entries(job.stage_times || {})
+        .filter(([,sec]) => sec >= 1)
+        .sort((a,b) => b[1]-a[1])
+        .map(([key,sec]) => `<div class="stat sub"><span>${
+          escapeHtml(STAGE_LABELS[key] || key)}</span><span>${fmt(sec)}</span></div>`)
+        .join("");
   }
 
   if(job.status==="error"){
@@ -1103,6 +1166,48 @@ function renderAwake(){
       + "sleeps. Click to allow it to sleep."
     : "Your Mac may sleep part-way through dubbing a video, which pauses the job "
       + "until you wake it. Click to keep it awake.";
+}
+
+/* One report, one code path, called from the header and from a failed job.
+   Deliberately takes no job argument: the failure is already in the recent log
+   entries, and asking which job would be a question at the worst moment. */
+async function showDiagnostics(){
+  $("diagnostics").classList.remove("hidden");
+  // The panel sits below a running job and the settings, so from the header
+  // button it opened off-screen and the button read as doing nothing at all.
+  $("diagnostics").scrollIntoView({behavior:"smooth", block:"start"});
+  $("diagMsg").textContent = "";
+  $("diagText").textContent = "Gathering…";
+  try{
+    const r = await fetch("/api/diagnostics");
+    if(!r.ok) throw new Error(r.status);
+    $("diagText").textContent = (await r.json()).text;
+  }catch(e){
+    // Even this failing is worth something to send, so it goes in the box
+    // rather than into a message that replaces the text with an apology.
+    $("diagText").textContent =
+      "Could not gather the details (" + e + ").\nThe app may have stopped "
+      + "responding. The log is at ~/Library/Logs/DubbingStudio.log";
+  }
+}
+
+async function copyDiagnostics(){
+  const btn = $("diagCopy");
+  try{
+    await navigator.clipboard.writeText($("diagText").textContent);
+    $("diagMsg").textContent = "Copied — now paste it into a message.";
+    // Only on success. Flipping the label regardless put "Copied ✓" next to
+    // "couldn't reach the clipboard", and of the two the button is the one
+    // people believe — so they would send nothing and think they had.
+    btn.textContent = "Copied ✓";
+    setTimeout(()=>{ btn.textContent = "Copy"; }, 2000);
+  }catch(e){
+    // Not a dead end: the text is on screen and selectable, so say what to do
+    // instead of reporting a failure the user can do nothing about.
+    $("diagMsg").textContent = "Couldn't reach the clipboard — select the text "
+      + "above and copy it with ⌘C.";
+    $("diagText").focus();
+  }
 }
 
 async function toggleAwake(){

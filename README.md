@@ -137,20 +137,33 @@ because that is when you re-run the link.
 
 | Preset | What it does | Speed |
 |---|---|---|
-| **Fast** | One voice, no separation | About the video's own length |
-| **Balanced** *(default)* | Splits speech from music so the soundtrack survives | About 5× the video's length |
+| **Fast** | One voice, no separation | Quickest — it skips the longest stage |
+| **Balanced** *(default)* | Splits speech from music so the soundtrack survives | Roughly 0.3–5× the video's length, depending on how much talking there is |
 | **Best quality** | Also Whisper, and each speaker's voice cloned | Considerably slower |
 
-Measured on an M1 with 16 GB using the local translation model. Treat these as a
-rough shape rather than a promise: most of the time goes on translating and
-speaking each line, so what matters is how much speech is in the video, not how
-long it runs. A dense interview can take several times longer than a demonstration
-of the same length with long wordless stretches — one 98-minute instructional
-video finished in about 90 minutes on an M1.
+Treat the multiplier as a rough shape, not a promise — it swings hard with how
+much speech a video contains, because most of the work is per line rather than
+per minute. A dense ten-minute talk took 48 minutes on an M1 (≈5×); a 98-minute
+instructional video took about 90 minutes on the same machine (≈0.9×) and 33
+minutes on an M4 Pro (≈0.34×).
 
-A newer Mac beats this comfortably, and switching **Translated by** to an API key
-removes the biggest chunk of time from every preset. The first video is slower
-still — it fetches about 700 MB of speech models, one time only.
+Where that 33 minutes actually went, measured on the Balanced preset:
+
+| Stage | Time | Share |
+|---|---|---|
+| Separating speech from music | 20m 46s | 62% |
+| Translating (local model) | 6m 21s | 19% |
+| Fitting to the picture | 3m 16s | 10% |
+| Speaking | 1m 45s | 5% |
+| Transcribing | 1m 02s | 3% |
+
+Separation costs more than everything else combined, and it is the one stage
+**Fast** skips — which is why that preset is roughly a third of the time rather
+than a little less. Every job now shows this breakdown in its own quality report.
+
+Switching **Translated by** to an API key removes the second-largest chunk. The
+first video is slower than any of this — it fetches about 700 MB of speech
+models, one time only.
 
 Start anything long and leave it. The Mac is held awake while there is work
 queued, so a job doesn't stall at 40% because nobody touched the trackpad — the
@@ -281,8 +294,30 @@ not something to do quietly on someone's behalf.
 If it still refuses, check yt-dlp is current — **Setup check** flags it when it
 goes stale, and an out-of-date yt-dlp is the single commonest cause.
 
-Logs are at `~/Library/Logs/DubbingStudio.log`; each job keeps its working files
-under `~/Library/Application Support/DubbingStudio/jobs`.
+### Sending someone the details
+
+Press **Copy details** in the top bar — or on a failed job, next to **Try again**.
+It gathers your Mac, the versions, the setup check and what the app has recently
+been doing into one block of text, shows it to you, and copies it. Paste that
+into a message to whoever helps you with this.
+
+It contains no passwords and no API keys.
+
+If setup itself fails, the installer does the same thing without being asked: the
+details are on your clipboard when the window closes.
+
+<details>
+<summary>Where that comes from, for anyone who prefers files</summary>
+
+| | |
+|---|---|
+| App log | `~/Library/Logs/DubbingStudio.log` — one JSON record per line |
+| Install log | `~/Library/Logs/DubbingStudio-install.log` |
+| Working files | `~/Library/Application Support/DubbingStudio/jobs` |
+
+The app log rotates at 5 MB and keeps three, so a whole job always fits in one
+file and it can never grow without limit.
+</details>
 
 ---
 

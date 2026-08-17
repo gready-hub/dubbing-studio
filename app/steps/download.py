@@ -272,6 +272,33 @@ def choose_format(info: dict, quality: str = "best") -> dict | None:
     return None
 
 
+# Containers a finished download can arrive in. Anything else in the folder —
+# .part, .ytdl, .f137.mp4.part — is working state, not the video.
+_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
+
+
+def _finished_file(workdir: Path) -> Path | None:
+    """The video that was actually downloaded, not whatever sorts first.
+
+    This was `sorted(workdir.glob("source.*"))[0]`, which is correct exactly
+    until an attempt is interrupted. A refused first try leaves
+    `source.f137.mp4.part` behind; the retry succeeds and writes `source.mp4`;
+    and `source.f137.mp4.part` sorts first. Measured on the video that failed for
+    a user: a complete 1.7 GB download, and the pipeline handed ffmpeg the 9.7 MB
+    fragment beside it and reported that the video was in a format it could not
+    read.
+
+    So: only real containers, the merged name preferred over a single format's,
+    and the largest of what is left — three rules that cannot pick a stub.
+    """
+    candidates = [p for p in workdir.glob("source.*")
+                  if p.suffix.lower() in _MEDIA_SUFFIXES and p.is_file()]
+    if not candidates:
+        return None
+    merged = [p for p in candidates if p.stem == "source"]
+    return max(merged or candidates, key=lambda p: p.stat().st_size)
+
+
 def download(url: str, workdir: Path, quality: str = "best",
              progress: Progress = None, info: dict | None = None,
              cookies_from: str = "") -> tuple[Path, dict]:
@@ -322,23 +349,47 @@ def download(url: str, workdir: Path, quality: str = "best",
     done = {"before": 0, "last": 0}
     expected = picked["bytes"] if picked else 0
 
+    def fetched() -> int:
+        """What is actually on disk for this download.
+
+        The reported counter cannot be trusted on its own across a retry. A
+        403 part way through leaves a part file behind, the next attempt is
+        answered with "Resuming download at byte 288019941", and what the
+        counter does from there depends on whether the format is served as one
+        range request or as fragments. Measured on the video that failed for a
+        user: the bar sat at "0% of 1.7 GB" while the file on disk passed 1.4 GB.
+
+        The file has no opinion about any of that. Used as a floor rather than a
+        replacement, so a site that streams into a single handle still reports
+        normally.
+        """
+        try:
+            return sum(f.stat().st_size for f in workdir.glob("source.*"))
+        except OSError:
+            return 0
+
     def show(line: str) -> None:
         if not progress or not line.startswith(_PROGRESS_PREFIX):
             return
         got, total = (line[len(_PROGRESS_PREFIX):].split("|") + ["", ""])[:2]
         try:
-            got_b, total_b = int(got), int(total)
+            got_b = int(got)
         except ValueError:
-            return                      # "NA" until the size is known
-        if total_b <= 0:
-            return
+            return                      # "NA" until anything is known
+        try:
+            total_b = int(total)
+        except ValueError:
+            total_b = 0                 # some formats never publish one
         if got_b < done["last"]:        # counted down: the next stream began
             done["before"] += done["last"]
         done["last"] = got_b
         # Falls back to the stream's own total when the listing had no size, so
         # a site that publishes none still gets a moving bar rather than none.
-        overall, whole = done["before"] + got_b, expected or (done["before"] + total_b)
-        share = max(0.0, min(1.0, overall / whole)) if whole else 0.0
+        whole = expected or (done["before"] + total_b)
+        if whole <= 0:
+            return
+        overall = max(done["before"] + got_b, fetched())
+        share = max(0.0, min(1.0, overall / whole))
         progress(0.02 + 0.96 * share,
                  f"Downloading — {share * 100:.0f}% of {human_size(whole)}")
 
@@ -390,10 +441,9 @@ def download(url: str, workdir: Path, quality: str = "best",
     else:
         raise DownloadError(_friendly(problem), problem)
 
-    files = sorted(workdir.glob("source.*"))
-    if not files:
+    video = _finished_file(workdir)
+    if video is None:
         raise RuntimeError("The download finished but no video file appeared.")
-    video = files[0]
     if progress:
         progress(1.0, "Download complete")
     return video, info
