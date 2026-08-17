@@ -766,7 +766,7 @@ class JobRunner:
             # handed to it.
             job.message = "Looking up the video…"
             self._emit(job)
-            info = download.probe(job.url)
+            info = download.probe(job.url, settings.youtube_cookies)
             job.title = info["title"]
             job.duration = float(info["duration"] or 0)
             self._emit(job)
@@ -801,13 +801,19 @@ class JobRunner:
             # itself, and filling the boot disk does not just fail the job — the
             # whole machine stops working at the same moment. Better to refuse
             # with a number the user can act on than to find out at 80%.
+            # Asked here rather than left to the download, because the check
+            # this feeds happens before anything is fetched. Pure dictionary
+            # work on the listing the probe already returned; no second request.
+            picked = download.choose_format(info, settings.keep_video_quality)
             need = storage.estimate_needed(window or job.duration,
-                                           settings.keep_video_quality)
+                                           settings.keep_video_quality,
+                                           source_bytes=(picked or {}).get("bytes", 0))
             free = storage.free_bytes(JOBS)
             if free < need:
                 raise RuntimeError(
                     f"There isn't enough room on the disk. This video needs about "
-                    f"{_gb(need)} while it works, and there is {_gb(free)} free. "
+                    f"{storage.human_size(need)} while it works, and there is "
+                    f"{storage.human_size(free)} free. "
                     "Clear some working files in the app, empty the bin, and try again.")
 
             weight = (min(self.PREVIEW_DOWNLOAD_CAP, job.duration / window)
@@ -1169,15 +1175,34 @@ class JobRunner:
                 stats["lines_failed"] = failed
                 notes.append(f"{failed} line{'s' if failed != 1 else ''} could not be "
                              "spoken and were left silent.")
+            # A dub the recipient cannot open is not finished, so when the site
+            # offered no H.264 the picture is converted rather than shipped with
+            # a warning nobody can act on. Rare — YouTube publishes H.264 down to
+            # 144p even on videos from 2005 — which is why it is worth the encode
+            # on the occasions it does happen.
             if stats.get("video_codec") and not stats.get("widely_playable"):
-                notes.append(
-                    f"The picture is {stats['video_codec'].upper()}, because this "
-                    "video isn't offered in H.264 at all. "
-                    + ("It plays on this Mac, but not on Macs older than an M3, and "
-                       "not reliably on phones — VLC opens it everywhere."
-                       if machine.av1_ok else
-                       "QuickTime opens the file with sound but no picture. VLC will "
-                       "play it."))
+                was = stats["video_codec"].upper()
+                report(0.85, "Converting the picture so it plays anywhere")
+                converted = out_path.with_name(out_path.stem + ".h264.mp4")
+                encoder = mux.transcode_h264(out_path, converted)
+                if encoder:
+                    converted.replace(out_path)
+                    stats.update(mux.verify(video, out_path))
+                    stats["transcoded_from"] = was
+                    notes.append(
+                        f"This video isn't offered in H.264, only {was}, so the "
+                        "picture was converted to H.264 after dubbing. That is why "
+                        "the finished file took longer than usual. It now plays on "
+                        "any Mac, phone or browser.")
+                else:
+                    notes.append(
+                        f"The picture is {was}, because this video isn't offered in "
+                        "H.264 at all, and converting it didn't work either. "
+                        + ("It plays on this Mac, but not on Macs older than an M3, "
+                           "and not reliably on phones — VLC opens it everywhere."
+                           if machine.av1_ok else
+                           "QuickTime opens the file with sound but no picture. VLC "
+                           "will play it."))
             if stats.get("audio_warning"):
                 notes.append(stats["audio_warning"])
             if job.preview:
@@ -1320,12 +1345,6 @@ def _mins(seconds: float) -> str:
     if seconds < 90:
         return f"{seconds}s"
     return f"{seconds // 60} min"
-
-
-def _gb(count: int) -> str:
-    """Disk sizes, rounded the way someone reading a warning needs them."""
-    gb = count / (1024 ** 3)
-    return f"{gb:.1f} GB" if gb >= 1 else f"{round(count / (1024 ** 2))} MB"
 
 
 def _clock(seconds: float) -> str:

@@ -354,7 +354,7 @@ def test_balanced_end_to_end():
             progress(1.0, "Downloaded")
         return dest, dict(meta)
 
-    pipeline.download.probe = lambda url: dict(meta)
+    pipeline.download.probe = lambda url, *_a, **_kw: dict(meta)
     pipeline.download.download = fake_download
 
     LINES = ["Welcome along to the programme this evening.",

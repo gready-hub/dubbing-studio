@@ -69,7 +69,10 @@ def stub_download(clip: Path, title: str, duration: float, replace: bool = False
     """
     meta = {"title": title, "duration": duration, "uploader": "t", "thumbnail": ""}
 
-    def fake_probe(url):
+    # **_ for the same reason as fake_download below: the pipeline now hands the
+    # probe the browser to take cookies from, and a stub with a fixed signature
+    # turns that into every job in the suite dying on its first line.
+    def fake_probe(url, *_a, **_kw):
         return dict(meta)
 
     # **_ so a new pass-through argument is not a suite-wide failure.
@@ -1181,6 +1184,17 @@ def test_storage():
     from app import storage as store
     from app.config import JOBS, OUTPUT_DIR
 
+    # --- sizes as the user reads them
+    # One formatter for the disk warning and the download alike. The small end
+    # matters: a first, cautious try is a short video, and it used to be
+    # announced as "about 0.0 GB" of "0 MB".
+    check("gigabytes keep one decimal", store.human_size(1_828_000_000) == "1.7 GB")
+    check("past 100 MB a decimal is dropped", store.human_size(660_000_000) == "629 MB")
+    check("a few megabytes keep theirs", store.human_size(5_000_000) == "4.8 MB")
+    check("and a short video is not rounded away to zero",
+          store.human_size(617_000) == "603 KB")
+    check("nor is an empty one", store.human_size(0) == "1 KB")
+
     # --- estimating before anything is written
     hour = store.estimate_needed(3600, "720")
     check("an hour at 720p is estimated in gigabytes",
@@ -1193,6 +1207,21 @@ def test_storage():
           store.estimate_needed(-5, "720") == store.MINIMUM_NEED)
     check("an unknown quality is treated as the largest",
           store.estimate_needed(600, "??") == store.estimate_needed(600, "best"))
+
+    # The real download size, where the site published one, beats the per-second
+    # guess — and the case it rescues is the preview, where the duration passed
+    # in is the 30-second sample but the whole video is fetched to cut it out of.
+    big = 1_800_000_000                                  # a 1.7 GB source
+    check("a known source size is used when it exceeds the guess",
+          store.estimate_needed(30, "best", source_bytes=big) > 2 * big,
+          "twice the download, for the merge, plus the derived files")
+    check("so a preview of a long video no longer reserves only the floor",
+          store.estimate_needed(30, "best", source_bytes=big) > store.MINIMUM_NEED * 5,
+          f"{store.estimate_needed(30, 'best', source_bytes=big) / 1024**3:.1f} GB")
+    check("a source size smaller than the guess doesn't shrink the estimate",
+          store.estimate_needed(3600, "720", source_bytes=1024) == hour)
+    check("and no size at all leaves the estimate exactly as it was",
+          store.estimate_needed(3600, "720", source_bytes=0) == hour)
 
     check("free space is a real number", store.free_bytes() > 0)
 
@@ -1351,8 +1380,15 @@ def test_keep_awake():
           r.sync_keep_awake(True) is False)
     r.awake.start()
     time.sleep(0.4)
+    released = r.sync_keep_awake(False) is False
+    # Against the baseline rather than against False, and after a moment: the
+    # assertion is dropped when caffeinate exits, which is not the instant it is
+    # signalled, and anything else on the Mac may be holding one of its own —
+    # Time Machine and a Homebrew build both do. Asserting "nothing at all is
+    # awake" made a passing app look broken.
+    time.sleep(0.5)
     check("switching it off releases the one being held right now",
-          r.sync_keep_awake(False) is False and not held())
+          released and held() == was, f"before={was} after={held()}")
 
     # A machine without caffeinate must not take the app down with it.
     import subprocess as _sp
@@ -1517,6 +1553,61 @@ def test_translation_qc():
                              if (f.get("height") or 0) != 720]}
     check("a cap nothing satisfies is dropped rather than returning nothing",
           choose_format(above_cap, "720") is not None)
+
+    # The seam that broke: choose_format was correct and never ran, because
+    # probe() built a fresh dict and dropped the format list on the way out. It
+    # is checked here rather than only through a synthetic listing, since a
+    # synthetic listing is exactly what hid it.
+    probe_out = src[src.index("def probe("):src.index("def probe(") + 1600]
+    kept = probe_out[probe_out.index("return {"):]
+    check("probe returns the format list, rather than only fetching it",
+          '"formats"' in kept, kept[:60].replace("\n", " "))
+
+    # "Highest bitrate" on its own picks the 5.1 track where a video has one:
+    # three times the bytes for audio that is replaced outright or downmixed to
+    # mono for the transcriber.
+    SURROUND = {"formats": LISTING["formats"] + [
+        {"format_id": "258", "vcodec": "none", "acodec": "mp4a", "ext": "m4a",
+         "tbr": 388, "audio_channels": 6, "filesize": 285_000_000},
+    ]}
+    check("stereo audio is chosen over a louder 5.1 track",
+          choose_format(SURROUND, "best")["spec"] == "137+140",
+          str(choose_format(SURROUND, "best")))
+    check("and the surround track's bytes are not counted against the disk check",
+          choose_format(SURROUND, "best")["bytes"] == 1733_000_000 + 95_000_000)
+
+    # Picture and sound are two downloads that each count from zero. Summed, so
+    # the bar cannot fill up and then start again from nothing near the end —
+    # which reads as the job restarting itself.
+    check("the two streams are summed rather than reported separately",
+          'done["before"] += done["last"]' in src)
+    check("and the running total resets between retries, so it can't pass 100%",
+          'done["before"] = done["last"] = 0' in src)
+
+    # An age-restricted video refuses at the lookup, before the download that
+    # knows about the user's cookies is ever reached — so the 403 message's
+    # advice to name a browser in Settings has to work on the probe too.
+    check("the lookup can use the browser cookies as well as the download",
+          "def probe(url: str, cookies_from" in src)
+
+    # The last resort drops the height cap, not the codec: the chain falls
+    # through on its own, so keeping H.264 first cannot cost an attempt.
+    relax = src[src.index("if relax:"):src.index("if relax:") + 700]
+    check("the relaxed retry still asks for H.264 first",
+          "_H264" in relax and "bv*+ba/b" in relax, relax.split("run[i + 1]")[1][:40])
+
+    # When the site offers nothing playable the picture is converted rather than
+    # shipped with a warning the user cannot act on.
+    from app.steps.mux import transcode_h264, _H264_ENCODERS
+    check("a hardware encoder is tried before the software one",
+          _H264_ENCODERS[0][0] == "h264_videotoolbox")
+    check("and there is a software fallback for a build without it",
+          _H264_ENCODERS[-1][0] == "libx264")
+    mux_src = (ROOT / "app" / "steps" / "mux.py").read_text()
+    check("10-bit is converted down, since H.264 can carry it and little can play it",
+          "yuv420p" in mux_src)
+    check("audio and subtitles are copied, not re-encoded a second time",
+          '"-map", "0", "-c", "copy", "-c:v"' in mux_src)
 
     # Progress is read from a template we define, not scraped out of text that
     # yt-dlp writes for a terminal and is free to change.

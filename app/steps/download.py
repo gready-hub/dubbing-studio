@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..storage import human_size
 from .proc import stream
 
 Progress = Optional[Callable[[float, str], None]]
@@ -31,9 +32,18 @@ def _ytdlp_cmd() -> list[str]:
     return ["python3", "-m", "yt_dlp"]
 
 
-def probe(url: str) -> dict:
-    out = subprocess.run(_ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download", url],
-                         capture_output=True, text=True, timeout=120)
+def probe(url: str, cookies_from: str = "") -> dict:
+    """Ask the site what it has, without fetching any of it.
+
+    cookies_from matters here and not only in download(): an age-restricted or
+    members-only video refuses at the *lookup*, so a user who followed the 403
+    advice and named their browser in Settings would still be turned away before
+    the download that knows about their cookies was ever reached.
+    """
+    cmd = _ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download"]
+    if cookies_from:
+        cmd += ["--cookies-from-browser", cookies_from]
+    out = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=120)
     if out.returncode != 0:
         raise DownloadError(_friendly(out.stderr), out.stderr)
     data = json.loads(out.stdout)
@@ -42,6 +52,13 @@ def probe(url: str) -> dict:
         "duration": float(data.get("duration") or 0),
         "uploader": data.get("uploader", ""),
         "thumbnail": data.get("thumbnail", ""),
+        # Kept rather than discarded: choose_format() reads this, and without it
+        # every call returned None and quietly fell back to the selector string —
+        # so the codec and the real download size were unknown until afterwards,
+        # which is the whole thing choosing from the list was meant to fix. Stays
+        # in memory; the caller writes its own small record to info.json.
+        "formats": data.get("formats") or [],
+        "is_live": bool(data.get("is_live")),
     }
 
 
@@ -233,8 +250,13 @@ def choose_format(info: dict, quality: str = "best") -> dict | None:
         best_v = min(under_cap(video),
                      key=lambda f: (_codec_rank(f.get("vcodec")),
                                     -(f.get("height") or 0), _size(f)))
-        # m4a first: it drops into an mp4 without being re-encoded.
+        # m4a first: it drops into an mp4 without being re-encoded. Stereo
+        # before surround, because "highest bitrate" on its own picks the 5.1
+        # track where a video has one — three times the bytes (30.8 MB against
+        # 10.3 MB on one measured video) for audio that is either replaced
+        # outright or downmixed to mono for the transcriber.
         best_a = min(audio, key=lambda f: (0 if f.get("ext") == "m4a" else 1,
+                                           1 if (f.get("audio_channels") or 2) > 2 else 0,
                                            -(f.get("tbr") or 0)))
         return {"spec": f"{best_v['format_id']}+{best_a['format_id']}",
                 "height": best_v.get("height"), "vcodec": best_v.get("vcodec") or "",
@@ -259,7 +281,7 @@ def download(url: str, workdir: Path, quality: str = "best",
     means probing before this stage rather than inside it.
     """
     workdir.mkdir(parents=True, exist_ok=True)
-    info = info or probe(url)
+    info = info or probe(url, cookies_from)
     if progress:
         progress(0.02, f"Found “{info['title']}”")
 
@@ -270,7 +292,7 @@ def download(url: str, workdir: Path, quality: str = "best",
     if picked:
         fmt = f"{picked['spec']}/{fmt}"
         if progress:
-            size = f" — about {picked['bytes'] / 1024 ** 3:.1f} GB" if picked["bytes"] else ""
+            size = f" — about {human_size(picked['bytes'])}" if picked["bytes"] else ""
             progress(0.03, f"Fetching {picked['height']}p{size}")
 
     target = workdir / "source.%(ext)s"
@@ -292,9 +314,14 @@ def download(url: str, workdir: Path, quality: str = "best",
         cmd += ["--cookies-from-browser", cookies_from]
     cmd += ["-o", str(target), url]
 
-    # A 403 on the media fetch, straight after a metadata probe that succeeded,
-    # is throttling rather than a bad link — the same request goes through a
-    # moment later. Retrying here beats making the user notice and re-paste.
+    # Picture and sound arrive as two separate downloads, each of which counts
+    # its own bytes from zero. Reported as-is, the bar filled up and then
+    # started again from nothing — which to anyone not watching the byte counts
+    # looks like the job restarting itself near the end. Summed here instead,
+    # against the total the format listing gave us, so it only ever goes forward.
+    done = {"before": 0, "last": 0}
+    expected = picked["bytes"] if picked else 0
+
     def show(line: str) -> None:
         if not progress or not line.startswith(_PROGRESS_PREFIX):
             return
@@ -305,11 +332,15 @@ def download(url: str, workdir: Path, quality: str = "best",
             return                      # "NA" until the size is known
         if total_b <= 0:
             return
-        share = max(0.0, min(1.0, got_b / total_b))
+        if got_b < done["last"]:        # counted down: the next stream began
+            done["before"] += done["last"]
+        done["last"] = got_b
+        # Falls back to the stream's own total when the listing had no size, so
+        # a site that publishes none still gets a moving bar rather than none.
+        overall, whole = done["before"] + got_b, expected or (done["before"] + total_b)
+        share = max(0.0, min(1.0, overall / whole)) if whole else 0.0
         progress(0.02 + 0.96 * share,
-                 f"Downloading — {share * 100:.0f}% of {total_b / 1024 ** 3:.1f} GB"
-                 if total_b >= 1024 ** 3 else
-                 f"Downloading — {share * 100:.0f}% of {round(total_b / 1024 ** 2)} MB")
+                 f"Downloading — {share * 100:.0f}% of {human_size(whole)}")
 
     # A 403 on the media fetch after a metadata probe that worked is usually
     # throttling, and the thing that actually rescues it is asking again — the
@@ -329,14 +360,22 @@ def download(url: str, workdir: Path, quality: str = "best",
     ]
     problem = ""
     for n, (client, relax) in enumerate(attempts, 1):
+        # Each attempt starts the byte count again, so the running total has to
+        # as well — otherwise a retry adds the abandoned attempt's bytes to the
+        # new one and the bar reads past 100% of a download that just restarted.
+        done["before"] = done["last"] = 0
         run = list(cmd)
         if client:
             run += ["--extractor-args", f"youtube:player_client={client}"]
         if relax:
-            # Whatever this client does have, rather than what we would prefer.
+            # Whatever this client does have, rather than the exact format the
+            # default client offered. The height cap goes, but H.264 stays the
+            # first rung — the chain falls through on its own if this client
+            # hasn't got it, so keeping the preference costs nothing and stops a
+            # transient 403 from quietly turning into an AV1 file.
             for i, arg in enumerate(run):
                 if arg == "-f":
-                    run[i + 1] = f"bv*+ba/b"
+                    run[i + 1] = f"bv*{_H264}+ba/bv*+ba/b"
                     break
         code, problem = stream(run, show, tail_lines=25)
         if code == 0:

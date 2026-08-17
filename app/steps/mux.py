@@ -154,6 +154,41 @@ def check_loudness(result: Path, total_duration: float,
 # "will it play for the person I send it to", not "will it play for me".
 WIDELY_PLAYABLE = {"h264", "mpeg4"}
 
+# VideoToolbox is Apple's hardware encoder: on Apple silicon a 1080p feature
+# re-encodes in minutes rather than the best part of an hour, which is the
+# difference between this being worth doing automatically and not. libx264 is
+# the fallback for a Mac or an ffmpeg build without it.
+_H264_ENCODERS = (
+    ("h264_videotoolbox", ["-q:v", "60"]),
+    ("libx264", ["-preset", "veryfast", "-crf", "20"]),
+)
+
+
+def transcode_h264(src: Path, dst: Path) -> str:
+    """Re-encode the picture to H.264, leaving audio and subtitles untouched.
+
+    Used only when the site offered nothing widely playable — on YouTube that is
+    rare, since H.264 is published down to 144p even on videos from 2005. When it
+    does happen the alternative is handing someone a file their Mac opens as
+    sound with no picture, so the cost of an encode is worth paying.
+
+    yuv420p is forced because AV1 and VP9 are both offered in 10-bit, which H.264
+    can technically carry and almost nothing can decode — converting to something
+    unplayable would defeat the point. Returns the encoder used, or "" if none of
+    them worked, in which case the original file is left alone.
+    """
+    for encoder, quality in _H264_ENCODERS:
+        done = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(src),
+             "-map", "0", "-c", "copy", "-c:v", encoder, *quality,
+             "-profile:v", "high", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", str(dst)],
+            capture_output=True, text=True)
+        if done.returncode == 0 and dst.exists() and dst.stat().st_size > 0:
+            return encoder
+        dst.unlink(missing_ok=True)
+    return ""
+
 
 def verify(original: Path, result: Path) -> dict:
     """Confirm the video stream survived untouched and the audio spans the video."""

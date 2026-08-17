@@ -53,6 +53,10 @@ def model_cache_dirs() -> list[Path]:
 # 615 KB for every second of video. The higher qualities carry more pixels
 # through the same pipeline, so they scale with it.
 BYTES_PER_SECOND = {"720": 620_000, "1080": 1_100_000, "best": 1_800_000}
+# The part of that which is not the source video: the 16 kHz wav, the four
+# separated stems and the assembled track. Used when the real download size is
+# known, so only the guessed half of the estimate is replaced.
+DERIVED_PER_SECOND = 500_000
 # Models load, ffmpeg works in temporary files, and a very short video still
 # needs somewhere to put all that.
 MINIMUM_NEED = 500 * 1024 ** 2
@@ -81,7 +85,25 @@ def free_bytes(path: Path = BASE) -> int:
         return 0
 
 
-def estimate_needed(duration: float, quality: str = "best") -> int:
+def human_size(count: int) -> str:
+    """Bytes, written the way someone reading a message needs them.
+
+    One formatter rather than one per caller: the download used to print its own
+    fixed "%.1f GB", which read "about 0.0 GB" for a short video and "0 MB" for
+    anything under half a megabyte. A size nobody can act on is worse than no
+    size, and the small end is exactly where a first, cautious try lands.
+    """
+    if count >= 1024 ** 3:
+        return f"{count / 1024 ** 3:.1f} GB"
+    if count >= 100 * 1024 ** 2:       # past 100 MB a decimal is just noise
+        return f"{round(count / 1024 ** 2)} MB"
+    if count >= 1024 ** 2:
+        return f"{count / 1024 ** 2:.1f} MB"
+    return f"{max(1, round(count / 1024))} KB"
+
+
+def estimate_needed(duration: float, quality: str = "best",
+                    source_bytes: int = 0) -> int:
     """Roughly what a job of this length will occupy while it runs.
 
     Deliberately the peak rather than the leftover. A job prunes itself down to
@@ -89,9 +111,24 @@ def estimate_needed(duration: float, quality: str = "best") -> int:
     full-band wav, the separated stems and the assembled track all at once
     before it gets there — and it is that moment, not the tidy end state, that
     fills a disk.
+
+    source_bytes is the real download size when the site published one, and it
+    is worth more than the per-second guess in the two cases the guess is worst:
+    an unusually high-bitrate video, where the guess is simply too low, and a
+    30-second preview, where duration is the *sample* length but the whole video
+    is still fetched to take the sample out of — so the estimate was 500 MB for
+    a download of well over a gigabyte, on the check that exists to stop a full
+    disk taking the machine down with it.
     """
     rate = BYTES_PER_SECOND.get(quality, BYTES_PER_SECOND["best"])
-    return max(MINIMUM_NEED, int(max(0.0, duration) * rate))
+    need = max(0.0, duration) * rate
+    if source_bytes > 0:
+        # Twice the finished size: yt-dlp writes the video and audio streams
+        # side by side and then merges them into a third file. The derived rate
+        # is what is left of the measurement above once the source is taken out
+        # of it — the wav, the four separated stems and the assembled track.
+        need = max(need, source_bytes * 2 + max(0.0, duration) * DERIVED_PER_SECOND)
+    return max(MINIMUM_NEED, int(need))
 
 
 def _ollama_bytes() -> int:
