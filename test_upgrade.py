@@ -419,6 +419,16 @@ def test_balanced_end_to_end():
           one.status == "done" and one.stats.get("speakers") == 1,
           f"{one.status}: {one.stats.get('speakers')}")
 
+    # Rendered lines are cached in a voice-keyed folder, and the one-voice run
+    # just above leaves its own behind — in which both speakers legitimately
+    # sound the same, because that is what it was asked for. The pitch check
+    # below then picked whichever folder name sorted first and, when that was
+    # the single-voice one, failed with the two speakers under a hertz apart on
+    # a pipeline that was working correctly. Clearing them makes the folder it
+    # measures unambiguously the one this run renders.
+    import shutil
+    shutil.rmtree(JOBS / job.id / "lines", ignore_errors=True)
+
     two = rerun(True)
     check("and saying several restores them",
           two.status == "done" and two.stats.get("speakers") == 2,
@@ -457,9 +467,17 @@ def test_balanced_end_to_end():
 
     # Rendered lines sit in a voice-keyed subfolder, so that changing voice and
     # re-running doesn't replay the previous voice's cached audio.
+    #
+    # The newest, not the alphabetically first. This test runs the job twice
+    # with different voices, so a second folder appears — and on a scratch
+    # directory that has been used before, whichever name sorted first won,
+    # which is whatever a previous run happened to leave behind. The check then
+    # measured audio from a different voice than the run it had just done, and
+    # failed with two speakers three hertz apart on a working pipeline.
     lines_root = JOBS / job.id / "lines"
-    subdirs = sorted(d for d in lines_root.iterdir() if d.is_dir()) if lines_root.is_dir() else []
-    lines_dir = subdirs[0] if subdirs else lines_root
+    subdirs = sorted((d for d in lines_root.iterdir() if d.is_dir()),
+                     key=lambda d: d.stat().st_mtime) if lines_root.is_dir() else []
+    lines_dir = subdirs[-1] if subdirs else lines_root
     pitches: dict[int, list[float]] = {}
     for idx, s_ in enumerate(segs):
         p = lines_dir / f"{idx:05d}.wav"

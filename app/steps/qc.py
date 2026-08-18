@@ -13,7 +13,8 @@ re-run of the same link.
 from __future__ import annotations
 
 from .. import logs
-from ..backends.translate import _looks_untranslated, _strip_echo
+from ..backends.translate import (_is_example, _is_scaffolding,
+                                  _looks_untranslated, _strip_echo)
 
 
 def check(segments: list[dict]) -> dict:
@@ -24,7 +25,7 @@ def check(segments: list[dict]) -> dict:
     lines are left silent, which is a worse dub than a correct line and a much
     better one than the original language read aloud in an English voice.
     """
-    repaired = untranslated = empty = 0
+    repaired = untranslated = empty = template = 0
     # Every repair is logged with the line it changed, not just counted. The
     # count says a long video needed patching; the lines say where, so they can
     # be listened to in the finished dub instead of taken on trust.
@@ -37,6 +38,21 @@ def check(segments: list[dict]) -> dict:
             continue
 
         cleaned = _strip_echo(text)
+        # Template all the way down. This is the path that matters for a video
+        # already translated once: the parser's guards run at translation time,
+        # but a cached translated.json is replayed straight past them, and
+        # stripping "<id>|" off "<id>|<translation>" leaves "<translation>",
+        # which is not empty, does not resemble its Portuguese source, and was
+        # therefore spoken — and counted as a *repair*, so the report claimed a
+        # fix where there was none.
+        if cleaned and (_is_scaffolding(cleaned) or _is_example(cleaned)):
+            template += 1
+            log.warning("line came back as the reply format, not a translation",
+                        extra={"at": round(seg.get("start", 0.0), 1),
+                               "returned": text[:120]})
+            seg["translation"] = ""
+            continue
+
         if cleaned != text:
             repaired += 1
             log.warning("stray scaffolding removed from a translated line",
@@ -58,7 +74,7 @@ def check(segments: list[dict]) -> dict:
 
     spoken = sum(1 for s in segments if (s.get("translation") or "").strip())
     return {"lines": len(segments), "spoken": spoken, "repaired": repaired,
-            "untranslated": untranslated, "empty": empty}
+            "untranslated": untranslated, "template": template, "empty": empty}
 
 
 def summarise(report: dict) -> str:
@@ -69,6 +85,11 @@ def summarise(report: dict) -> str:
     if report["untranslated"]:
         parts.append(f"{report['untranslated']} came back in the original language "
                      "and were left silent")
+    # Counted apart from the line above, because they are a different fault and
+    # saying "came back in the original language" about them would be untrue.
+    if report.get("template"):
+        parts.append(f"{report['template']} came back as the reply format rather "
+                     "than a translation and were left silent")
     if not parts:
         return ""
     return ("The translation needed patching up: " + ", and ".join(parts) +

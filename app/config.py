@@ -307,7 +307,10 @@ class Settings:
     ollama_model: str = ""               # blank = auto by RAM
     anthropic_key: str = ""
     openai_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-5"
+    # Sonnet 4.5 is a legacy model; sonnet-5 is the current one and is markedly
+    # better at exactly this job — specialist terminology and fitting a
+    # translation into a fixed time slot. Same tier, same order of cost.
+    anthropic_model: str = "claude-sonnet-5"
     openai_model: str = "gpt-4o"
     keep_video_quality: str = "best"     # best | 1080 | 720
     # Blank, or a browser name yt-dlp understands. YouTube increasingly refuses

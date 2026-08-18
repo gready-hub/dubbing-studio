@@ -44,9 +44,28 @@ Rules you must follow every time:
 5. IMPERFECT INPUT. The source came from speech recognition and contains
    mis-hearings and run-on sentences. Infer the intent from context and translate
    that. Never return an empty line.
-6. FORMAT. Reply with one line per input, exactly as:
-   <id>|<translation>
-   No preamble, no commentary, no code fences, no blank lines."""
+6. FORMAT. Reply with exactly one line per input line, in the same order, each
+   beginning with that input's own number and a vertical bar. An input numbered
+   7 comes back looking like this and only like this:
+   7|Nobody remembered to close the gate behind them.
+   No preamble, no commentary, no code fences, no blank lines. Never put a line
+   break inside a translation — anything after it is thrown away."""
+
+
+# The one filled-in example above. A concrete example is imitated far more
+# reliably than a placeholder is filled in, which is why it replaced
+# "<id>|<translation>" — but that trade has a cost: a copied example is a
+# plausible English sentence, and neither _is_scaffolding nor _looks_untranslated
+# can see it. The first version of this said "12|Now chain three and turn your
+# work.", which on a crochet tutorial is indistinguishable from a correct
+# translation of a real line. So the sentence is deliberately alien to anything
+# this app is pointed at, and is checked for rather than trusted to look wrong.
+EXAMPLE_LINE = "Nobody remembered to close the gate behind them."
+
+
+def _is_example(text: str) -> bool:
+    bare = lambda s: re.sub(r"[^\w]+", "", s).casefold()   # noqa: E731
+    return bare(text) == bare(EXAMPLE_LINE)
 
 
 class TranslationError(RuntimeError):
@@ -62,7 +81,13 @@ def _build_prompt(batch: list[dict], context: list[str], target: str, glossary: 
     if context:
         parts.append("\nPreceding lines, for continuity only — do NOT translate them:\n"
                      + "\n".join(f"  {c}" for c in context))
-    parts.append("\nTranslate these lines. Reply with one `id|translation` line each:\n")
+    # Deliberately no placeholder. This is the last instruction the model reads
+    # before it answers, so it is the nearest thing to copy — and the copy that
+    # produced 16% of a video was of a placeholder just like the one that used to
+    # be here, in backticks, on this line. Fixing the rule in SYSTEM and leaving
+    # this one moved the hazard closer to the generation point rather than away.
+    parts.append("\nTranslate these lines. Reply with one line for each: its "
+                 "number, a vertical bar, then the translation.\n")
     for seg in batch:
         slot = seg["end"] - seg["start"]
         parts.append(f'{seg["i"]}|[{slot:.1f}s] {seg["text"]}')
@@ -85,8 +110,46 @@ _ECHOED = re.compile(
     r")\s*", re.IGNORECASE)
 
 
+# The reply format spelled back at us rather than filled in. A local model under
+# pressure copies the nearest text it can see, and that used to be the format
+# rule itself, which was written with angle-bracket placeholders — so the reply
+# came back as "327|<id>|<translation>": a correct line number, then the
+# instruction pasted in place of the answer. Measured on a 98-minute video
+# translated by qwen3:8b: 72 of 448 lines, 16% of the dub, and nothing caught
+# them — the parser only knew the "id: 63" shape, and a line of pure template
+# resembles neither its Portuguese source nor an empty string.
+#
+# Rule 6 now shows a filled-in example instead, which is the fix rather than the
+# net; a model that copies "12|Now chain three and turn your work." at least
+# produces a sentence, and models imitate a concrete example far more reliably
+# than they fill in a placeholder. This stays because the next model will find
+# some other way to hand back the shape of an answer instead of one.
+# Every bracket family, and spaces allowed inside: the first version of this
+# demanded angle brackets with no internal space, so "<line id>|<the
+# translation>" — one word wider than the case it was written for — walked
+# straight through it, and "{id}|{translation}" never stood a chance.
+_BRACKETED = r"[<\[{(][^>\]})]{0,40}[>\]})]"
+_SCAFFOLD_PREFIX = re.compile(rf"^\s*{_BRACKETED}\s*\|\s*")
+_ALL_SCAFFOLD = re.compile(rf"^(?:\s*{_BRACKETED}\s*[|:.\-]?\s*)+$")
+# The id repeated after the bar the parser already ate: "63|63|Now we chain
+# three." arrived as "63|Now we chain three." and was spoken as "sixty-three".
+# _ECHOED deliberately will not match a bare number, to protect "3. Chain three
+# stitches." — but a number followed by a bar, this deep in, is never a sentence.
+_ECHOED_ID_BAR = re.compile(r"^\s*\d{1,5}\s*\|\s*")
+
+
+def _is_scaffolding(text: str) -> bool:
+    """True when the model returned the shape of an answer instead of one."""
+    return bool(_ALL_SCAFFOLD.match(text))
+
+
 def _strip_echo(text: str) -> str:
     """Remove any scaffolding the model repeated back into its translation."""
+    for _ in range(3):
+        stripped = _ECHOED_ID_BAR.sub("", _SCAFFOLD_PREFIX.sub("", text, count=1),
+                                      count=1)
+        if stripped != text:
+            text = stripped
     for _ in range(3):                     # "63| id: 63 ..." has two layers
         stripped = _ECHOED.sub("", text, count=1)
         if stripped == text:
@@ -113,25 +176,78 @@ def _looks_untranslated(text: str, source: str) -> bool:
     return len(b) > 15 and a == b
 
 
-def _parse(reply: str, batch: list[dict]) -> dict[int, str]:
+def _parse(reply: str, batch: list[dict]) -> tuple[dict[int, str], bool]:
+    """Returns (translations, trustworthy).
+
+    trustworthy is False when the reply's line numbering does not correspond to
+    the batch's — an id that was never asked for, or the same id twice. Both are
+    the fingerprint of a model that renumbered rather than answered, and when it
+    renumbers the lines it *does* match are attached to the wrong slots.
+
+    That case is the reason this returns a flag rather than just a dict. Found in
+    a finished 98-minute dub: two lines carried the translation of the pair two
+    slots earlier, so the voice described a corner while the picture showed a
+    seam. Every existing check passed it — each translation was fluent English,
+    none matched its own source, and the batch was one line short, which is under
+    the 5% ceiling by construction. Nothing in the pipeline compared a
+    translation against the slot it landed in, so nothing could have seen it.
+    """
     wanted = {s["i"]: s.get("text", "") for s in batch}
     out: dict[int, str] = {}
+    seen: set[int] = set()
+    trustworthy = True
+    last: int | None = None
+    # A model reasoning aloud writes draft "63|..." lines before its answer, and
+    # the last match for an id would win. Older Ollama returns that inline.
+    reply = reply.rsplit("</think>", 1)[-1]
     for line in reply.splitlines():
         line = line.strip()
-        if not line or "|" not in line:
+        if not line:
+            continue
+        if "|" not in line:
+            # A translation the model wrapped onto a second physical line. This
+            # used to be skipped, which silently deleted the rest of the
+            # sentence: the id was already answered, so it was not a miss, not a
+            # retry, and not counted — the dub simply spoke half the line, and
+            # the half it spoke was a grammatical fragment of about the right
+            # length. Most likely on the long run-on lines speech recognition
+            # produces, which is where a model is likeliest to wrap.
+            #
+            # Only a genuine wrap is rejoined, and the test is the first
+            # character: a sentence continued onto a second line carries on in
+            # lower case, while anything the model adds of its own — "Let me
+            # know if you want any adjustments!", a closing code fence, a note
+            # about the audio — starts with a capital or a symbol. Without that
+            # test the trailing pleasantry was glued onto the last translation
+            # and spoken aloud, and a continuation after a *rejected* line
+            # attached itself to an earlier, unrelated slot.
+            if (last is not None and last in out and line[:1].islower()
+                    and any(c.isalpha() for c in line)):
+                out[last] = f"{out[last]} {line}".strip()
+            else:
+                last = None
             continue
         head, _, tail = line.partition("|")
         head = head.strip().lstrip("#").strip()
-        if not head.isdigit():
+        # isdigit() is true for superscripts, which int() then refuses.
+        if not (head.isascii() and head.isdigit()):
             continue
         idx = int(head)
+        if idx not in wanted or idx in seen:
+            trustworthy = False
+        seen.add(idx)
         if idx in wanted:
             text = _strip_echo(tail.strip())
             # Treated as a miss rather than a result, so the retry above gets a
-            # go at it and it is counted if it never lands.
-            if text and not _looks_untranslated(text, wanted[idx]):
+            # go at it and it is counted if it never lands. A line of pure
+            # template counts as a miss for the same reason: asking again is the
+            # only thing that can turn it into a translation, and shipping it
+            # puts the literal characters "<id>|<translation>" into the audio.
+            if text and not _is_scaffolding(text) and not _is_example(text) \
+                    and not _looks_untranslated(text, wanted[idx]):
                 out[idx] = text
-    return out
+                last = idx
+    return out, trustworthy
 
 
 # ----------------------------------------------------------------- backends
@@ -238,7 +354,15 @@ def _call_ollama(prompt: str, model: str, host: str = "") -> str:
 def _call_anthropic(prompt: str, model: str, key: str) -> str:
     body = json.dumps({
         "model": model,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
+        # The same judgement the Ollama path makes below, and now it has to be
+        # said out loud: Sonnet 5 runs adaptive thinking whenever this field is
+        # omitted, where Sonnet 4.5 ran without it. Thinking is billed inside
+        # max_tokens, so a batch of twenty-five lines could be reasoned about
+        # until the reply truncated — and a truncated reply is not visible as an
+        # error here. It arrives as missing lines and a halving retry, which
+        # looks like a slow model rather than a misconfigured request.
+        "thinking": {"type": "disabled"},
         "system": SYSTEM,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
@@ -319,11 +443,24 @@ def _batches(segments: list[dict]) -> list[list[dict]]:
 def _ask(batch: list[dict], context: list[str], target: str, glossary: str,
          call) -> dict[int, str]:
     try:
-        return _parse(call(_build_prompt(batch, context, target, glossary)), batch)
+        got, trustworthy = _parse(
+            call(_build_prompt(batch, context, target, glossary)), batch)
     except TranslationError:
         raise
     except Exception:                                            # noqa: BLE001
         return {}
+    if not trustworthy:
+        # The whole batch goes back, not the lines that happened to match. When
+        # a model renumbers, the answers it gives under the ids we asked for are
+        # translations of *other* lines, so keeping them is worse than keeping
+        # none: they are fluent, they pass every content check, and they are
+        # attached to the wrong moment in the video. Discarding makes them missing
+        # lines, which is the one condition the halving retry can act on.
+        logs.get().warning("reply did not line up with the batch, discarding it",
+                           extra={"asked": len(batch), "matched": len(got),
+                                  "first_id": batch[0]["i"]})
+        return {}
+    return got
 
 
 def _translate_chunk(batch: list[dict], context: list[str], target: str,

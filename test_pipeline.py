@@ -190,18 +190,51 @@ def test_translate():
     batch = [{"i": 0, "start": 0, "end": 2, "text": "hola"},
              {"i": 1, "start": 2, "end": 4, "text": "adios"}]
 
+    lines = lambda reply: T._parse(reply, batch)[0]        # noqa: E731
+    trusted = lambda reply: T._parse(reply, batch)[1]      # noqa: E731
+
     check("parses clean output",
-          T._parse("0|Hello\n1|Goodbye", batch) == {0: "Hello", 1: "Goodbye"})
+          lines("0|Hello\n1|Goodbye") == {0: "Hello", 1: "Goodbye"})
     check("ignores preamble and fences",
-          T._parse("Sure!\n```\n0|Hello\n1|Goodbye\n```", batch) == {0: "Hello", 1: "Goodbye"})
+          lines("Sure!\n```\n0|Hello\n1|Goodbye\n```") == {0: "Hello", 1: "Goodbye"})
     check("strips an echoed time marker",
-          T._parse("0|[2.0s] Hello", batch) == {0: "Hello"})
+          lines("0|[2.0s] Hello") == {0: "Hello"})
     check("drops ids not in the batch",
-          T._parse("0|Hello\n99|Nope", batch) == {0: "Hello"})
-    check("survives a missing line",
-          T._parse("1|Goodbye", batch) == {1: "Goodbye"})
+          lines("0|Hello\n99|Nope") == {0: "Hello"})
+    check("survives a missing line", lines("1|Goodbye") == {1: "Goodbye"})
     check("handles pipes inside the translation",
-          T._parse("0|Hello | there", batch) == {0: "Hello | there"})
+          lines("0|Hello | there") == {0: "Hello | there"})
+
+    # A model that renumbers hands back fluent translations of *other* lines
+    # under the ids we asked for. Found in a finished 98-minute dub: two slots
+    # carried the pair from two slots earlier, so the voice described a corner
+    # while the picture showed a seam. Every content check passed it, because
+    # nothing compared a translation against the slot it landed in.
+    check("a reply that lines up is trusted", trusted("0|Hello\n1|Goodbye"))
+    check("an id we never asked for makes the whole batch untrustworthy",
+          not trusted("1|Hello\n2|Goodbye"))
+    check("and so does the same id twice",
+          not trusted("0|The real one.\n0|Sorry, I meant this."))
+    check("an untrustworthy batch is discarded rather than cherry-picked",
+          T._ask(batch, [], "English", "",
+                 lambda _p: "1|Hello\n2|Goodbye") == {})
+    check("a clean batch still comes back from _ask",
+          T._ask(batch, [], "English", "",
+                 lambda _p: "0|Hello\n1|Goodbye") == {0: "Hello", 1: "Goodbye"})
+
+    # A translation the model wrapped onto a second physical line. This used to
+    # be dropped: the id was already answered, so it was not a miss, not a
+    # retry, and not counted — the dub spoke a grammatical fragment of roughly
+    # the right length and nothing downstream could tell.
+    check("a wrapped translation is rejoined, not truncated",
+          lines("0|Now chain three and turn,\nand then work two together.")
+          == {0: "Now chain three and turn, and then work two together."})
+    # Only a genuine wrap. A sentence continued onto a second line carries on in
+    # lower case; anything the model adds of its own starts with a capital.
+    # Without that test the pleasantry was glued on and spoken aloud.
+    check("but the model's own sign-off is not glued onto the last line",
+          lines("0|Hello\n1|Goodbye\nLet me know if you want any adjustments!")
+          == {0: "Hello", 1: "Goodbye"})
 
     prompt = T._build_prompt(batch, ["contexto"], "English", "hola -> hi")
     check("prompt carries the slot length", "[2.0s]" in prompt)
@@ -1422,9 +1455,30 @@ def test_translation_qc():
                       ("[2.0s] Now we chain three.", "Now we chain three."),
                       ("[2.0s] id 63. Now we chain three.", "Now we chain three."),
                       ("#63 Now we chain three.", "Now we chain three."),
+                      ("<id>|Now we chain three.", "Now we chain three."),
                       ("Now we chain three.", "Now we chain three.")]:
         got = _strip_echo(raw)
         check(f"stripped: {raw[:26]!r}", got == want, got)
+
+    # The reply format spelled back at us instead of filled in. Found by
+    # translating the same batches with a stronger model and diffing: 72 of 448
+    # lines in a real 98-minute dub came back like this, 16% of the video, and
+    # every check passed them — a line of pure template resembles neither its
+    # Portuguese source nor an empty string.
+    # Checked through the parser rather than on the helper, because rejection is
+    # the behaviour that matters: a miss is what makes the halving retry ask
+    # again, and asking again is the only thing that can turn a template into an
+    # actual translation. Some of these empty out and some stay recognisably
+    # template — either way none may reach the audio.
+    from app.backends.translate import _is_scaffolding
+    one = [{"i": 1, "text": "As duas correntinhas para finalizar."}]
+    for template in ("<id>|<translation>", "<translation>", "<id>|", "<text>"):
+        check(f"template answer is a miss, so the retry fires: {template!r}",
+              _parse(f"1|{template}", one)[0] == {})
+    for real in ("Now we chain three.", "3. Chain three stitches.",
+                 "Row 12) turn your work.", "Work 2 together, <that> is the trick."):
+        check(f"and a real line is not: {real[:28]!r}",
+              not _is_scaffolding(real) and _parse(f"1|{real}", one)[0] == {1: real})
 
     # Numbers that belong to the sentence must survive. These are the shapes a
     # crochet or cookery tutorial actually produces, and eating the front of one
@@ -1443,9 +1497,9 @@ def test_translation_qc():
     # so the retry above it gets a go, and the 5% ceiling can fail the job rather
     # than deliver an hour of the original language.
     check("the parser rejects an untranslated line",
-          _parse(f"63|{SRC}", [{"i": 63, "text": SRC}]) == {})
+          _parse(f"63|{SRC}", [{"i": 63, "text": SRC}])[0] == {})
     check("and repairs an echoed one",
-          _parse("63|id: 63 Now we chain three.", [{"i": 63, "text": SRC}])
+          _parse("63|id: 63 Now we chain three.", [{"i": 63, "text": SRC}])[0]
           == {63: "Now we chain three."})
 
     # The check itself, which also covers a translation restored from cache.
@@ -1466,6 +1520,24 @@ def test_translation_qc():
     check("and it says so in a sentence", "original language" in qc.summarise(report))
     check("a clean translation says nothing at all",
           qc.summarise(qc.check([{"text": "Hola", "translation": "Hello there."}])) == "")
+
+    # The cached path is the one that matters for a video already translated
+    # once: the parser's guards run at translation time, but translated.json is
+    # replayed straight past them. Stripping "<id>|" left "<translation>", which
+    # is not empty and does not resemble its source — so it was spoken, and
+    # counted as a repair, telling the user a fix had happened.
+    cached = [{"text": SRC, "translation": "<id>|<translation>"},
+              {"text": SRC, "translation": "<id>|Now we chain three."}]
+    tmpl = qc.check(cached)
+    check("a cached template line is silenced, not spoken",
+          cached[0]["translation"] == "", repr(cached[0]["translation"]))
+    check("but a real translation behind the scaffolding is kept",
+          cached[1]["translation"] == "Now we chain three.")
+    check("and it is counted apart from a genuinely untranslated line",
+          (tmpl["template"], tmpl["untranslated"], tmpl["repaired"]) == (1, 0, 1),
+          str(tmpl))
+    check("the sentence does not claim it came back in the original language",
+          "reply format" in qc.summarise(tmpl))
 
     # A batch the model cannot manage whole is halved until it can. Twenty-five
     # missing lines used to fall outside the "small prompts land" rule, so the

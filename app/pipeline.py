@@ -1246,7 +1246,7 @@ class JobRunner:
             # quiet is the shape of the video, not evidence of anything.
             checked = stats.get("translation_check") or {}
             everything_spoken = not failed and not checked.get("untranslated") \
-                and not checked.get("empty")
+                and not checked.get("template") and not checked.get("empty")
             if stats.get("audio_present") is False:
                 # Distinct from the above and never suppressed: a track with
                 # nothing audible anywhere is wrong however the lines counted.
