@@ -1,0 +1,29 @@
+:root{
+  --bg:#faf9f7; --panel:#ffffff; --ink:#1c1917; --muted:#78716c; --line:#e7e5e4;
+  --accent:#b45309; --accent-soft:#fef3c7; --ok:#15803d; --bad:#b91c1c; --warn:#a16207;
+  /* Filled surfaces are a separate token from the accent used for text and
+     borders. In dark mode the two want opposite things: text has to be light
+     enough to read on a dark panel, while a large filled button in that same
+     bright amber shouts across the whole window. */
+  --accent-fill:#b45309; --on-accent:#faf9f7;
+  --radius:14px; --shadow:0 1px 2px rgba(28,25,23,.05),0 8px 24px rgba(28,25,23,.06);
+}
+@media (prefers-color-scheme:dark){
+  :root{ --bg:#1c1917; --panel:#292524; --ink:#f5f5f4; --muted:#a8a29e; --line:#44403c;
+         --accent:#fbbf24; --accent-soft:#422006; --ok:#4ade80; --bad:#f87171; --warn:#fbbf24;
+         --accent-fill:#b45309; --on-accent:#fffbeb;
+         --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); }
+}
+/* Everything here is decoration. Anyone who has asked their system to stop
+   moving things has asked this app too. */
+@media (prefers-reduced-motion:reduce){
+  *{animation:none !important;transition:none !important}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+     font:16px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+     -webkit-font-smoothing:antialiased}
+.wrap{max-width:780px;margin:0 auto;padding:40px 24px 48px}
+/* One focus treatment for everything, so tabbing through reads as designed
+   rather than as whatever each control's platform default happens to be. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}

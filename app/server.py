@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import (BUILTIN_GLOSSARIES, OUTPUT_DIR, PRESETS, SETTINGS_FILE,
@@ -24,6 +25,7 @@ from .pipeline import runner
 
 STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="Dubbing Studio")
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 @app.get("/api/diagnostics")

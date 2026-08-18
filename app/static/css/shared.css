@@ -1,0 +1,171 @@
+/* Wraps: the header carries a title, a toggle, an engine badge and a button,
+   and at 430px an unwrapped row squashes all four. */
+header{display:flex;align-items:center;justify-content:space-between;
+       margin-bottom:8px;gap:10px;flex-wrap:wrap}
+header > div:last-child{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* Scales rather than wrapping. At 430px the fixed 26px broke the title across
+   two lines — "Dubbing" above "Studio" — which is the first thing anyone sees. */
+h1{font-size:clamp(20px,5vw,26px);letter-spacing:-.02em;margin:0;font-weight:650;
+   white-space:nowrap}
+.sub{color:var(--muted);font-size:14px;margin:0 0 28px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+       box-shadow:var(--shadow);padding:22px;margin-bottom:18px;
+       animation:rise .18s ease both}
+/* Housekeeping — working files, the setup check, earlier videos. These carried
+   the same card, border, shadow and padding as the thing the app is for, so on
+   an empty first run the eye had four equal destinations and no primary one. */
+.panel.quiet{background:transparent;box-shadow:none}
+@keyframes rise{from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none}}
+label{display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px;
+      letter-spacing:.01em}
+input[type=text],input[type=password],select,textarea{
+  width:100%;padding:12px 14px;font-size:15px;font-family:inherit;color:var(--ink);
+  background:var(--bg);border:1px solid var(--line);border-radius:10px;outline:none;
+  transition:border-color .15s}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+/* Every other control here is drawn by hand; leaving the platform's own
+   double-arrow on the selects made them the one thing that looked borrowed. */
+select{appearance:none;-webkit-appearance:none;padding-right:38px;cursor:pointer;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' stroke='%2378716c' stroke-width='1.75' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 14px center}
+@media (prefers-color-scheme:dark){
+  select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' stroke='%23a8a29e' stroke-width='1.75' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+}
+textarea{min-height:90px;resize:vertical;font-size:13px;line-height:1.5}
+/* Wraps rather than squashing: the link box shares this row with two buttons,
+   and in a narrow window an un-wrapped row shrank the input until the URL in
+   it was unreadable. */
+.row{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap}
+.row input{flex:1;min-width:min(100%,260px)}
+button{font:inherit;font-weight:600;font-size:15px;cursor:pointer;border-radius:10px;
+       border:1px solid transparent;padding:12px 20px;
+       transition:opacity .15s,transform .05s,filter .15s,color .15s,border-color .15s}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:disabled:hover{filter:none}
+.primary{background:var(--accent-fill);color:var(--on-accent);border-color:var(--accent-fill)}
+/* The main action was the one control in the app that did nothing on hover. */
+.primary:hover{filter:brightness(1.12)}
+.ghost{background:transparent;color:var(--muted);border-color:var(--line)}
+.ghost:hover{color:var(--ink);border-color:var(--muted)}
+.danger{background:transparent;color:var(--bad);border-color:var(--bad)}
+.danger:hover{filter:brightness(1.1);background:color-mix(in srgb,var(--bad) 8%,transparent)}
+.icon-btn{background:none;border:1px solid var(--line);padding:9px 14px;font-size:14px;
+          color:var(--muted)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:620px){ .grid{grid-template-columns:1fr} }
+.hidden{display:none !important}
+.bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 10px}
+.bar > i{display:block;height:100%;background:var(--accent);border-radius:99px;
+         transition:width .4s ease;width:0}
+.stages{display:flex;gap:6px;margin-top:14px;flex-wrap:wrap}
+.chip{font-size:12px;padding:4px 10px;border-radius:99px;border:1px solid var(--line);
+      color:var(--muted);white-space:nowrap;transition:background .2s,color .2s,
+      border-color .2s}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);
+         font-weight:600}
+/* Spent, not celebrated. Outlining each finished stage in green turned the row
+   into four greens and an amber, and the one chip that matters — the stage
+   running now — competed with all of them. A tick instead: it says the same
+   thing without colour, so it survives being colour-blind or glanced at, and
+   it leaves the accent as the only thing shouting. Filling the chip instead
+   was tried and dropped — muted on a filled pill is 3.8:1 at 12px, which is
+   worse to read than the green it replaced. */
+.chip.done::before{content:"✓";margin-right:5px;opacity:.75}
+/* The duration rides inside the pill rather than in a row of its own. Set in
+   tabular figures so a running stage does not jitter the chips beside it every
+   time the seconds tick over, and dimmed so the row still reads as labels
+   first and numbers second. */
+.chip small{margin-left:6px;opacity:.6;font-size:11px;
+            font-variant-numeric:tabular-nums}
+.chip.on small{opacity:.85}
+/* Same pill as the stage chips, so it reads as part of that row rather than
+   as a stray control. */
+.toggle{font:inherit;font-size:12px;font-weight:500;padding:5px 11px;
+        border-radius:99px;border:1px solid var(--line);color:var(--muted);
+        background:transparent;cursor:pointer;
+        display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.toggle:hover{color:var(--ink);border-color:var(--muted)}
+.toggle[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);
+                             background:var(--accent-soft)}
+.toggle svg{width:13px;height:13px;flex:none}
+.job-title{font-weight:650;font-size:17px;letter-spacing:-.01em;margin:0 0 2px}
+.msg{color:var(--muted);font-size:14px;margin:0}
+.stat{display:flex;justify-content:space-between;padding:7px 0;font-size:14px;
+      border-bottom:1px solid var(--line)}
+.stat:last-child{border-bottom:none}
+.stat span:first-child{color:var(--muted)}
+/* The per-stage breakdown under "Took". Indented and lighter so it reads as a
+   detail of the line above rather than as more rows of the same rank. */
+.stat.sub{padding-left:16px;font-size:13px;border-bottom:none;padding-top:3px;
+          padding-bottom:3px}
+.stat.sub span:last-child{font-weight:500;color:var(--muted)}
+.stat span:last-child{font-variant-numeric:tabular-nums;font-weight:600}
+video{width:100%;border-radius:10px;margin-top:14px;background:#000;display:block}
+.check{display:flex;align-items:flex-start;gap:10px;padding:9px 0;font-size:14px;
+       border-bottom:1px solid var(--line)}
+.check:last-child{border-bottom:none}
+.dot{width:9px;height:9px;border-radius:99px;flex:none;margin-top:7px}
+.dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
+.dot.opt{background:var(--warn)}
+.check code{background:var(--bg);padding:2px 7px;border-radius:5px;font-size:12.5px;
+            border:1px solid var(--line);display:inline-block;margin-top:3px}
+.banner{padding:12px 16px;border-radius:10px;font-size:14px;margin-bottom:16px;
+        border:1px solid}
+.banner.bad{background:color-mix(in srgb,var(--bad) 8%,transparent);border-color:var(--bad);
+            color:var(--bad)}
+.banner.info{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.engine{font-size:12px;color:var(--muted);border:1px solid var(--line);padding:5px 11px;
+        border-radius:99px;white-space:nowrap}
+details summary{cursor:pointer;font-size:14px;color:var(--muted);font-weight:600;
+                list-style:none;padding:4px 0}
+details summary::-webkit-details-marker{display:none}
+details summary::before{content:"▸";display:inline-block;margin-right:8px;
+                        transition:transform .15s}
+details[open] summary::before{content:"▾"}
+/* Capped measure. At 780px wide, 12.5px grey text ran the full width of the
+   panel — far past the length a line of small type can be scanned comfortably. */
+.hint{font-size:12.5px;color:var(--muted);margin-top:6px;line-height:1.45;max-width:64ch}
+.foot{font-size:12px;color:var(--muted);opacity:.85;text-align:center;
+      margin:26px auto 0;max-width:56ch;line-height:1.5}
+.past{display:flex;justify-content:space-between;align-items:center;padding:11px 0;
+      border-bottom:1px solid var(--line);font-size:14px;gap:12px}
+.past:last-child{border-bottom:none}
+.past b{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;
+        white-space:nowrap}
+.past small{color:var(--muted);font-size:12.5px;white-space:normal}
+/* Sizes sit beside their label rather than in a column of their own: these
+   rows already carry a wrapping explanation and two buttons. */
+.qty{font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;
+     margin-left:8px}
+/* One glance answers the question people actually open this panel with —
+   which of these is the big one. The rows below double as its legend. */
+.usage{display:flex;height:10px;border-radius:99px;overflow:hidden;
+       background:var(--line);margin:2px 0 18px;gap:1px}
+.usage i{display:block;height:100%;transition:width .35s ease;min-width:2px}
+.swatch{display:inline-block;width:9px;height:9px;border-radius:3px;
+        margin-right:8px;vertical-align:middle;flex:none}
+.usage-empty{color:var(--muted);font-size:12.5px;margin:2px 0 14px}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;font-size:12px;line-height:1.5;overflow-x:auto;
+    white-space:pre-wrap;word-break:break-word;max-height:240px;margin:8px 0 0}
+.danger-row{border-top:1px solid var(--line);margin-top:14px;padding-top:16px;
+            display:flex;justify-content:space-between;align-items:center;
+            gap:12px;flex-wrap:wrap;font-size:14px}
+.danger-row > div{flex:1;min-width:200px}
+.danger-row b{display:block;font-weight:600}
+.danger-row small{color:var(--muted);font-size:12.5px;display:block;max-width:56ch}
+.preset-wrap{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.segmented{display:flex;gap:4px;background:var(--bg);border:1px solid var(--line);
+           border-radius:11px;padding:4px}
+.segmented button{flex:1;padding:9px 10px;font-size:14px;border-radius:8px;
+                  background:transparent;color:var(--muted);border:none}
+.segmented button.on{background:var(--panel);color:var(--ink);
+                     box-shadow:0 1px 3px rgba(28,25,23,.10)}
+@media (prefers-color-scheme:dark){
+  .segmented button.on{box-shadow:0 1px 3px rgba(0,0,0,.4)}
+}
+.segmented button:disabled{opacity:.4}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;
+     background:var(--accent-soft);color:var(--accent);margin-left:8px;
+     font-weight:600;vertical-align:middle}
