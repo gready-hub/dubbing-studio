@@ -3,11 +3,9 @@ import { store } from "../store.js";
 import { escapeHtml } from "../format.js";
 
 const SHELL = `
-  <div class="panel quiet">
-    <details id="doctorWrap">
-      <summary>Setup check</summary>
-      <div id="doctor" style="margin-top:10px"></div>
-    </details>
+  <div class="panel">
+    <b style="font-size:15px">Setup check</b>
+    <div id="doctor" style="margin-top:10px"></div>
   </div>
 `;
 
@@ -30,7 +28,6 @@ class DoctorPanel extends BaseElement {
         <div><b>${escapeHtml(c.name)}</b>${c.optional&&!c.ok?'<span class="tag">optional</span>':""}
           ${c.ok?"":`<br><code>${escapeHtml(c.hint)}</code>`}</div>
       </div>`).join("");
-    if(!d.ready) this.$("#doctorWrap").open = true;
   }
 }
 

@@ -11,26 +11,24 @@ const SPACE_COLOURS = {
 };
 
 const SHELL = `
-  <div class="panel quiet">
-    <details id="storageWrap">
-      <summary id="storageSummary">Disk space</summary>
-      <p class="usage-empty" id="usageTotal"></p>
-      <div class="usage" id="usage"></div>
-      <div id="storageGroups"></div>
-      <details id="jobsWrap" class="hidden" style="margin-top:12px">
-        <summary id="jobsSummary">Working files, video by video</summary>
-        <div id="storageJobs" style="margin-top:6px"></div>
-      </details>
-      <div class="danger-row">
-        <div style="min-width:0">
-          <b>Remove Dubbing Studio</b>
-          <small>Deletes the app, its models and its working files. Your dubbed
-            videos are kept, and anything the rest of your Mac shares — Homebrew,
-            ffmpeg, Ollama — is listed rather than removed.</small>
-        </div>
-        <button class="danger" id="uninstallBtn">Uninstall…</button>
-      </div>
+  <div class="panel">
+    <b id="storageSummary" style="font-size:15px"></b>
+    <p class="usage-empty" id="usageTotal"></p>
+    <div class="usage" id="usage"></div>
+    <div id="storageGroups"></div>
+    <details id="jobsWrap" class="hidden" style="margin-top:12px">
+      <summary id="jobsSummary">Working files, video by video</summary>
+      <div id="storageJobs" style="margin-top:6px"></div>
     </details>
+    <div class="danger-row">
+      <div style="min-width:0">
+        <b>Remove Dubbing Studio</b>
+        <small>Deletes the app, its models and its working files. Your dubbed
+          videos are kept, and anything the rest of your Mac shares — Homebrew,
+          ffmpeg, Ollama — is listed rather than removed.</small>
+      </div>
+      <button class="danger" id="uninstallBtn">Uninstall…</button>
+    </div>
   </div>
 `;
 
@@ -66,8 +64,6 @@ class StoragePanel extends BaseElement {
       ? `Disk space — only ${free} left`
       : `Disk space — ${free} free`;
     this.$("#storageSummary").style.color = s.low ? "var(--bad)" : "";
-    // Opened by itself when it matters, since a collapsed panel is no warning.
-    if(s.low) this.$("#storageWrap").open = true;
 
     const groups = s.groups || [];
     const total = groups.reduce((n, g) => n + (g.bytes || 0), 0);

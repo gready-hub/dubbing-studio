@@ -11,11 +11,7 @@ import "./components/done-panel.js";
 import "./components/failed-panel.js";
 import "./components/settings-panel.js";
 import "./components/diagnostics-panel.js";
-import "./components/list-row.js";
-import "./components/queue-list.js";
-import "./components/history-list.js";
-import "./components/storage-panel.js";
-import "./components/doctor-panel.js";
+import "./components/manage-panel.js";
 
 function showSetupError(message, detail, info){
   const b = document.getElementById("setupBanner");
@@ -58,7 +54,7 @@ async function refreshStorage(){
   try{
     store.setStorage(await api.storage());
   }catch(err){
-    document.querySelector("storage-panel")?.showCheckError();
+    document.querySelector("manage-panel")?.showStorageCheckError();
   }
 }
 

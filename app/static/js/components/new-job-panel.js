@@ -3,7 +3,13 @@ import { store } from "../store.js";
 import { escapeHtml, escapeAttr } from "../format.js";
 
 const SHELL = `
-  <div class="panel">
+  <div class="panel hidden" id="compactBar"
+       style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <span class="msg" id="compactMsg"></span>
+    <button class="ghost" id="expandBtn">Dub another video</button>
+  </div>
+
+  <div class="panel" id="fullForm">
     <label for="url">Video link</label>
     <div class="row">
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=…"
@@ -75,6 +81,12 @@ class NewJobPanel extends BaseElement {
       this.emit("save-settings", {data: {glossary: e.target.value}});
     this.$("#diarize").onchange = e =>
       this.emit("save-settings", {data: {diarize: e.target.value === "true"}});
+    this.$("#expandBtn").onclick = () => {
+      this._expanded = true;
+      this.applyCollapse(store.state);
+      this.$("#url").focus();
+    };
+    this._expanded = false;
     this._unsub = store.subscribe(s => this.update(s));
   }
 
@@ -93,10 +105,27 @@ class NewJobPanel extends BaseElement {
   start(preview){
     const url = this.$("#url").value.trim();
     if(!url) return;
+    this._expanded = false;
     this.emit("start-job", {url, preview: !!preview});
   }
 
+  // The full form stays out of the way once a job exists — running, just
+  // finished, or failed — so it isn't stacked on screen against the panel
+  // that's actually relevant right now. "Dub another video" gets it back.
+  applyCollapse(s){
+    const job = s.jobs[s.current];
+    const collapsed = !!job && !this._expanded;
+    this.$("#fullForm").classList.toggle("hidden", collapsed);
+    this.$("#compactBar").classList.toggle("hidden", !collapsed);
+    if(collapsed){
+      this.$("#compactMsg").textContent = job.status === "done" ? "That one's finished."
+        : job.status === "error" ? "That one didn't finish."
+        : "A video is dubbing.";
+    }
+  }
+
   update(s){
+    this.applyCollapse(s);
     const { settings, presets, glossaries, features } = s;
     this.renderIfChanged(
       [settings.preset, settings.glossary, settings.diarize, features],

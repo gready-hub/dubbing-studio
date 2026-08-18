@@ -12,195 +12,207 @@ const TEXT_SETTINGS = ["voice","audio_mode","glossary","translator","ollama_mode
 const SHELL = `
 <dialog id="dlg">
   <div class="panel" style="margin:0;max-width:640px;max-height:80vh;overflow:auto">
-    <div class="grid">
-      <div>
-        <label for="voice">Voice</label>
-        <select id="voice"></select>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-          <button class="ghost" id="auditionBtn">Hear this voice</button>
-          <span class="hint" id="auditionMsg" style="margin:0" role="status" aria-live="polite"></span>
+    <div class="segmented" id="settingsTabs" style="margin-bottom:18px">
+      <button class="on" data-tab="voice">Voice &amp; Audio</button>
+      <button data-tab="translation">Translation</button>
+      <button data-tab="advanced">Advanced</button>
+    </div>
+
+    <div id="tab-voice">
+      <div class="grid">
+        <div>
+          <label for="voice">Voice</label>
+          <select id="voice"></select>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+            <button class="ghost" id="auditionBtn">Hear this voice</button>
+            <span class="hint" id="auditionMsg" style="margin:0" role="status" aria-live="polite"></span>
+          </div>
+          <audio id="auditionAudio" style="display:none"></audio>
         </div>
-        <audio id="auditionAudio" style="display:none"></audio>
-      </div>
-      <div>
-        <label for="audio_mode">Original audio</label>
-        <select id="audio_mode">
-          <option value="replace">Replace completely</option>
-          <option value="duck">Keep quietly underneath</option>
-          <option value="dual">Keep as a second track</option>
-        </select>
-      </div>
-      <div>
-        <label for="translator">Translated by</label>
-        <select id="translator">
-          <option value="ollama">Local model (free, private)</option>
-          <option value="anthropic">Claude API (best quality)</option>
-          <option value="openai">OpenAI API</option>
-        </select>
-      </div>
-      <div id="ollamaBox">
-        <label for="ollama_model">Local model</label>
-        <input type="text" id="ollama_model" placeholder="auto">
-        <p class="hint" id="modelHint"></p>
-      </div>
-      <div id="anthropicBox" class="hidden">
-        <label for="anthropic_key">Anthropic API key</label>
-        <input type="password" id="anthropic_key" placeholder="sk-ant-…">
-        <label for="anthropic_model" style="margin-top:10px">Claude model</label>
-        <input type="text" id="anthropic_model" placeholder="claude-sonnet-5">
-        <p class="hint">The key is saved in plain text in
-          <code id="settingsPath1">settings.json</code> on this computer, so that
-          the app can translate without asking for it again. Anyone with access to
-          your account can read it.</p>
-      </div>
-      <div id="openaiBox" class="hidden">
-        <label for="openai_key">OpenAI API key</label>
-        <input type="password" id="openai_key" placeholder="sk-…">
-        <label for="openai_model" style="margin-top:10px">OpenAI model</label>
-        <input type="text" id="openai_model" placeholder="gpt-4o">
-        <p class="hint">The key is saved in plain text in
-          <code id="settingsPath2">settings.json</code> on this computer, so that
-          the app can translate without asking for it again. Anyone with access to
-          your account can read it.</p>
-      </div>
-      <div>
-        <label for="target_language">Translate into</label>
-        <input type="text" id="target_language" value="English">
-      </div>
-      <div>
-        <label for="speed">Speaking speed</label>
-        <select id="speed">
-          <option value="0.9">Slower</option>
-          <option value="1.0">Normal</option>
-          <option value="1.1">Slightly faster</option>
-        </select>
+        <div>
+          <label for="audio_mode">Original audio</label>
+          <select id="audio_mode">
+            <option value="replace">Replace completely</option>
+            <option value="duck">Keep quietly underneath</option>
+            <option value="dual">Keep as a second track</option>
+          </select>
+        </div>
+        <div>
+          <label for="speed">Speaking speed</label>
+          <select id="speed">
+            <option value="0.9">Slower</option>
+            <option value="1.0">Normal</option>
+            <option value="1.1">Slightly faster</option>
+          </select>
+        </div>
+        <div>
+          <label for="voice_mode">Voices</label>
+          <select id="voice_mode">
+            <option value="fixed">Use a built-in voice</option>
+            <option value="clone">Clone the original speaker</option>
+          </select>
+          <p class="hint" id="cloneHint">Cloning keeps the speaker's identity, but
+            carries their accent into English.</p>
+        </div>
+        <div>
+          <label for="separate_audio">Music and effects</label>
+          <select id="separate_audio">
+            <option value="true">Separate and keep them</option>
+            <option value="false">Don't separate (faster)</option>
+          </select>
+          <p class="hint">Splits speech from the rest so replacing the voices
+            doesn't wipe the soundtrack.</p>
+        </div>
+        <div>
+          <label for="keep_music">Music and effects bed</label>
+          <select id="keep_music">
+            <option value="true">Mix it back under the new voices</option>
+            <option value="false">Drop it — voices only</option>
+          </select>
+          <p class="hint">Only applies when the soundtrack was separated and the
+            original audio is being replaced.</p>
+        </div>
+        <div>
+          <label for="duck_db">Original volume when kept underneath</label>
+          <select id="duck_db">
+            <option value="-12">Quiet (-12 dB)</option>
+            <option value="-18">Very quiet (-18 dB)</option>
+            <option value="-24">Barely there (-24 dB)</option>
+          </select>
+          <p class="hint">Used only by “Keep quietly underneath”.</p>
+        </div>
       </div>
     </div>
 
-    <details style="margin-top:18px">
-      <summary>Advanced</summary>
-      <div style="margin-top:12px">
-        <label for="custom_glossary">Your own terms (one per line, “as spoken → English”)</label>
-        <textarea id="custom_glossary" placeholder="ponto amêndoa -> almond stitch"></textarea>
-        <div class="grid" style="margin-top:14px">
-          <div>
-            <label for="separate_audio">Music and effects</label>
-            <select id="separate_audio">
-              <option value="true">Separate and keep them</option>
-              <option value="false">Don't separate (faster)</option>
-            </select>
-            <p class="hint">Splits speech from the rest so replacing the voices
-              doesn't wipe the soundtrack.</p>
-          </div>
-          <div>
-            <label for="expected_speakers">How many people speak</label>
-            <select id="expected_speakers">
-              <option value="-1">Work it out automatically</option>
-              <option value="1">1 person</option>
-              <option value="2">2 people</option>
-              <option value="3">3 people</option>
-              <option value="4">4 people</option>
-              <option value="5">5 people</option>
-              <option value="6">6 people</option>
-            </select>
-            <p class="hint">Only used when “Who's speaking?” is set to several
-              people. Working it out automatically is the least reliable part of
-              the chain, so if you know the answer, saying so here is better.</p>
-          </div>
-          <div>
-            <label for="keep_music">Music and effects bed</label>
-            <select id="keep_music">
-              <option value="true">Mix it back under the new voices</option>
-              <option value="false">Drop it — voices only</option>
-            </select>
-            <p class="hint">Only applies when the soundtrack was separated and the
-              original audio is being replaced.</p>
-          </div>
-          <div>
-            <label for="asr_model">Transcription engine</label>
-            <select id="asr_model">
-              <option value="parakeet">Parakeet — fast</option>
-              <option value="whisper">Whisper — more accurate, slower</option>
-            </select>
-          </div>
-          <div>
-            <label for="voice_mode">Voices</label>
-            <select id="voice_mode">
-              <option value="fixed">Use a built-in voice</option>
-              <option value="clone">Clone the original speaker</option>
-            </select>
-            <p class="hint" id="cloneHint">Cloning keeps the speaker's identity, but
-              carries their accent into English.</p>
-          </div>
+    <div id="tab-translation" class="hidden">
+      <div class="grid">
+        <div>
+          <label for="translator">Translated by</label>
+          <select id="translator">
+            <option value="ollama">Local model (free, private)</option>
+            <option value="anthropic">Claude API (best quality)</option>
+            <option value="openai">OpenAI API</option>
+          </select>
         </div>
-        <div class="grid" style="margin-top:14px">
-          <div>
-            <label for="youtube_cookies">Sign in as</label>
-            <select id="youtube_cookies">
-              <option value="">Don't sign in</option>
-              <option value="safari">Safari</option>
-              <option value="chrome">Chrome</option>
-              <option value="firefox">Firefox</option>
-              <option value="edge">Edge</option>
-              <option value="brave">Brave</option>
-            </select>
-            <p class="hint">For videos YouTube refuses to send to a signed-out
-              request. Borrows the session from a browser you're already signed
-              into on this Mac. Nothing is uploaded; the cookies are only sent to
-              the site the video is on.</p>
-          </div>
-          <div>
-            <label for="keep_video_quality">Video quality</label>
-            <select id="keep_video_quality">
-              <option value="best">Best available</option>
-              <option value="1080">Up to 1080p</option>
-              <option value="720">Up to 720p — much smaller</option>
-            </select>
-            <p class="hint">The picture is copied, never re-encoded, so this
-              decides the download size. On an hour-and-a-half tutorial, 1080p is
-              around 1.8 GB and 720p around 730 MB — and 720p is plenty for
-              following along.</p>
-          </div>
-          <div>
-            <label for="write_srt">Subtitles</label>
-            <select id="write_srt">
-              <option value="false">No subtitle file</option>
-              <option value="true">Also save an .srt</option>
-            </select>
-          </div>
-          <div>
-            <label for="duck_db">Original volume when kept underneath</label>
-            <select id="duck_db">
-              <option value="-12">Quiet (-12 dB)</option>
-              <option value="-18">Very quiet (-18 dB)</option>
-              <option value="-24">Barely there (-24 dB)</option>
-            </select>
-            <p class="hint">Used only by “Keep quietly underneath”.</p>
-          </div>
-          <div>
-            <label for="merge_lines">Run-on lines</label>
-            <select id="merge_lines">
-              <option value="true">Join lines that run together</option>
-              <option value="false">Keep them exactly as heard</option>
-            </select>
-            <p class="hint">Fast dialogue arrives as many very short lines with no
-              gap between them, and each has to be squeezed to fit. Joining them
-              gives the translation room. Material with real pauses is unaffected.</p>
-          </div>
-          <div>
-            <label for="max_stretch">Hardest allowed squeeze</label>
-            <select id="max_stretch">
-              <option value="1.3">Gentle — 1.3x</option>
-              <option value="1.55">Normal — 1.55x</option>
-              <option value="1.8">Firm — 1.8x</option>
-            </select>
-            <p class="hint">How much a line may be sped up to fit the gap the
-              original speaker left. Past about 1.6x it starts to sound hurried;
-              beyond the limit the line runs on and later pauses absorb it.</p>
-          </div>
+        <div>
+          <label for="target_language">Translate into</label>
+          <input type="text" id="target_language" value="English">
         </div>
       </div>
-    </details>
+      <div class="grid" style="margin-top:14px">
+        <div id="ollamaBox">
+          <label for="ollama_model">Local model</label>
+          <input type="text" id="ollama_model" placeholder="auto">
+          <p class="hint" id="modelHint"></p>
+        </div>
+        <div id="anthropicBox" class="hidden">
+          <label for="anthropic_key">Anthropic API key</label>
+          <input type="password" id="anthropic_key" placeholder="sk-ant-…">
+          <label for="anthropic_model" style="margin-top:10px">Claude model</label>
+          <input type="text" id="anthropic_model" placeholder="claude-sonnet-5">
+          <p class="hint">The key is saved in plain text in
+            <code id="settingsPath1">settings.json</code> on this computer, so that
+            the app can translate without asking for it again. Anyone with access to
+            your account can read it.</p>
+        </div>
+        <div id="openaiBox" class="hidden">
+          <label for="openai_key">OpenAI API key</label>
+          <input type="password" id="openai_key" placeholder="sk-…">
+          <label for="openai_model" style="margin-top:10px">OpenAI model</label>
+          <input type="text" id="openai_model" placeholder="gpt-4o">
+          <p class="hint">The key is saved in plain text in
+            <code id="settingsPath2">settings.json</code> on this computer, so that
+            the app can translate without asking for it again. Anyone with access to
+            your account can read it.</p>
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <label for="custom_glossary">Your own terms (one per line, “as spoken → English”)</label>
+        <textarea id="custom_glossary" placeholder="ponto amêndoa -> almond stitch"></textarea>
+      </div>
+    </div>
+
+    <div id="tab-advanced" class="hidden">
+      <div class="grid">
+        <div>
+          <label for="expected_speakers">How many people speak</label>
+          <select id="expected_speakers">
+            <option value="-1">Work it out automatically</option>
+            <option value="1">1 person</option>
+            <option value="2">2 people</option>
+            <option value="3">3 people</option>
+            <option value="4">4 people</option>
+            <option value="5">5 people</option>
+            <option value="6">6 people</option>
+          </select>
+          <p class="hint">Only used when “Who's speaking?” is set to several
+            people. Working it out automatically is the least reliable part of
+            the chain, so if you know the answer, saying so here is better.</p>
+        </div>
+        <div>
+          <label for="asr_model">Transcription engine</label>
+          <select id="asr_model">
+            <option value="parakeet">Parakeet — fast</option>
+            <option value="whisper">Whisper — more accurate, slower</option>
+          </select>
+        </div>
+        <div>
+          <label for="youtube_cookies">Sign in as</label>
+          <select id="youtube_cookies">
+            <option value="">Don't sign in</option>
+            <option value="safari">Safari</option>
+            <option value="chrome">Chrome</option>
+            <option value="firefox">Firefox</option>
+            <option value="edge">Edge</option>
+            <option value="brave">Brave</option>
+          </select>
+          <p class="hint">For videos YouTube refuses to send to a signed-out
+            request. Borrows the session from a browser you're already signed
+            into on this Mac. Nothing is uploaded; the cookies are only sent to
+            the site the video is on.</p>
+        </div>
+        <div>
+          <label for="keep_video_quality">Video quality</label>
+          <select id="keep_video_quality">
+            <option value="best">Best available</option>
+            <option value="1080">Up to 1080p</option>
+            <option value="720">Up to 720p — much smaller</option>
+          </select>
+          <p class="hint">The picture is copied, never re-encoded, so this
+            decides the download size. On an hour-and-a-half tutorial, 1080p is
+            around 1.8 GB and 720p around 730 MB — and 720p is plenty for
+            following along.</p>
+        </div>
+        <div>
+          <label for="write_srt">Subtitles</label>
+          <select id="write_srt">
+            <option value="false">No subtitle file</option>
+            <option value="true">Also save an .srt</option>
+          </select>
+        </div>
+        <div>
+          <label for="merge_lines">Run-on lines</label>
+          <select id="merge_lines">
+            <option value="true">Join lines that run together</option>
+            <option value="false">Keep them exactly as heard</option>
+          </select>
+          <p class="hint">Fast dialogue arrives as many very short lines with no
+            gap between them, and each has to be squeezed to fit. Joining them
+            gives the translation room. Material with real pauses is unaffected.</p>
+        </div>
+        <div>
+          <label for="max_stretch">Hardest allowed squeeze</label>
+          <select id="max_stretch">
+            <option value="1.3">Gentle — 1.3x</option>
+            <option value="1.55">Normal — 1.55x</option>
+            <option value="1.8">Firm — 1.8x</option>
+          </select>
+          <p class="hint">How much a line may be sped up to fit the gap the
+            original speaker left. Past about 1.6x it starts to sound hurried;
+            beyond the limit the line runs on and later pauses absorb it.</p>
+        </div>
+      </div>
+    </div>
 
     <div style="margin-top:20px;display:flex;gap:8px">
       <button class="primary" id="saveBtn" data-busy="save">Save</button>
@@ -223,6 +235,9 @@ class SettingsPanel extends BaseElement {
     this.$("#saveBtn").onclick = () => this.save();
     this.$("#closeBtn").onclick = () => this.close();
     this.$("#auditionBtn").onclick = () => this.audition();
+    this.$$("#settingsTabs button").forEach(b => {
+      b.onclick = () => this.selectTab(b.dataset.tab);
+    });
 
     this._unsub = store.subscribe(s => this.update(s));
   }
@@ -233,6 +248,13 @@ class SettingsPanel extends BaseElement {
 
   open(){ this.$("#dlg").showModal(); }
   close(){ this.$("#dlg").close(); }
+
+  selectTab(key){
+    this.$$("#settingsTabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === key));
+    this.$("#tab-voice").classList.toggle("hidden", key !== "voice");
+    this.$("#tab-translation").classList.toggle("hidden", key !== "translation");
+    this.$("#tab-advanced").classList.toggle("hidden", key !== "advanced");
+  }
 
   update(s){
     const { settings, voices, machine, settings_path } = s;
