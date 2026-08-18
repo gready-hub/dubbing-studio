@@ -32,6 +32,34 @@ def _ytdlp_cmd() -> list[str]:
     return ["python3", "-m", "yt_dlp"]
 
 
+# Which YouTube clients to ask, in one request rather than as a retry ladder of
+# our own. yt-dlp merges the format lists of every client named here and knows
+# which one can actually serve each format, which is the thing our ladder was
+# guessing at: it tried one client, read the failure text, and decided from a
+# list of substrings whether a different client was worth a go. That decision is
+# yt-dlp's to make and it already makes it.
+#
+# The list is passed to the probe as well as the download on purpose. The probe
+# is where choose_format() picks concrete format ids, so if the download asked a
+# client the probe never spoke to, the ids it was told to fetch need not exist —
+# which is precisely the "Requested format is not available" that ended the
+# ladder. Same clients, same list, same ids.
+_CLIENTS = "default,web_safari,tv"
+_CLIENT_ARGS = ["--extractor-args", f"youtube:player_client={_CLIENTS}"]
+
+# Retrying is yt-dlp's job and it does it properly: per-request, with real
+# exponential backoff, without abandoning the bytes already on disk. Ours was a
+# whole-command loop with a fixed 4n sleep that restarted the progress count
+# every time. A 403 part way through a large media fetch — the failure actually
+# measured here — is what --retries and http backoff exist for.
+_RETRY_ARGS = [
+    "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "5",
+    "--retry-sleep", "http:exp=1:60",
+    "--retry-sleep", "fragment:exp=1:30",
+    "--retry-sleep", "extractor:exp=1:30",
+]
+
+
 def probe(url: str, cookies_from: str = "") -> dict:
     """Ask the site what it has, without fetching any of it.
 
@@ -40,7 +68,8 @@ def probe(url: str, cookies_from: str = "") -> dict:
     advice and named their browser in Settings would still be turned away before
     the download that knows about their cookies was ever reached.
     """
-    cmd = _ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download"]
+    cmd = (_ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download"]
+           + _CLIENT_ARGS + _RETRY_ARGS)
     if cookies_from:
         cmd += ["--cookies-from-browser", cookies_from]
     out = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=120)
@@ -62,11 +91,6 @@ def probe(url: str, cookies_from: str = "") -> dict:
     }
 
 
-# Failures that mean "ask again in a moment" rather than "this link is no good".
-_TRANSIENT = ("403", "429", "too many requests", "temporarily unavailable",
-              "timed out", "connection reset", "connection aborted")
-
-
 class DownloadError(RuntimeError):
     """A failed download, with the tool's own words kept alongside the plain one.
 
@@ -78,11 +102,6 @@ class DownloadError(RuntimeError):
     def __init__(self, message: str, detail: str = ""):
         super().__init__(message)
         self.detail = detail.strip()
-
-
-def _looks_transient(message: str) -> bool:
-    s = message.lower()
-    return any(marker in s for marker in _TRANSIENT)
 
 
 def _friendly(stderr: str) -> str:
@@ -107,6 +126,17 @@ def _friendly(stderr: str) -> str:
         return "That link isn't one yt-dlp recognises."
     if "http error 429" in s or "too many requests" in s:
         return "The site is rate-limiting downloads. Wait a few minutes and try again."
+    # yt-dlp's own words here are "Requested format is not available. Use
+    # --list-formats for a list of available formats", which tells somebody who
+    # has never opened a terminal to pass a command-line flag. It also sounds
+    # like a fault in the video, and it is not: the video is listed and then
+    # nothing in the listing is offered, which on YouTube is a defensive response
+    # to being asked repeatedly.
+    if "requested format is not available" in s:
+        return ("YouTube listed the video but then wouldn't offer any version of "
+                "it to download. That is usually temporary — wait a few minutes "
+                "and try the same link again. If it keeps happening, open Settings "
+                "and set “Sign in as” to the browser you watch YouTube in.")
     # A link that goes nowhere is one of the commonest ways this fails — a typo,
     # a stale bookmark, half a URL pasted — and it used to fall through to
     # yt-dlp's own words, which is where the interface got "ERROR: [generic]
@@ -329,10 +359,9 @@ def download(url: str, workdir: Path, quality: str = "best",
         # to the client yt-dlp negotiated it as, so overriding the agent
         # *desyncs* the two: a hand-set desktop Chrome string turns a download
         # that works into a reliable 403. yt-dlp's own default is correct.
-        "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
         "--newline", "--no-warnings",
         "--progress-template", _PROGRESS_TEMPLATE,
-    ]
+    ] + _CLIENT_ARGS + _RETRY_ARGS
     # The fix for the stubborn case: YouTube increasingly wants a session, and a
     # signed-out request for some videos is refused whatever client asks. Off
     # unless the user names a browser, because reading their cookie store is not
@@ -393,52 +422,8 @@ def download(url: str, workdir: Path, quality: str = "best",
         progress(0.02 + 0.96 * share,
                  f"Downloading — {share * 100:.0f}% of {human_size(whole)}")
 
-    # A 403 on the media fetch after a metadata probe that worked is usually
-    # throttling, and the thing that actually rescues it is asking again — the
-    # same way, a moment later. Measured on the video that failed for a user: the
-    # default client 403'd and then succeeded on a retry minutes later.
-    #
-    # Asking as a *different* player client is the last resort rather than the
-    # first, because the clients do not all carry the same formats. On that same
-    # video, web_safari, tv and ios have no H.264 720p at all, so retrying with
-    # one of them turns a transient 403 into "Requested format is not available"
-    # — a worse error, and a misleading one. When they are tried, the format
-    # constraints are dropped so the attempt can at least be judged on the
-    # download rather than on the selector.
-    attempts: list[tuple[str | None, bool]] = [
-        (None, False), (None, False), (None, False),   # the fix that works
-        ("web_safari", True), ("tv", True),            # then a different client
-    ]
-    problem = ""
-    for n, (client, relax) in enumerate(attempts, 1):
-        # Each attempt starts the byte count again, so the running total has to
-        # as well — otherwise a retry adds the abandoned attempt's bytes to the
-        # new one and the bar reads past 100% of a download that just restarted.
-        done["before"] = done["last"] = 0
-        run = list(cmd)
-        if client:
-            run += ["--extractor-args", f"youtube:player_client={client}"]
-        if relax:
-            # Whatever this client does have, rather than the exact format the
-            # default client offered. The height cap goes, but H.264 stays the
-            # first rung — the chain falls through on its own if this client
-            # hasn't got it, so keeping the preference costs nothing and stops a
-            # transient 403 from quietly turning into an AV1 file.
-            for i, arg in enumerate(run):
-                if arg == "-f":
-                    run[i + 1] = f"bv*{_H264}+ba/bv*+ba/b"
-                    break
-        code, problem = stream(run, show, tail_lines=25)
-        if code == 0:
-            break
-        if n >= len(attempts) or not _looks_transient(problem):
-            raise DownloadError(_friendly(problem), problem)
-        if progress:
-            # Also the cancel check, so a stop during the wait is honoured.
-            progress(0.02, f"The site refused that request — trying again "
-                           f"({n} of {len(attempts) - 1})")
-        time.sleep(4 * n)
-    else:
+    code, problem = stream(cmd, show, tail_lines=25)
+    if code != 0:
         raise DownloadError(_friendly(problem), problem)
 
     video = _finished_file(workdir)
