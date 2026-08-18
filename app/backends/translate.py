@@ -294,7 +294,8 @@ def usable_model(wanted: str, host: str = "") -> tuple[str, str]:
                     f"instead. To use {wanted}, run:  ollama pull {wanted}")
 
 
-def _call_ollama(prompt: str, model: str, host: str = "") -> str:
+def _call_ollama(prompt: str, model: str, host: str = "",
+                 system: str = SYSTEM) -> str:
     from ..config import ollama_host
     host = host or ollama_host()
 
@@ -316,7 +317,7 @@ def _call_ollama(prompt: str, model: str, host: str = "") -> str:
                 "repeat_penalty": 1.1,
                 "min_p": 0.05,
             },
-            "messages": [{"role": "system", "content": SYSTEM},
+            "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": prompt}],
         }
         if think is not None:
@@ -351,7 +352,8 @@ def _call_ollama(prompt: str, model: str, host: str = "") -> str:
     return ""
 
 
-def _call_anthropic(prompt: str, model: str, key: str) -> str:
+def _call_anthropic(prompt: str, model: str, key: str,
+                    system: str = SYSTEM) -> str:
     body = json.dumps({
         "model": model,
         "max_tokens": 8192,
@@ -363,7 +365,7 @@ def _call_anthropic(prompt: str, model: str, key: str) -> str:
         # error here. It arrives as missing lines and a halving retry, which
         # looks like a slow model rather than a misconfigured request.
         "thinking": {"type": "disabled"},
-        "system": SYSTEM,
+        "system": system,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
     req = urllib.request.Request(
@@ -375,11 +377,12 @@ def _call_anthropic(prompt: str, model: str, key: str) -> str:
     return "".join(b.get("text", "") for b in data.get("content", []))
 
 
-def _call_openai(prompt: str, model: str, key: str) -> str:
+def _call_openai(prompt: str, model: str, key: str,
+                 system: str = SYSTEM) -> str:
     body = json.dumps({
         "model": model,
         "temperature": 0.2,
-        "messages": [{"role": "system", "content": SYSTEM},
+        "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": prompt}],
     }).encode()
     req = urllib.request.Request(
@@ -508,32 +511,183 @@ def _translate_chunk(batch: list[dict], context: list[str], target: str,
 
 # ------------------------------------------------------------------- public
 
-def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = None) -> list[dict]:
-    """Returns segments with a "translation" key added to each."""
-    backend = settings.translator
-    glossary = settings.glossary_text()
-    target = settings.target_language
+# ------------------------------------------------------- terminology pass
 
+# Asked of the same model, before any translating, with the transcript in front
+# of it. The model that called "ponto amêndoa" amaranth, shell and cluster across
+# one video answers this correctly and identically on every run — it knows the
+# vocabulary and loses it under per-line pressure, so it is worth asking once
+# while it can see the whole thing.
+EXTRACT_SYSTEM = """You extract specialist vocabulary from a tutorial transcript \
+so that a translator renders it the same way every time.
+
+Reply with one line per term, exactly:
+term as it appears in the transcript | the standard English term
+
+Only genuine craft, trade or technical vocabulary — never everyday words. Give
+the term itself, not a phrase built around it. At most 20 lines. No preamble, no
+commentary, no code fences."""
+
+EXTRACT_RUNS = 2         # kept only if the runs agree; see _agreed()
+EXTRACT_MAX = 20
+EXTRACT_MAX_WORDS = 3    # a term, not a phrase built around one
+EXTRACT_TARGET_WORDS = 6  # ...and its rendering is a term too, not a sentence
+# Contiguous, and sized against the clock rather than the context window: the
+# model reads this twice before any translating starts, and a full 18,000
+# characters cost 282 seconds — 14% of a 33-minute job — where 8,000 costs a
+# third of that. Contiguous matters more than long: a thin strided sample made
+# the vocabulary look unstable when it is not.
+EXTRACT_CHARS = 8000
+
+
+def _extract_once(transcript: str, target: str, call) -> dict[str, str]:
+    # Wording matters more than it should. "Give the standard English equivalent
+    # for each specialist term" reads, to a small model looking at numbered
+    # speech, as an instruction to translate the lines — the first real run came
+    # back with "3 -> Today's lesson is about..." for every line it saw.
+    prompt = (f"This transcript is from an instructional video. Identify the "
+              f"specialist vocabulary in it and give the standard {target} term "
+              f"for each one.\n\nTranscript:\n{transcript}")
+    out: dict[str, str] = {}
+    reply = call(prompt, system=EXTRACT_SYSTEM)
+    for line in reply.rsplit("</think>", 1)[-1].splitlines():
+        if "|" not in line:
+            continue
+        src, _, dst = line.partition("|")
+        src = src.strip().strip("-*• ").casefold()
+        dst = dst.strip()
+        if src and dst and len(src) <= 60:
+            out.setdefault(src, dst)
+    return out
+
+
+def _agreed(runs: list[dict[str, str]], transcript: str) -> dict[str, str]:
+    """Terms every run returned identically, and that survive the filters.
+
+    Agreement is the gate because a term the model is sure of comes back the
+    same each time, while a guess wanders. Measured on a real transcript: the
+    core terms were unanimous over three runs, and what varied was compositional
+    phrases — "iniciar com dois pontos altos", "pulo de correntinhas de espaço" —
+    which are not terms at all. The word cap removes those; agreement alone left
+    them in.
+    """
+    if not runs:
+        return {}
+    low = transcript.casefold()
+    keep: dict[str, str] = {}
+    for src, dst in runs[0].items():
+        if len(src.split()) > EXTRACT_MAX_WORDS:
+            continue
+        if len(dst.split()) > EXTRACT_TARGET_WORDS:
+            continue                    # a sentence, so the model was translating
+        if not any(c.isalpha() for c in src):
+            continue                    # a line number, not a term
+        if src not in low:              # never said it; the model invented it
+            continue
+        if src == dst.casefold():       # needs no pinning
+            continue
+        if any(r.get(src) != dst for r in runs[1:]):
+            continue
+        keep[src] = dst
+    # Most-mentioned first, so a cap keeps what the video is actually about.
+    ranked = sorted(keep.items(), key=lambda kv: -low.count(kv[0]))
+    return dict(ranked[:EXTRACT_MAX])
+
+
+def _merge_glossaries(known: str, extracted: str) -> str:
+    """Known-good terms first; extracted ones only where they add something.
+
+    Precedence is settled here rather than left to the model: an extracted term
+    whose source is already covered by the built-in list or by the user's own
+    terms is dropped, so the two can never contradict each other in the prompt.
+    """
+    if not extracted.strip():
+        return known
+    covered = known.casefold()
+    fresh = [ln for ln in extracted.splitlines()
+             if ln.strip() and ln.split("->")[0].strip().casefold() not in covered]
+    if not fresh:
+        return known
+    block = "\n".join(fresh)
+    return f"{known}\n{block}" if known.strip() else block
+
+
+def extract_terms(segments: list[dict], settings, ram_gb: int,
+                  progress: Progress = None) -> str:
+    """Terminology lifted from this video, as "source -> English" lines.
+
+    Returns "" on any failure. A glossary is a nicety; a job that dies because
+    the nicety failed is not, so nothing in here is allowed to raise.
+    """
+    try:
+        transcript = "\n".join((s.get("text") or "") for s in segments)[:EXTRACT_CHARS]
+        # Below a couple of batches there is no cross-batch drift to prevent —
+        # the whole point of pinning terminology is that batch 14 cannot see what
+        # batch 2 called a stitch, and a video this short is one batch. Asking
+        # anyway is where the junk comes from: on a four-line French clip it
+        # returned "pas compliqué -> not complicated" and "mamies -> grandmas",
+        # everyday phrases it would then have pinned.
+        if len(transcript) < 2 * BATCH_CHARS:
+            return ""
+        call, _ = backend_for(settings, ram_gb, progress)
+        runs = []
+        for n in range(EXTRACT_RUNS):
+            if progress:
+                progress((n + 1) / (EXTRACT_RUNS + 1), "Reading the subject's vocabulary")
+            runs.append(_extract_once(transcript, settings.target_language, call))
+        terms = _agreed(runs, transcript)
+        logs.get().info("terminology extracted", extra={
+            "kept": len(terms), "seen": len(runs[0]) if runs else 0,
+            "terms": terms})
+        return "\n".join(f"{k} -> {v}" for k, v in terms.items())
+    except Exception as exc:                                     # noqa: BLE001
+        logs.get().warning("terminology pass failed, carrying on without it",
+                           extra={"error": str(exc)[:200]})
+        return ""
+
+
+def backend_for(settings, ram_gb: int, progress: Progress = None):
+    """(call, label) for whichever translator is configured.
+
+    Lifted out of translate() so the terminology pass uses the same backend, the
+    same model and the same substitution note rather than a second copy that
+    could drift away from it.
+    """
+    backend = settings.translator
     if backend == "ollama":
         model, swapped = usable_model(settings.resolved_ollama_model(ram_gb))
         if swapped:
             # Reported the same way any other result-changing fallback is, so it
             # survives into the finished report rather than scrolling past.
             note(progress, swapped)
-        call = lambda p: _call_ollama(p, model)                      # noqa: E731
-        label = f"local model {model}"
-    elif backend == "anthropic":
+        return ((lambda p, system=SYSTEM: _call_ollama(p, model, system=system)),
+                f"local model {model}")
+    if backend == "anthropic":
         if not settings.anthropic_key:
             raise TranslationError("No Anthropic API key set in Settings.")
-        call = lambda p: _call_anthropic(p, settings.anthropic_model, settings.anthropic_key)  # noqa: E731
-        label = settings.anthropic_model
-    elif backend == "openai":
+        return ((lambda p, system=SYSTEM: _call_anthropic(
+                    p, settings.anthropic_model, settings.anthropic_key, system=system)),
+                settings.anthropic_model)
+    if backend == "openai":
         if not settings.openai_key:
             raise TranslationError("No OpenAI API key set in Settings.")
-        call = lambda p: _call_openai(p, settings.openai_model, settings.openai_key)  # noqa: E731
-        label = settings.openai_model
-    else:
-        raise TranslationError(f"Unknown translation backend: {backend}")
+        return ((lambda p, system=SYSTEM: _call_openai(
+                    p, settings.openai_model, settings.openai_key, system=system)),
+                settings.openai_model)
+    raise TranslationError(f"Unknown translation backend: {backend}")
+
+
+def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = None,
+              extra_glossary: str = "") -> list[dict]:
+    """Returns segments with a "translation" key added to each.
+
+    extra_glossary is terminology lifted from this video's own transcript. It
+    goes in behind the built-in and custom terms, which are known-good and win
+    any collision.
+    """
+    glossary = _merge_glossaries(settings.glossary_text(), extra_glossary)
+    target = settings.target_language
+    call, label = backend_for(settings, ram_gb, progress)
 
     for n, seg in enumerate(segments):
         seg["i"] = n

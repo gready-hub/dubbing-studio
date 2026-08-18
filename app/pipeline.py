@@ -31,8 +31,8 @@ from .backends import clone as clone_backend
 from .backends import diarize as diarize_backend
 from .backends import separate as separate_backend
 from .backends import tts as tts_backend
-from .backends.translate import (describe_translator, translate as run_translate,
-                                 TranslationError)
+from .backends.translate import (describe_translator, extract_terms,
+                                 translate as run_translate, TranslationError)
 from .steps import align, download, mux, qc
 from .steps.segments import merge_adjacent
 
@@ -978,15 +978,37 @@ class JobRunner:
             # --------------------------------------------------- translate
             report = self._stage(job, plan, "translate", notes)
             tcache = workdir / "translated.json"
+
+            # Asked of this video before any of it is translated. The built-in
+            # glossary is keyed by craft but written in Spanish, so on a
+            # Portuguese video it matched nothing at all — while the same model,
+            # shown the transcript and asked directly, names the vocabulary
+            # correctly and identically every time. Cached alongside everything
+            # else, and folded into the fingerprint below so that changing it
+            # re-translates rather than replaying a translation made without it.
+            gcache = workdir / "terminology.txt"
+            gprint = _fingerprint(asr_print, settings.translator, settings.target_language,
+                                  settings.resolved_ollama_model(machine.ram_gb))
+            if gcache.exists() and _cache_valid(workdir, "terminology", gprint):
+                found = gcache.read_text()
+            else:
+                found = extract_terms(segments, settings, machine.ram_gb, report)
+                gcache.write_text(found)
+                _cache_stamp(workdir, "terminology", gprint)
+            if found:
+                stats["terms_found"] = len(found.splitlines())
+
             trans_print = _fingerprint(asr_print, settings.merge_lines, settings.translator,
                                        settings.resolved_ollama_model(machine.ram_gb),
                                        settings.anthropic_model, settings.openai_model,
-                                       settings.target_language, settings.glossary_text())
+                                       settings.target_language, settings.glossary_text(),
+                                       found)
             if tcache.exists() and _cache_valid(workdir, "translated", trans_print):
                 segments = json.loads(tcache.read_text())
                 report(1.0, "Reusing the translation from last time")
             else:
-                segments = run_translate(segments, settings, machine.ram_gb, report)
+                segments = run_translate(segments, settings, machine.ram_gb, report,
+                                         extra_glossary=found)
                 tcache.write_text(json.dumps(segments, ensure_ascii=False, indent=1))
                 _cache_stamp(workdir, "translated", trans_print)
 

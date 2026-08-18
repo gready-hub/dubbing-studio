@@ -249,7 +249,7 @@ def test_translate():
     segs = [{"start": i * 2.0, "end": i * 2.0 + 1.8, "text": f"linea {i}"} for i in range(60)]
     calls = {"n": 0}
 
-    def flaky(prompt, model, host="x"):
+    def flaky(prompt, model, host="x", **_):
         calls["n"] += 1
         ids = [int(l.split("|")[0]) for l in prompt.splitlines()
                if l and l[0].isdigit() and "|" in l]
@@ -264,7 +264,7 @@ def test_translate():
     check("retry recovered the dropped lines", out[len(out) - 1]["translation"].startswith("English"))
 
     # A backend that returns nothing must raise, not ship a silent empty dub.
-    T._call_ollama = lambda p, m, host="x": ""
+    T._call_ollama = lambda p, m, host="x", **_: ""
     try:
         T.translate([dict(s) for s in segs], settings, 16)
         check("empty backend raises", False)
@@ -486,7 +486,7 @@ def test_end_to_end():
                "One, two, three. Then we skip one.",
                "You can see how the pattern builds up here."]
 
-    def fake_llm(prompt, model=None, host=None, key=None):
+    def fake_llm(prompt, model=None, host=None, key=None, **_):
         ids = [int(l.split("|")[0]) for l in prompt.splitlines()
                if l and l[0].isdigit() and "|" in l]
         return "\n".join(f"{i}|{PHRASES[i % len(PHRASES)]}" for i in ids)
@@ -679,7 +679,7 @@ def test_preset_change_reseparates():
             progress(1.0, "Heard 1 line")
         return [{"start": 0.5, "end": 3.0, "text": f"tono de {hz} hercios"}]
 
-    def fake_llm(prompt, model=None, host=None, key=None):
+    def fake_llm(prompt, model=None, host=None, key=None, **_):
         ids = [int(l.split("|")[0]) for l in prompt.splitlines()
                if l and l[0].isdigit() and "|" in l]
         return "\n".join(f"{i}|A tone, and then some more words to say." for i in ids)
@@ -814,7 +814,7 @@ def test_mixed_sample_rates():
         return [{"start": a, "end": b, "text": f"linea {n}"}
                 for n, (a, b) in enumerate(STARTS)]
 
-    def fake_llm(prompt, model=None, host=None, key=None):
+    def fake_llm(prompt, model=None, host=None, key=None, **_):
         ids = [int(l.split("|")[0]) for l in prompt.splitlines()
                if l and l[0].isdigit() and "|" in l]
         return "\n".join(f"{i}|This is line number {i} speaking." for i in ids)
@@ -1077,7 +1077,7 @@ def test_preview():
         return [{"start": 1.0, "end": 4.0, "text": "primera linea"},
                 {"start": 8.0, "end": 11.0, "text": "segunda linea"}]
 
-    def fake_llm(prompt, model=None, host=None, key=None):
+    def fake_llm(prompt, model=None, host=None, key=None, **_):
         ids = [int(l.split("|")[0]) for l in prompt.splitlines()
                if l and l[0].isdigit() and "|" in l]
         return "\n".join(f"{i}|This is a line of dubbed speech." for i in ids)
@@ -1931,6 +1931,109 @@ def test_observability():
           "fmtShort" not in html)
 
 
+# ============================ 15. terminology lifted from the video itself
+def test_terminology():
+    """The glossary the app ships is Spanish; the videos need not be.
+
+    Measured on a real Portuguese job: not one built-in term matched, and the
+    model still got 87-100% of the craft vocabulary right on its own. Where it
+    did not know a word — "amêndoa" — it called the stitch "amaranth" 18 times
+    and "shell" 15 times across one video. Asked directly, with the transcript
+    in front of it, the same model names it correctly and identically every run.
+    """
+    print("\n[15] Terminology lifted from the video")
+    from app.backends import translate as T
+
+    TX = ("ponto baixo e ponto alto, com correntinha e ponto amêndoa. "
+          "iniciar com dois pontos altos e finalizar a carreira.")
+
+    def runs(*dicts):
+        return list(dicts)
+
+    good = {"ponto baixo": "single crochet", "ponto amêndoa": "shell stitch"}
+    kept = T._agreed(runs(good, dict(good)), TX)
+    check("terms both runs agree on are kept", kept == good, str(kept))
+
+    check("a term only one run returned is dropped",
+          "carreira" not in T._agreed(
+              runs({**good, "carreira": "row"}, dict(good)), TX))
+    check("a term the runs disagree on is dropped",
+          "ponto amêndoa" not in T._agreed(
+              runs({"ponto amêndoa": "shell stitch"},
+                   {"ponto amêndoa": "cluster stitch"}), TX))
+
+    # The dominant noise is not wrong terms, it is compositional phrases built
+    # around them, which vary run to run and are not terms at all.
+    phrase = {"iniciar com dois pontos altos": "start with two doubles"}
+    check("a phrase built around a term is dropped",
+          T._agreed(runs(phrase, dict(phrase)), TX) == {})
+
+    # The first real run came back with "3 -> Today's lesson is about..." for
+    # every line, because the model was enumerating rather than extracting.
+    numbered = {"3": "Today's lesson is about making the second piece"}
+    check("an enumerated transcript line is dropped",
+          T._agreed(runs(numbered, dict(numbered)), TX) == {})
+    check("a sentence-length rendering is dropped",
+          T._agreed(runs({"ponto": "a stitch worked into the top of the previous row"},
+                         {"ponto": "a stitch worked into the top of the previous row"}),
+                    TX) == {})
+    check("a term the video never says is dropped",
+          T._agreed(runs({"tricô": "knitting"}, {"tricô": "knitting"}), TX) == {})
+
+    # Known-good beats guessed, settled here rather than left to the model.
+    merged = T._merge_glossaries("ponto baixo -> single crochet",
+                                 "ponto baixo -> low stitch\nponto amêndoa -> shell stitch")
+    check("a built-in term wins a collision with an extracted one",
+          "low stitch" not in merged and "single crochet" in merged, merged)
+    check("and the extracted term that adds something survives",
+          "shell stitch" in merged)
+    check("no extraction leaves the glossary untouched",
+          T._merge_glossaries("a -> b", "") == "a -> b")
+
+    # The terminology pass asks the same model a different question, so the
+    # backends must carry their own system prompt. They did not: the first real
+    # run inherited the translation prompt — "one line per input line,
+    # id|translation" — and dutifully numbered 106 transcript lines.
+    seen = {}
+
+    def spy(prompt, model=None, host=None, key=None, system=None, **_):
+        seen["system"] = system
+        return "ponto amêndoa | shell stitch"
+
+    T._call_ollama = spy
+    from app.config import Settings
+    st = Settings(); st.translator = "ollama"
+    # Long enough to clear the two-batch floor, below which extraction is
+    # skipped because a single-batch video has no cross-batch drift.
+    long_enough = [{"text": TX}] * 60
+    out = T.extract_terms(long_enough, st, 16)
+    check("extraction asks with its own system prompt, not the translator's",
+          seen.get("system") == T.EXTRACT_SYSTEM and seen["system"] != T.SYSTEM)
+    check("and its result comes back as glossary lines",
+          "ponto amêndoa -> shell stitch" in out, out)
+
+    # A glossary is a nicety. A job that dies because the nicety failed is not.
+    def broken(*a, **k):
+        raise RuntimeError("ollama fell over")
+
+    T._call_ollama = broken
+    check("a failed terminology pass never fails the job",
+          T.extract_terms(long_enough, st, 16) == "")
+
+    check("a video too short to drift is not asked at all",
+          T.extract_terms([{"text": TX}] * 3, st, 16) == "")
+
+    check("a video too short to drift is not asked at all",
+          T.extract_terms([{"text": TX}] * 3, st, 16) == "")
+
+    psrc = (ROOT / "app" / "pipeline.py").read_text()
+    check("the extracted terms are part of the translation fingerprint",
+          "settings.glossary_text(),\n                                       found)" in psrc)
+    check("and are cached rather than re-asked every run",
+          'terminology.txt' in psrc and '"terminology", gprint' in psrc)
+
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -1946,6 +2049,7 @@ if __name__ == "__main__":
     test_keep_awake()
     test_translation_qc()
     test_observability()
+    test_terminology()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

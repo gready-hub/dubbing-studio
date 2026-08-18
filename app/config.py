@@ -236,9 +236,15 @@ BUILTIN_GLOSSARIES = {
             "punto medio alto, media vareta -> half treble crochet\n"
             "punto deslizado, punto raso -> slip stitch\n"
             "vuelta -> round (or row when worked flat)\n"
+            "hilera -> row\n"
             "ganchillo, aguja -> hook\n"
             "marcador -> stitch marker\n"
-            "saltar -> miss; aumento -> increase; disminucion -> decrease; rematar -> fasten off"
+            "arco / arcos -> arch / arches\n"
+            "hebra -> strand or yarn; ovillo -> ball\n"
+            "muestra -> tension swatch; talle -> bodice; sisa -> armhole\n"
+            "manga -> sleeve; escote -> neckline; delantero -> front; espalda -> back\n"
+            "saltar -> miss; aumento -> increase; disminucion -> decrease; rematar -> fasten off\n"
+            "prenda -> garment; puntada/punto -> stitch"
         ),
     },
     "cooking": {

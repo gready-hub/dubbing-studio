@@ -364,7 +364,7 @@ def test_balanced_end_to_end():
              "Fascinating. And what happened next?",
              "We grew, and moved to a far larger building."]
 
-    def fake_llm(prompt, model=None, host=None, key=None):
+    def fake_llm(prompt, model=None, host=None, key=None, **_):
         ids = [int(l.split("|")[0]) for l in prompt.splitlines()
                if l and l[0].isdigit() and "|" in l]
         return "\n".join(f"{i}|{LINES[i % len(LINES)]}" for i in ids)
