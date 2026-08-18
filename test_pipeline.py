@@ -1675,6 +1675,40 @@ def test_translation_qc():
     check("a folder holding only working files reports nothing finished",
           _finished_file(shed) is None)
 
+    # --- retrying and client choice, which are yt-dlp's job and not ours
+    # What was here was a ladder of our own: three identical attempts, then two
+    # more as different player clients, with the decision to continue taken by
+    # substring-matching yt-dlp's error text. It got that decision wrong — the
+    # error the fallback clients provoke was not on the "transient" list, so a
+    # fallback rung ended the ladder — and every part of it is something yt-dlp
+    # already does properly. Now it is asked once, for all the clients at once,
+    # with yt-dlp's own exponential backoff.
+    from app.steps.download import _CLIENT_ARGS, _RETRY_ARGS
+    import app.steps.download as dlmod
+
+    args = " ".join(_CLIENT_ARGS + _RETRY_ARGS)
+    check("more than one player client is asked, in one request",
+          "player_client=" in args and args.count(",") >= 2, args[:60])
+    check("retries are yt-dlp's, with real exponential backoff",
+          "--retry-sleep" in args and "exp=" in args, args)
+    check("extraction gets its own retry count, not just the HTTP fetch",
+          "--extractor-retries" in args and "extractor:exp=" in args)
+    # The seam that broke: the probe is where concrete format ids are chosen, so
+    # a download that asked a client the probe never spoke to could be told to
+    # fetch ids that client has not got — which is the "Requested format is not
+    # available" that used to end the ladder.
+    check("the probe and the download ask the same clients",
+          src.count("_CLIENT_ARGS") >= 2 and "+ _CLIENT_ARGS" in src)
+    check("and nothing decides what to retry by reading yt-dlp's error text",
+          "_looks_transient" not in src and "_TRANSIENT" not in src
+          and "_looks_terminal" not in src)
+    check("the plain-English message for a format refusal names no CLI flags",
+          "--list-formats" not in dlmod._friendly(
+              "ERROR: [youtube] x: Requested format is not available. "
+              "Use --list-formats for a list of available formats")
+          and "Settings" in dlmod._friendly(
+              "ERROR: [youtube] x: Requested format is not available."))
+
     # The progress counter cannot be trusted alone across a retry: yt-dlp answers
     # a resumed attempt with "Resuming download at byte N" and what it counts
     # from there depends on the format. The file on disk has no such opinion.
@@ -1686,8 +1720,11 @@ def test_translation_qc():
     # which reads as the job restarting itself.
     check("the two streams are summed rather than reported separately",
           'done["before"] += done["last"]' in src)
-    check("and the running total resets between retries, so it can't pass 100%",
-          'done["before"] = done["last"] = 0' in src)
+    # There is nothing to reset between attempts any more: the fetch is one
+    # invocation and yt-dlp retries inside it, resuming rather than restarting,
+    # so the counter never goes back to zero behind our back.
+    check("the video is fetched in a single invocation",
+          src.count("stream(cmd, show") == 1, str(src.count("stream(cmd, show")))
 
     # An age-restricted video refuses at the lookup, before the download that
     # knows about the user's cookies is ever reached — so the 403 message's
@@ -1695,11 +1732,9 @@ def test_translation_qc():
     check("the lookup can use the browser cookies as well as the download",
           "def probe(url: str, cookies_from" in src)
 
-    # The last resort drops the height cap, not the codec: the chain falls
-    # through on its own, so keeping H.264 first cannot cost an attempt.
-    relax = src[src.index("if relax:"):src.index("if relax:") + 700]
-    check("the relaxed retry still asks for H.264 first",
-          "_H264" in relax and "bv*+ba/b" in relax, relax.split("run[i + 1]")[1][:40])
+    # H.264 first is now stated once, in the selector chain and in choose_format's
+    # ranking, rather than restated by a fallback rung that rewrote the format
+    # spec on its way past. Both are checked above.
 
     # When the site offers nothing playable the picture is converted rather than
     # shipped with a warning the user cannot act on.
@@ -1918,17 +1953,25 @@ def test_observability():
         check(f"{script} parses", ok)
 
     # --- the UI
-    html = (ROOT / "app" / "static" / "index.html").read_text()
+    # The frontend is now split into one Web Component per panel rather than
+    # one file, so each of these lives in the component that owns it.
+    header_js = (ROOT / "app" / "static" / "js" / "components" / "app-header.js").read_text()
+    failed_js = (ROOT / "app" / "static" / "js" / "components" / "failed-panel.js").read_text()
+    diag_js = (ROOT / "app" / "static" / "js" / "components" / "diagnostics-panel.js").read_text()
+    active_js = (ROOT / "app" / "static" / "js" / "components" / "active-panel.js").read_text()
+    format_js = (ROOT / "app" / "static" / "js" / "format.js").read_text()
     check("Copy details is reachable without a failure having happened",
-          html.count("showDiagnostics()") >= 2, "header and failed panel")
+          'diagnostics-panel")?.open()' in header_js
+          and 'diagnostics-panel")?.open()' in failed_js,
+          "header and failed panel")
     check("the text is shown before it is sent, not just copied",
-          'id="diagText"' in html)
+          'id="diagText"' in diag_js)
     check("a refused clipboard tells the user what to do instead",
-          "⌘C" in html)
+          "⌘C" in diag_js)
     check("the chips show how long each stage took",
-          "stage_times" in html and "stage_elapsed" in html)
+          "stage_times" in active_js and "stage_elapsed" in active_js)
     check("durations reuse the existing formatter rather than a new one",
-          "fmtShort" not in html)
+          "fmtShort" not in format_js and "fmtShort" not in active_js)
 
 
 # ============================ 15. terminology lifted from the video itself
