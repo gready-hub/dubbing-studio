@@ -302,9 +302,161 @@ def choose_format(info: dict, quality: str = "best") -> dict | None:
     return None
 
 
-# Containers a finished download can arrive in. Anything else in the folder —
-# .part, .ytdl, .f137.mp4.part — is working state, not the video.
-_MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
+# Names yt-dlp and its own postprocessors are known to leave scratch state
+# under, none of it the video. Not a claim that this is every artefact either
+# could ever write — only the ones with a demonstrated reason to be here:
+#   * .part      the download target while a stream is still arriving
+#                (FileDownloader.temp_name in yt_dlp/downloader/common.py);
+#                renamed away once complete.
+#   * .ytdl      the resume bookkeeping FileDownloader.ytdl_filename writes
+#                beside a fragmented download — progress state, not bytes of
+#                the video.
+#   * .part-Frag<n>  one fragment of a still-assembling fragmented download
+#                (FragmentFD.fragment_filename in downloader/fragment.py),
+#                joined into the real file and deleted once every fragment
+#                has arrived; left behind by an attempt that was interrupted
+#                before that happened, and sometimes still wearing its own
+#                trailing .part while that fragment itself is mid-write.
+#   * source.temp.<ext>  where FFmpegMergerPP builds the merged file before
+#                renaming it over the final name (postprocessor/ffmpeg.py,
+#                prepend_extension(filename, 'temp')) — present for as long
+#                as the mux takes, on every job that downloads separate video
+#                and audio.
+def _is_scratch(name: str) -> bool:
+    lower = name.lower()
+    if lower.endswith(".part") or lower.endswith(".ytdl") or ".part-frag" in lower:
+        return True
+    suffixes = Path(lower).suffixes
+    return len(suffixes) >= 2 and suffixes[-2] == ".temp"
+
+
+# The demuxers ffmpeg reads a still image through — see `ffmpeg -demuxers`.
+# Every one of them describes itself as "piped X sequence" and is named
+# accordingly, which is a property of the file (what read it), not a guess
+# about its codec or its duration. yuv4mpegpipe is deliberately not swept up
+# by the "*_pipe" pattern below: raw video frames, not a still-image
+# sequence, and spelled without the underscore every image demuxer uses.
+#
+# gif is deliberately not in this set. Unlike jpeg_pipe or png_pipe, ffmpeg
+# reads a one-frame thumbnail and a genuinely animated GIF through the same
+# "gif" demuxer — format_name alone cannot tell them apart, and yt-dlp's own
+# Imgur extractor offers a real 'ext': 'gif' format as a fallback for posts
+# with no video transcode, which this app's format chain (ending in a bare
+# "b" — anything at all) would legitimately select and download. See
+# _is_single_frame_gif() for how that case is told apart instead.
+_IMAGE_DEMUXERS = {"image2", "image2pipe"}
+
+
+def _is_still_image(format_name: str) -> bool:
+    names = (format_name or "").split(",")
+    return any(n in _IMAGE_DEMUXERS or n.endswith("_pipe") for n in names)
+
+
+def _is_single_frame_gif(format_name: str, nb_frames: str) -> bool:
+    """A GIF is rejected only when ffprobe positively counts exactly one
+    frame in it, straight from the container's own frame count — never from
+    `-count_frames`, which would mean decoding the whole thing just to find
+    out whether it was worth decoding.
+
+    An unparseable or missing count is not treated as one frame: some GIF
+    encoders leave nb_frames as "N/A" in the header, and calling that a
+    thumbnail would silently throw away a real animated GIF for the same
+    reason a duration floor did — proving a negative that the container
+    never promised to make provable.
+    """
+    if "gif" not in (format_name or "").split(","):
+        return False
+    try:
+        return int(nb_frames) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _looks_like_media(path: Path) -> bool:
+    """Ask ffmpeg's own prober whether a file is a still image, rather than
+    trusting its name, its size, or asking the harder question of whether it
+    is definitely a video.
+
+    Excluding scratch state is not enough on its own: yt-dlp's config can ask
+    it to write sidecars — a thumbnail, an info.json — into this same
+    directory under the same "source." prefix, and neither looks like scratch
+    to the rules above. Demonstrated on a real job with --write-thumbnail set
+    in the user's own yt-dlp config (which this app deliberately leaves
+    readable — see download()): it left behind source.mp4 at 633,710 bytes
+    and source.webp at 23,038 bytes, both matching "source.*" and neither
+    a .part or a .ytdl. A size-only or name-only rule has no way to tell them
+    apart; only actually looking at what is in the file does.
+
+    Two things that look like they would tell a thumbnail from a video do
+    not, and both were tried and measured wrong before this one:
+
+    * codec_type alone. ffmpeg's own image demuxers hand a still image back
+      as a one-frame "video" stream, because that is how ffmpeg represents
+      every image format internally, so "is there a video stream" accepts a
+      thumbnail exactly as readily as it accepts a real one.
+    * a duration floor. A completely genuine, fully downloaded video-only
+      remux — muxed to a non-seekable output, or a mux the writer never got
+      to finalise, which is what a live-piped or interrupted-but-complete
+      HLS/DASH source looks like — decodes every frame correctly and still
+      reports no duration at all, because the container's duration field is
+      normally patched in by seeking back after the last frame is known, and
+      a stream that was never seekable, or never reached a clean close,
+      never gets that pass. A duration check throws that file away exactly
+      the way the container allowlist did, just one layer further in.
+
+    What is reliable is what demuxer ffprobe actually read the file through:
+    a thumbnail goes through one of ffmpeg's dedicated image demuxers
+    (jpeg_pipe, png_pipe, ...) — see _is_still_image() — and nothing that
+    demuxer produces is a video, whatever codec_type or duration it happens
+    to report. GIF is the one demuxer name that is not by itself enough to
+    say which: a thumbnail and a genuinely animated GIF both read as
+    format_name=gif, and yt-dlp really does offer an animated GIF as a
+    downloadable format on some sites (Imgur, when a post has no video
+    transcode) — see _is_single_frame_gif(), which asks how many frames are
+    actually in it instead. So a still image is the one thing this rejects on
+    a positive finding rather than a failure to prove otherwise: an audio
+    stream, a video stream — of any duration, including none reported at all
+    — or a probe that could not run at all count as not-an-image, because the
+    one thing this app must never do is throw away a video it actually
+    finished downloading for want of proof. A probe that *did* run and found
+    neither a video nor an audio stream, and no sign of an image demuxer
+    either — an info.json sidecar, say, which is not a still image but is
+    also not a video — is a genuine answer, not a missing one, and is
+    rejected on it: "unknown" only describes the case where nothing was heard
+    back at all.
+
+    ffmpeg is already a hard dependency and ffprobe is already used for this
+    kind of question in media_duration() below.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "stream=codec_type,nb_frames:format=format_name",
+             "-of", "default=noprint_wrappers=1", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # No answer from ffprobe is not evidence that this is a thumbnail —
+        # it is not evidence of anything. Accepting it and letting the real
+        # ffmpeg invocation downstream fail on its own, loudly, with its own
+        # error attached, is strictly better than silently discarding a
+        # completed download because the probe that was only ever meant to
+        # catch a sidecar happened to time out.
+        return True
+    kinds, format_name, nb_frames = set(), "", ""
+    for line in out.stdout.splitlines():
+        key, _, value = line.strip().partition("=")
+        if key == "codec_type":
+            kinds.add(value)
+        elif key == "format_name":
+            format_name = value
+        elif key == "nb_frames":
+            nb_frames = value
+    if "audio" in kinds:
+        return True
+    if _is_still_image(format_name) or _is_single_frame_gif(format_name, nb_frames):
+        return False
+    return "video" in kinds
 
 
 def _finished_file(workdir: Path) -> Path | None:
@@ -318,15 +470,98 @@ def _finished_file(workdir: Path) -> Path | None:
     fragment beside it and reported that the video was in a format it could not
     read.
 
-    So: only real containers, the merged name preferred over a single format's,
-    and the largest of what is left — three rules that cannot pick a stub.
+    This used to also require the suffix be one of a handful of named
+    containers, which was the wrong shape of check: ffmpeg reads far more than
+    the five that were named there, so a genuinely complete download in one of
+    the others — a Wikimedia .ogv, an archive.org .mpg, both read by ffmpeg
+    without complaint — was thrown away as if the fetch had failed, right after
+    every byte of it had arrived. So the check is inverted twice over: exclude
+    what is definitely still yt-dlp's own scratch state, exclude what ffprobe
+    positively identifies as a still-image sidecar rather than requiring proof
+    of the opposite, and apply the same two rules as before to what is left —
+    the merged name preferred over a single format's, and the largest of what
+    remains. Nothing here can pick a stub or a thumbnail, and nothing here can
+    throw away a video for want of a container name or a duration it was never
+    going to have.
     """
     candidates = [p for p in workdir.glob("source.*")
-                  if p.suffix.lower() in _MEDIA_SUFFIXES and p.is_file()]
-    if not candidates:
+                  if p.is_file() and not _is_scratch(p.name)]
+    media = [p for p in candidates if _looks_like_media(p)]
+    if not media:
         return None
-    merged = [p for p in candidates if p.stem == "source"]
-    return max(merged or candidates, key=lambda p: p.stat().st_size)
+    merged = [p for p in media if p.stem == "source"]
+    return max(merged or media, key=lambda p: p.stat().st_size)
+
+
+def _safe_is_file(p: Path) -> bool:
+    try:
+        return p.is_file()
+    except OSError:
+        return False
+
+
+def _explain_missing_video(workdir: Path) -> str:
+    """What download() puts in a DownloadError's detail when _finished_file()
+    comes back empty, so a pasted Copy details can tell "yt-dlp wrote nothing"
+    from "yt-dlp wrote something and it was turned away" — the two look
+    identical from the outside otherwise, and only one of them is a bug in
+    this file rather than in whatever the user linked to.
+
+    Re-walks the same directory _finished_file() just did rather than having
+    that function collect notes as it goes, because this only ever runs on
+    the rare failing path: the extra ffprobe calls it costs are calls that
+    were never going to happen on a job that actually worked.
+
+    Every filesystem access below is guarded, deliberately more defensively
+    than _finished_file() itself needs to be. This only ever runs after
+    download() has already decided to fail; turning that failure into an
+    unhandled PermissionError or FileNotFoundError instead of the
+    DownloadError it was in the middle of building would be strictly worse
+    than the detail merely being vague — the friendly message would never
+    reach the user at all, replaced by a raw traceback in the generic handler
+    in app/pipeline.py. So nothing here may raise: not an unreadable workdir,
+    not a workdir that was actually a file all along, and not a candidate
+    that existed when it was listed and is gone by the time it is asked
+    about. Path.is_dir() and Path.glob() already swallow OSError on their
+    own — glob() skips an unreadable directory as if it had no matches,
+    which is what let _finished_file() return a plain None on the same input
+    that made the first version of this function raise — but Path.iterdir(),
+    used below to list what is actually in the directory, does not, so this
+    (deliberately unlike _finished_file()) does not use it without a guard.
+    """
+    try:
+        is_dir = workdir.is_dir()
+    except OSError:
+        is_dir = False
+    if not is_dir:
+        return f"{workdir} is not a directory that exists."
+    try:
+        everything = sorted(p.name for p in workdir.iterdir())
+    except OSError as exc:
+        return f"{workdir} exists but could not be listed ({exc})."
+    if not everything:
+        return f"{workdir} is empty — yt-dlp wrote nothing here."
+    try:
+        sourced = sorted((p for p in workdir.glob("source.*") if _safe_is_file(p)),
+                          key=lambda p: p.name)
+    except OSError:
+        sourced = []
+    if not sourced:
+        return (f"nothing named source.* turned up. Everything actually in "
+                f"{workdir}: {', '.join(everything)}")
+    notes = []
+    for p in sourced:
+        try:
+            if _is_scratch(p.name):
+                notes.append(f"{p.name} (yt-dlp scratch state, not a finished file)")
+            elif not _looks_like_media(p):
+                notes.append(f"{p.name} (ffprobe read this as a still image, not a video)")
+            else:
+                notes.append(f"{p.name} (looked like a finished video — this is a bug "
+                              f"in _finished_file(), not in the download)")
+        except OSError:
+            notes.append(f"{p.name} (vanished or became unreadable while being checked)")
+    return f"considered and rejected: {'; '.join(notes)}"
 
 
 def download(url: str, workdir: Path, quality: str = "best",
@@ -444,7 +679,18 @@ def download(url: str, workdir: Path, quality: str = "best",
 
     video = _finished_file(workdir)
     if video is None:
-        raise RuntimeError("The download finished but no video file appeared.")
+        # yt-dlp exited 0, so there is no stderr to hand back the way every
+        # other failure in this file does — but the same DownloadError shape
+        # is used anyway, because this is the one case that used to raise a
+        # bare RuntimeError and leave the UI's "what the downloader actually
+        # said" pane and Copy details with nothing in them at all. What is
+        # actually sitting in the working directory is the only useful thing
+        # left to report.
+        raise DownloadError(
+            "The download finished but no video file appeared.",
+            f"yt-dlp reported success but _finished_file() found nothing usable "
+            f"in {workdir} — {_explain_missing_video(workdir)}",
+        )
     if progress:
         progress(1.0, "Download complete")
     return video, info

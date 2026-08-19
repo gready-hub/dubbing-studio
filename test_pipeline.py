@@ -1863,19 +1863,49 @@ def test_translation_qc():
     # writes source.mp4, and the stub sorts first. On a real run that turned a
     # complete 1.7 GB download into "the video is in a format that can't be read".
     from app.steps.download import _finished_file
+
+    def _tiny_media(seconds: float) -> bytes:
+        """A few KB of genuinely decodable video and audio, for cases where
+        _finished_file() now has to ask ffprobe rather than trust a name — a
+        plain run of repeated bytes used to stand in for "the video" until
+        that check existed, and it fails ffprobe the same way a thumbnail
+        does, which is exactly the distinction being tested here.
+        """
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            dst = Path(tmp.name)
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=32x32:rate=5",
+                        "-f", "lavfi", "-i", "anullsrc=r=8000:cl=mono",
+                        "-map", "0:v", "-map", "1:a", "-t", f"{seconds:g}",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(dst)], check=True)
+        data = dst.read_bytes()
+        dst.unlink()
+        return data
+
+    # ffprobe doesn't care what the file is named — it sniffs the container
+    # from the bytes, same as it would on a real download — so one small real
+    # clip and one larger one, copied under whatever filename each case below
+    # needs, cover every "is this actually media" question without a separate
+    # ffmpeg encode per container.
+    SMALL_MEDIA = _tiny_media(1)
+    LARGE_MEDIA = _tiny_media(3)
+    check("the two fixture clips are genuinely different sizes",
+          len(LARGE_MEDIA) > len(SMALL_MEDIA), (len(SMALL_MEDIA), len(LARGE_MEDIA)))
+
     shed = SCRATCH / "picking"
     shutil.rmtree(shed, ignore_errors=True)
     shed.mkdir(parents=True)
     (shed / "source.f137.mp4.part").write_bytes(b"x" * 10_000)
     (shed / "source.mp4.ytdl").write_bytes(b"{}")
-    (shed / "source.mp4").write_bytes(b"x" * 1_000_000)
+    (shed / "source.mp4").write_bytes(SMALL_MEDIA)
     check("a leftover .part is never mistaken for the finished download",
           _finished_file(shed).name == "source.mp4", _finished_file(shed).name)
     (shed / "source.mp4").unlink()
-    (shed / "source.f137.mp4").write_bytes(b"x" * 900_000)
+    (shed / "source.f137.mp4").write_bytes(LARGE_MEDIA)
     check("an unmerged format is used when there is no merged file",
           _finished_file(shed).name == "source.f137.mp4")
-    (shed / "source.webm").write_bytes(b"x" * 10)
+    (shed / "source.webm").write_bytes(SMALL_MEDIA)
     check("but the merged name wins even when it is smaller",
           _finished_file(shed).name == "source.webm")
     for leftover in shed.iterdir():
@@ -1883,6 +1913,254 @@ def test_translation_qc():
     (shed / "source.mp4.part").write_bytes(b"x" * 500)
     check("a folder holding only working files reports nothing finished",
           _finished_file(shed) is None)
+
+    # The container allowlist this replaced only knew five extensions, so a
+    # complete download in anything else — a Wikimedia .ogv, an archive.org
+    # .mpg, both of which ffmpeg reads without complaint — was invisible to it
+    # and thrown away as if the fetch had failed, after every byte had arrived.
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.ogv").write_bytes(LARGE_MEDIA)
+    check("a completed download in a container outside the old mp4/mkv/webm/mov/m4v allowlist is accepted",
+          _finished_file(shed) is not None and _finished_file(shed).name == "source.ogv",
+          str(_finished_file(shed)))
+    (shed / "source.ogv.part").write_bytes(b"x" * 9_700_000)
+    check("a .part fragment beside it is still never chosen over the complete file, allowlisted container or not",
+          _finished_file(shed).name == "source.ogv")
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    # No standalone check that a lone fragment reports nothing finished: any
+    # fragment name ends in -Frag<n>, which never matches a five-extension
+    # allowlist either, so that alone would have passed before this fix too.
+    # What actually distinguishes the new behaviour is that the real file
+    # sitting beside the fragment is still found, in a container the old
+    # allowlist would have refused outright regardless of the fragment.
+    (shed / "source.f303.mp4.part-Frag12").write_bytes(b"x" * 500_000)
+    (shed / "source.mpg").write_bytes(LARGE_MEDIA)
+    check("a genuinely finished download is picked over a lingering fragment of an interrupted attempt",
+          _finished_file(shed).name == "source.mpg")
+
+    # Excluding scratch state was not enough on its own: the reviewer who
+    # caught this demonstrated a workdir with --write-thumbnail set in the
+    # user's own yt-dlp config (left readable — see download()) producing
+    # source.mp4 (633,710 bytes) and source.webp (23,038 bytes) side by side,
+    # neither a .part nor a .ytdl. A sidecar reachable this way is asked about
+    # by ffprobe like everything else, not waved through because its name or
+    # size happened to fit.
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.jpg").write_bytes(b"\xff\xd8\xff" + b"not actually a jpeg" * 50)
+    check("a workdir holding only a thumbnail sidecar reports nothing finished, not the thumbnail",
+          _finished_file(shed) is None)
+    (shed / "source.jpg").unlink()
+    (shed / "source.info.json").write_bytes(b'{"id": "abc123", "title": "not a video"}')
+    check("and a workdir holding only an info.json sidecar reports nothing finished either",
+          _finished_file(shed) is None)
+    (shed / "source.info.json").unlink()
+
+    big_sidecar = b"\xff\xd8\xff" + b"not actually a jpeg" * 5000
+    (shed / "source.jpg").write_bytes(big_sidecar)
+    (shed / "source.mp4").write_bytes(SMALL_MEDIA)
+    check("a sidecar bigger than the real video still loses to the video, not to its size",
+          len(big_sidecar) > len(SMALL_MEDIA) and _finished_file(shed).name == "source.mp4",
+          (len(big_sidecar), len(SMALL_MEDIA)))
+
+    # The merge postprocessor's own scratch file: FFmpegMergerPP builds the
+    # merged output at source.temp.mp4 before renaming it over source.mp4, so
+    # for as long as a mux is running both names exist and only one is finished.
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.temp.mp4").write_bytes(LARGE_MEDIA)
+    check("a merge-in-progress source.temp.mp4 is recognised as scratch, not as the video",
+          _finished_file(shed) is None)
+    (shed / "source.mp4").write_bytes(SMALL_MEDIA)
+    check("and the real file is picked once it exists, even though the temp file is still larger",
+          _finished_file(shed).name == "source.mp4")
+
+    # The regression a duration floor reintroduced: a completely genuine,
+    # fully downloaded video-only remux can report no duration at all. A
+    # container's duration is normally patched in by seeking back once the
+    # last frame is known; a mux that was piped to a non-seekable output, or
+    # simply never reached a clean close, never gets that pass, even though
+    # every frame it wrote decodes correctly. Reproduced here the same way —
+    # ffmpeg started with no fixed length, so there is no total to write up
+    # front, and killed the moment real video data exists rather than let it
+    # reach the shutdown that would patch a duration in — and a duration
+    # floor threw this away exactly the way the container allowlist threw
+    # away a .ogv: proof was demanded of a file that never had a reason to
+    # carry it.
+    def _tiny_video_only(unfinalized: bool) -> bytes:
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+            dst = Path(tmp.name)
+        if not unfinalized:
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                            "-i", "testsrc=size=32x32:rate=5", "-an", "-t", "1",
+                            "-c:v", "libvpx", str(dst)], check=True)
+        else:
+            with open(dst, "wb") as fh:
+                proc = subprocess.Popen(
+                    ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                     "-i", "testsrc=size=32x32:rate=5", "-an",
+                     "-c:v", "libvpx", "-f", "webm", "-"], stdout=fh)
+                deadline = time.time() + 5
+                while time.time() < deadline and dst.stat().st_size < 20_000:
+                    time.sleep(0.02)
+                proc.terminate()
+                proc.wait(timeout=5)
+        data = dst.read_bytes()
+        dst.unlink()
+        return data
+
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.webm").write_bytes(_tiny_video_only(unfinalized=True))
+    check("a video-only remux whose muxer never wrote a duration is accepted, not discarded for lack of proof",
+          _finished_file(shed) is not None and _finished_file(shed).name == "source.webm",
+          str(_finished_file(shed)))
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.webm").write_bytes(_tiny_video_only(unfinalized=False))
+    check("and a video-only remux that does report a duration is accepted too",
+          _finished_file(shed) is not None and _finished_file(shed).name == "source.webm")
+
+    # Real thumbnails, not just the corrupt bytes used above — the discriminator
+    # is which demuxer ffprobe read the file through, so it has to hold for a
+    # well-formed image too, not merely for one already too broken to decode.
+    def _tiny_image(suffix: str) -> bytes:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            dst = Path(tmp.name)
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                        "-i", "color=c=red:s=32x32", "-frames:v", "1",
+                        str(dst)], check=True)
+        data = dst.read_bytes()
+        dst.unlink()
+        return data
+
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.jpg").write_bytes(_tiny_image(".jpg"))
+    check("a real JPEG thumbnail is rejected, not just a corrupt one",
+          _finished_file(shed) is None)
+    (shed / "source.jpg").unlink()
+    (shed / "source.png").write_bytes(_tiny_image(".png"))
+    check("and a real PNG thumbnail is rejected the same way",
+          _finished_file(shed) is None)
+
+    # A probe that cannot answer is not evidence of anything and must not be
+    # treated as one — the earlier duration floor turned "ffprobe timed out"
+    # into "throw the completed download away", silently, which is the same
+    # mistake as the two checks just above, just with the probe itself failing
+    # instead of merely being unable to read a duration.
+    import app.steps.download as _dl_module
+
+    class _DeadProbe:
+        TimeoutExpired = subprocess.TimeoutExpired
+
+        @staticmethod
+        def run(*_a, **_k):
+            raise subprocess.TimeoutExpired(cmd="ffprobe", timeout=30)
+
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.mp4").write_bytes(SMALL_MEDIA)
+    real_subprocess = _dl_module.subprocess
+    _dl_module.subprocess = _DeadProbe
+    try:
+        timed_out_result = _finished_file(shed)
+    finally:
+        _dl_module.subprocess = real_subprocess
+    check("an ffprobe that times out does not cause a completed download to be discarded",
+          timed_out_result is not None and timed_out_result.name == "source.mp4",
+          timed_out_result)
+
+    # The same bug through a new door: ffmpeg reads a one-frame thumbnail and
+    # a genuinely animated GIF through the identical "gif" demuxer, so
+    # rejecting on format_name alone (as jpeg_pipe/png_pipe correctly can)
+    # would throw away a real animated GIF, and yt-dlp's own Imgur extractor
+    # really does offer one as a download when a post has no video transcode.
+    def _tiny_gif(frames: int) -> bytes:
+        with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
+            dst = Path(tmp.name)
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                        "-i", "testsrc=size=32x32:rate=5", "-frames:v", str(frames),
+                        str(dst)], check=True)
+        data = dst.read_bytes()
+        dst.unlink()
+        return data
+
+    for leftover in shed.iterdir():
+        leftover.unlink()
+    (shed / "source.gif").write_bytes(_tiny_gif(1))
+    check("a genuine single-frame GIF is rejected, same as any other thumbnail",
+          _finished_file(shed) is None)
+    (shed / "source.gif").unlink()
+    (shed / "source.gif").write_bytes(_tiny_gif(10))
+    check("but a real multi-frame animated GIF is accepted, not thrown away for sharing a demuxer with one",
+          _finished_file(shed) is not None and _finished_file(shed).name == "source.gif",
+          str(_finished_file(shed)))
+
+    # _explain_missing_video() only ever runs once download() has already
+    # decided to fail, and nothing in it may itself raise — an unhandled
+    # exception there would replace the friendly "no video file appeared"
+    # message with a raw traceback in the generic handler in app/pipeline.py,
+    # which is a worse failure than the one this whole item exists to fix.
+    from app.steps.download import _explain_missing_video
+
+    locked = SCRATCH / "locked-workdir"
+    shutil.rmtree(locked, ignore_errors=True)
+    locked.mkdir(parents=True)
+    (locked / "source.mp4").write_bytes(SMALL_MEDIA)
+    os.chmod(locked, 0o000)
+    try:
+        locked_detail = _explain_missing_video(locked)
+        locked_ok = isinstance(locked_detail, str) and bool(locked_detail.strip())
+    except Exception as exc:                                      # noqa: BLE001
+        locked_detail, locked_ok = repr(exc), False
+    finally:
+        os.chmod(locked, 0o755)                # so cleanup can still delete it
+    check("an unreadable working directory does not crash the explanation",
+          locked_ok, locked_detail)
+
+    missing = SCRATCH / "workdir-that-was-never-created"
+    shutil.rmtree(missing, ignore_errors=True)
+    try:
+        missing_detail = _explain_missing_video(missing)
+        missing_ok = isinstance(missing_detail, str) and bool(missing_detail.strip())
+    except Exception as exc:                                      # noqa: BLE001
+        missing_detail, missing_ok = repr(exc), False
+    check("a missing working directory does not crash the explanation",
+          missing_ok, missing_detail)
+
+    workdir_is_a_file = SCRATCH / "workdir-that-is-actually-a-file"
+    workdir_is_a_file.write_text("not a directory")
+    try:
+        file_detail = _explain_missing_video(workdir_is_a_file)
+        file_ok = isinstance(file_detail, str) and bool(file_detail.strip())
+    except Exception as exc:                                      # noqa: BLE001
+        file_detail, file_ok = repr(exc), False
+    check("a working directory path that is actually a file does not crash the explanation",
+          file_ok, file_detail)
+
+    vanishing = SCRATCH / "vanishing-candidate"
+    shutil.rmtree(vanishing, ignore_errors=True)
+    vanishing.mkdir(parents=True)
+    (vanishing / "source.mp4").write_bytes(SMALL_MEDIA)
+    real_looks_like_media = _dl_module._looks_like_media
+
+    def _vanish_then_raise(p):
+        p.unlink(missing_ok=True)
+        raise FileNotFoundError(p)
+
+    _dl_module._looks_like_media = _vanish_then_raise
+    try:
+        vanish_detail = _explain_missing_video(vanishing)
+        vanish_ok = isinstance(vanish_detail, str) and bool(vanish_detail.strip())
+    except Exception as exc:                                      # noqa: BLE001
+        vanish_detail, vanish_ok = repr(exc), False
+    finally:
+        _dl_module._looks_like_media = real_looks_like_media
+    check("a candidate that disappears between being listed and being probed does not crash the explanation",
+          vanish_ok, vanish_detail)
 
     # --- retrying and client choice, which are yt-dlp's job and not ours
     # What was here was a ladder of our own: three identical attempts, then two
@@ -1947,6 +2225,74 @@ def test_translation_qc():
           "403" in detail and dlfresh._PROGRESS_PREFIX not in detail, detail[:70])
     check("and the message the user reads is the plain-English one",
           "refused to send it" in str(err), str(err)[:60])
+
+    # The other way a download can fail to hand back a video: yt-dlp exits 0
+    # — it thinks it succeeded — but _finished_file() finds nothing usable in
+    # the working directory. This used to raise a bare RuntimeError, the one
+    # failure in this file with nothing for the UI's "what the downloader
+    # actually said" pane or Copy details to show. It has to fail the same way
+    # every other download failure does.
+    def vanished_download():
+        """Run the real download() against a yt-dlp that reports success but leaves nothing behind."""
+        def fake_stream(cmd, on_line=None, tail_lines=30):
+            on_line(f"{dlfresh._PROGRESS_PREFIX}1024|1024\n")
+            return 0, ""
+        dlfresh.stream = fake_stream
+        dlfresh.probe = lambda url, cookies_from="": {
+            "title": "t", "duration": 1.0, "formats": [], "is_live": False}
+        pen = SCRATCH / "vanished"
+        shutil.rmtree(pen, ignore_errors=True)
+        pen.mkdir(parents=True)
+        try:
+            dlfresh.download("https://youtu.be/x", pen)
+        except Exception as exc:                                 # noqa: BLE001
+            return exc
+        return None
+
+    err2 = vanished_download()
+    check("a download yt-dlp reported as successful but left nothing playable behind "
+          "fails the same way every other download failure does",
+          isinstance(err2, dlfresh.DownloadError), repr(err2))
+    check("the user-facing message stays plain English",
+          str(err2) == "The download finished but no video file appeared.", str(err2))
+    check("and the detail is non-empty, so Copy details has something an engineer can act on",
+          bool(getattr(err2, "detail", "").strip()), repr(getattr(err2, "detail", "")))
+    check("specifically, what was actually sitting in the working directory",
+          "vanished" in getattr(err2, "detail", ""), getattr(err2, "detail", ""))
+
+    # The point of every _explain_missing_video() "does not crash" check
+    # above: none of that matters if the crash it used to produce simply
+    # moved one call up the stack. This runs the real download() end to end
+    # against an unreadable working directory and confirms what actually
+    # reaches the caller is still the plain-English DownloadError, not a
+    # PermissionError escaping into app/pipeline.py's generic handler.
+    def locked_workdir_download():
+        def fake_stream(cmd, on_line=None, tail_lines=30):
+            return 0, ""
+        dlfresh.stream = fake_stream
+        dlfresh.probe = lambda url, cookies_from="": {
+            "title": "t", "duration": 1.0, "formats": [], "is_live": False}
+        pen = SCRATCH / "locked-workdir"
+        shutil.rmtree(pen, ignore_errors=True)
+        pen.mkdir(parents=True)
+        (pen / "source.mp4").write_bytes(b"x" * 1000)
+        os.chmod(pen, 0o000)
+        try:
+            try:
+                dlfresh.download("https://youtu.be/x", pen)
+            except Exception as exc:                             # noqa: BLE001
+                return exc
+            return None
+        finally:
+            os.chmod(pen, 0o755)                # so cleanup can still delete it
+
+    err3 = locked_workdir_download()
+    check("an unreadable working directory still fails as a DownloadError, not a raw crash",
+          isinstance(err3, dlfresh.DownloadError), repr(err3))
+    check("with the plain-English message intact",
+          str(err3) == "The download finished but no video file appeared.", str(err3))
+    check("and a non-empty detail, rather than the explanation itself dying silently",
+          bool(getattr(err3, "detail", "").strip()), repr(getattr(err3, "detail", "")))
 
     check("the plain-English message for a format refusal names no CLI flags",
           "--list-formats" not in dlmod._friendly(
