@@ -197,16 +197,20 @@ class NewJobPanel extends BaseElement {
     // leaves the window with nothing in it but the step chips. The link is still
     // in the box, and starting it again picks the work up where it stopped.
     const collapsed = !!job && job.status !== "cancelled" && !this._expanded;
-    const held = this.$("#fullForm").contains(this.shadowRoot.activeElement);
-    this.$("#fullForm").classList.toggle("hidden", collapsed);
-    this.$("#compactBar").classList.toggle("hidden", !collapsed);
+    const form = this.$("#fullForm"), bar = this.$("#compactBar");
+    // Whichever of the two is about to be taken off screen: focus left on a
+    // hidden control drops to the body, and the swap goes both ways — a
+    // cancelled job puts the form back with the focus still on "Dub another".
+    const held = (collapsed ? form : bar).contains(this.shadowRoot.activeElement);
+    form.classList.toggle("hidden", collapsed);
+    bar.classList.toggle("hidden", !collapsed);
     if(collapsed){
       this.$("#compactMsg").textContent = job.status === "done" ? "That one's finished."
         : job.status === "error" ? "That one didn't finish."
         : "A video is dubbing.";
-      // The form it was in has just been taken off screen, and focus left on a
-      // hidden control drops to the body.
       if(held) this.$("#expandBtn").focus();
+    } else if(held){
+      this.$("#url").focus();
     }
   }
 

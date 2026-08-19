@@ -11,10 +11,12 @@ const HEAD = `
 
 const SHELL = `
   <style>
-    /* Separators belong to the list, not to the row: a row is one element in
-       its container's tree and cannot see whether it is the last of them. The
-       shared rule reads the shadow root instead, where .past has the detail
-       drawer after it and so is never last. */
+    /* Drawn above rather than below, because a row cannot see whether it is the
+       last of its list but :host(:first-child) tells it when it is the first.
+       The shared .past:last-child rule cannot do it: inside the shadow root
+       .past has the detail drawer after it and so is never last. */
+    :host{display:block;border-top:1px solid var(--line)}
+    :host(:first-child){border-top:none}
     .past{border-bottom:none}
     .head{flex:1;min-width:0;display:flex;align-items:flex-start}
     .lines{min-width:0;flex:1}

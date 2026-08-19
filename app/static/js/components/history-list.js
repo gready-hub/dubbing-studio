@@ -14,8 +14,6 @@ const SHELL = `
     .head > div{flex:1;min-width:200px}
     .head h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.01em}
     .head p{margin:5px 0 0}
-    #history list-row{display:block;border-top:1px solid var(--line)}
-    #history list-row:first-child{border-top:none}
   </style>
   <div class="panel quiet">
     <div class="head">

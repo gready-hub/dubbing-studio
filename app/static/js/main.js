@@ -48,7 +48,6 @@ async function refreshDoctor(){
     const doctor = await api.doctor();
     store.setDoctor(doctor);
     if(!doctor.ready){
-      document.querySelector("manage-panel")?.revealDoctor();
       showSetupError("Something needed is missing — see Setup check below.", "", true);
     }
   }catch(err){ /* best effort */ }

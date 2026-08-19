@@ -40,11 +40,6 @@ class ManagePanel extends BaseElement {
     this.$("storage-panel").showCheckError();
   }
 
-  // The banner that says a dependency is missing points at this tab by name.
-  revealDoctor(){
-    this.selectTab("doctor", false);
-  }
-
   update(s){
     if(this._userPicked) return;
     // Keeps re-checking on every update, not just the first, since doctor and
