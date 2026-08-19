@@ -236,6 +236,7 @@ const SHELL = `
 
       <div class="danger-row">
         <div>
+          <b>Details to send</b>
           <small>Describes this Mac and what the app has been doing, for when you need
             to ask someone about it. No passwords or API keys.</small>
         </div>
@@ -276,6 +277,9 @@ const STYLE = `
               border-color:currentColor;color:inherit;opacity:.7}
   .pill:empty{display:none}
   .pill.flag:not(.on){display:none}
+  /* A save that did not happen must not read as the acknowledgement it stands
+     in the place of. */
+  #savedMsg.bad{color:var(--bad)}
 </style>`;
 
 function same(a, b){
@@ -293,7 +297,8 @@ class SettingsPanel extends BaseElement {
     this._dirty = new Set();
 
     this.$("#settingsTabs").innerHTML = TABS.map((t, i) =>
-      `<button data-tab="${escapeAttr(t.key)}"${i ? "" : " autofocus"}>${escapeHtml(t.label)}<span
+      `<button data-tab="${escapeAttr(t.key)}"${i ? "" : " autofocus"}><span class="mark"
+        aria-hidden="true">✓</span>${escapeHtml(t.label)}<span
         class="pill count" data-tabflag="${escapeAttr(t.key)}" aria-hidden="true"></span></button>`).join("");
 
     this.$("#saveBtn").onclick = () => this.save();
@@ -387,7 +392,7 @@ class SettingsPanel extends BaseElement {
   }
 
   open(){
-    flash(this.$("#savedMsg"), "", 0);
+    this.note("", 0);
     this.$("#dlg").showModal();
     // Chrome will focus the scrolling body otherwise, and ring the whole of it.
     this.$("#settingsTabs button.on")?.focus();
@@ -399,7 +404,11 @@ class SettingsPanel extends BaseElement {
 
   selectTab(key){
     this._tab = key;
-    this.$$("#settingsTabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === key));
+    this.$$("#settingsTabs button").forEach(b => {
+      const on = b.dataset.tab === key;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
     this.$$("[data-pane]").forEach(p => p.classList.toggle("hidden", p.dataset.pane !== key));
     this.$("#resetTabBtn").textContent = `Reset ${this.tab().label}`;
   }
@@ -563,7 +572,11 @@ class SettingsPanel extends BaseElement {
   describe(key, value){
     const el = this.$(`#${key}`);
     if(el && el.tagName === "SELECT"){
-      const opt = [...el.options].find(o => same(o.value, value));
+      // An option's value is always a string, and same() reads a boolean on
+      // either side as a truth test — under which "false" is true. A boolean is
+      // therefore matched as the word the option carries.
+      const want = typeof value === "boolean" ? String(value) : value;
+      const opt = [...el.options].find(o => same(o.value, want));
       if(opt) return `“${opt.textContent.trim()}”`;
     }
     return value === "" || value == null ? "blank" : `“${value}”`;
@@ -617,6 +630,13 @@ class SettingsPanel extends BaseElement {
     if(tab.key === "translation"){
       lines.push("", "Your saved API keys are left alone. To remove one, empty the box "
         + "and press Save.");
+      // Named in the request, so the server's own guard does not hold it back —
+      // and it is the one field on this tab that was typed out by hand and
+      // cannot be chosen again from a menu.
+      if((this._settings?.custom_glossary || "").trim()){
+        lines.push("", "Your own terms are on this tab, and they will be cleared. "
+          + "There is no undo — copy them somewhere first if you want to keep them.");
+      }
     }
     this.ask(btn, lines, this.fields(tab));
   }
@@ -665,15 +685,21 @@ class SettingsPanel extends BaseElement {
     const unsaved = this._dirty.size;
     this._dirty.clear();
     if(unsaved && this._state) this.repaint(this._state);
-    flash(this.$("#savedMsg"), "Saved");
+    this.note("Saved");
   }
 
-  showReset(){ flash(this.$("#savedMsg"), "Back to defaults"); }
+  showReset(){ this.note("Back to defaults"); }
 
   // Left up until something replaces it: a save that did not happen is not news
   // to be missed while looking elsewhere.
   showSaveError(message){
-    flash(this.$("#savedMsg"), message, 0);
+    this.note(message, 0, true);
+  }
+
+  note(text, ms, bad){
+    const el = this.$("#savedMsg");
+    el.classList.toggle("bad", !!bad);
+    flash(el, text, ms);
   }
 
   async audition(){

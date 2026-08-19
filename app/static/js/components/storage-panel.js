@@ -11,8 +11,8 @@ const SPACE_COLOURS = {
 };
 
 const SHELL = `
-  <div class="panel">
-    <b id="storageSummary" style="font-size:15px"></b>
+  <div class="panel quiet">
+    <h2 id="storageSummary" class="job-title" style="font-size:15px"></h2>
     <p class="usage-empty" id="usageTotal"></p>
     <div class="usage" id="usage"></div>
     <div id="storageGroups"></div>

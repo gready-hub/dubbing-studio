@@ -4,7 +4,7 @@ import "./list-row.js";
 
 const SHELL = `
   <div class="panel">
-    <b>Waiting to start</b>
+    <h2 class="job-title">Waiting to start</h2>
     <p class="hint">One video is dubbed at a time — two at once only makes both
       slower.</p>
     <div id="queue" style="margin-top:6px"></div>

@@ -3,8 +3,8 @@ import { store } from "../store.js";
 import { escapeHtml } from "../format.js";
 
 const SHELL = `
-  <div class="panel">
-    <b class="job-title">Setup check</b>
+  <div class="panel quiet">
+    <h2 class="job-title">Setup check</h2>
     <p class="hint hidden" id="machine" style="margin-bottom:0"></p>
     <div id="doctor" style="margin-top:10px"></div>
   </div>

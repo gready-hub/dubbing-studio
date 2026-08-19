@@ -17,13 +17,13 @@ const SHELL = `
     #history list-row{display:block;border-top:1px solid var(--line)}
     #history list-row:first-child{border-top:none}
   </style>
-  <div class="panel">
+  <div class="panel quiet">
     <div class="head">
       <div>
         <h2>Your dubbed videos</h2>
         <p class="hint" id="outputWhere">Saved to your Movies folder.</p>
       </div>
-      <button class="primary" id="openFolder">Open folder</button>
+      <button class="ghost" id="openFolder">Open folder</button>
     </div>
     <div id="history"></div>
   </div>

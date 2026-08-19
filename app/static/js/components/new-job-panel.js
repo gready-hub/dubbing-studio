@@ -22,6 +22,11 @@ const MARK = `<span class="mark" aria-hidden="true">✓</span>`;
 const STYLE = `
 <style>
   #speakersLabel{margin-top:18px}
+  /* The label and its tip sit side by side rather than nested. Anything inside
+     a <label> joins the accessible name of what the label names, and this one
+     names the preset group — which would then announce the tip button too. */
+  .label-row{display:flex;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+  .label-row label{margin-bottom:0}
   /* aria-disabled rather than disabled, so a blocked preset stays focusable:
      the reason it is blocked is the button's description, and a disabled
      button cannot be reached to hear it. */
@@ -30,6 +35,7 @@ const STYLE = `
      never moves the controls that were just used. */
   #saveMsg{min-height:1.45em;margin:10px 0 0}
   #saveMsg.bad{color:var(--bad)}
+  #urlMsg{min-height:1.45em;margin:8px 0 0;color:var(--bad)}
 </style>`;
 
 const SHELL = `
@@ -47,14 +53,16 @@ const SHELL = `
       <button class="ghost" id="tryBtn" data-busy="start">Try 30 seconds</button>
       <button class="primary" id="go" data-busy="start">Dub it</button>
     </div>
+    <p class="hint" id="urlMsg" role="status" aria-live="polite"></p>
     <p class="hint"><b>Try 30 seconds</b> dubs a short sample first, so you
       can hear the voice before waiting for a whole video.</p>
 
     <div class="preset-wrap">
-      <label id="presetLabel">Quality
+      <div class="label-row">
+        <label id="presetLabel">Quality</label>
         <info-tip id="presetTip" label="quality presets"
                   text="${escapeAttr(PRESET_TIP)}"></info-tip>
-      </label>
+      </div>
       <div class="segmented" id="presets" role="group" aria-labelledby="presetLabel"></div>
       <p class="hint" id="presetBlurb"></p>
       <p class="hint hidden" id="presetBlocked" role="status" aria-live="polite"></p>
@@ -140,6 +148,7 @@ class NewJobPanel extends BaseElement {
     this.$("#tryBtn").onclick = () => this.start(true);
     this.$("#go").onclick = () => this.start(false);
     this.$("#url").addEventListener("keydown", e => { if(e.key === "Enter") this.start(false); });
+    this.$("#url").addEventListener("input", () => flash(this.$("#urlMsg"), "", 0));
     this.$$("#speakers button").forEach(b => {
       b.onclick = () =>
         this.emit("save-settings", {data: {diarize: b.dataset.diarize === "true"}});
@@ -167,7 +176,14 @@ class NewJobPanel extends BaseElement {
 
   start(preview){
     const url = this.$("#url").value.trim();
-    if(!url) return;
+    // A dead button is worse than a refusal: say what is missing rather than
+    // letting the press do nothing at all.
+    if(!url){
+      flash(this.$("#urlMsg"), "Paste a video link first.", 5000);
+      this.$("#url").focus();
+      return;
+    }
+    flash(this.$("#urlMsg"), "", 0);
     this._expanded = false;
     this.emit("start-job", {url, preview: !!preview});
   }
@@ -177,13 +193,20 @@ class NewJobPanel extends BaseElement {
   // that's actually relevant right now. "Dub another video" gets it back.
   applyCollapse(s){
     const job = s.jobs[s.current];
-    const collapsed = !!job && !this._expanded;
+    // A cancelled job draws no panel of its own, so collapsing the form over it
+    // leaves the window with nothing in it but the step chips. The link is still
+    // in the box, and starting it again picks the work up where it stopped.
+    const collapsed = !!job && job.status !== "cancelled" && !this._expanded;
+    const held = this.$("#fullForm").contains(this.shadowRoot.activeElement);
     this.$("#fullForm").classList.toggle("hidden", collapsed);
     this.$("#compactBar").classList.toggle("hidden", !collapsed);
     if(collapsed){
       this.$("#compactMsg").textContent = job.status === "done" ? "That one's finished."
         : job.status === "error" ? "That one didn't finish."
         : "A video is dubbing.";
+      // The form it was in has just been taken off screen, and focus left on a
+      // hidden control drops to the body.
+      if(held) this.$("#expandBtn").focus();
     }
   }
 

@@ -308,7 +308,7 @@ goes stale, and an out-of-date yt-dlp is the single commonest cause.
 
 ### Sending someone the details
 
-Press **Copy details** in the top bar — or on a failed job, next to **Try again**.
+Press **Copy details** in **Settings** — or on a failed job, next to **Try again**.
 It gathers your Mac, the versions, the setup check and what the app has recently
 been doing into one block of text, shows it to you, and copies it. Paste that
 into a message to whoever helps you with this.

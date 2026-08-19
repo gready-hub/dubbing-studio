@@ -22,6 +22,14 @@ export class BaseElement extends HTMLElement {
     this.shadowRoot.innerHTML = SHARED_STYLESHEET + markup;
   }
 
+  // A live region re-announces whatever is written into it, and writing the
+  // same words again still counts as writing. Progress arrives about twice a
+  // second, so the announcement has to be spared when nothing has changed.
+  say(selector, text){
+    const el = this.$(selector);
+    if(el && el.textContent !== text) el.textContent = text;
+  }
+
   renderIfChanged(sig, fn){
     const key = JSON.stringify(sig);
     if(this._sig === key) return false;

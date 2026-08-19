@@ -11,6 +11,11 @@ const HEAD = `
 
 const SHELL = `
   <style>
+    /* Separators belong to the list, not to the row: a row is one element in
+       its container's tree and cannot see whether it is the last of them. The
+       shared rule reads the shadow root instead, where .past has the detail
+       drawer after it and so is never last. */
+    .past{border-bottom:none}
     .head{flex:1;min-width:0;display:flex;align-items:flex-start}
     .lines{min-width:0;flex:1}
     .caret{display:none}

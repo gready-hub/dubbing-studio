@@ -44,7 +44,7 @@ class ActivePanel extends BaseElement {
 
     this.$("#aTitle").textContent = (job.preview ? "Sample — " : "")
                             + (job.title || "Working…");
-    this.$("#aMsg").textContent = job.message;
+    this.say("#aMsg", job.message);
     this.$("#aBar").style.width = (job.overall*100).toFixed(1)+"%";
     this.$("#aPct").textContent = Math.round(job.overall*100)+"%";
 

@@ -46,7 +46,7 @@ class FailedPanel extends BaseElement {
     this.$("#fTitle").textContent = job.title
       ? (job.preview ? "Sample — " : "") + job.title
       : "That video couldn't be dubbed";
-    this.$("#fMsg").textContent = job.error || "Something went wrong.";
+    this.say("#fMsg", job.error || "Something went wrong.");
     // The tool's own words: one click away and copyable, rather than buried in
     // a log under Application Support.
     const detail = (job.error_detail || "").trim();

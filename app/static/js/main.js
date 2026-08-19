@@ -13,12 +13,14 @@ import "./components/settings-panel.js";
 import "./components/diagnostics-panel.js";
 import "./components/manage-panel.js";
 
+const stillMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
 function showSetupError(message, detail, info){
   const b = document.getElementById("setupBanner");
   b.innerHTML = errorDetailHtml(message, detail || "");
   b.className = `banner ${info ? "info" : "bad"}`;
   b.classList.remove("hidden");
-  b.scrollIntoView({behavior: "smooth", block: "center"});
+  b.scrollIntoView({behavior: stillMotion.matches ? "auto" : "smooth", block: "center"});
 }
 
 function hideSetupError(){
@@ -35,8 +37,9 @@ function setWindowTitle(job){
   document.title =
     !job || job.status === "queued" ? base
     : job.status === "running" ? `${at}% · ${base}`
-    : job.status === "done"    ? `Finished · ${base}`
-    : job.status === "error"   ? `Couldn't be dubbed · ${base}`
+    : job.status === "done"      ? `Finished · ${base}`
+    : job.status === "error"     ? `Couldn't be dubbed · ${base}`
+    : job.status === "cancelled" ? `Stopped · ${base}`
     : base;
 }
 
@@ -45,6 +48,7 @@ async function refreshDoctor(){
     const doctor = await api.doctor();
     store.setDoctor(doctor);
     if(!doctor.ready){
+      document.querySelector("manage-panel")?.revealDoctor();
       showSetupError("Something needed is missing — see Setup check below.", "", true);
     }
   }catch(err){ /* best effort */ }
@@ -69,8 +73,12 @@ function listen(){
     const settled = prevStatus !== job.status
                   && (job.status === "done" || job.status === "cancelled");
     store.setJob(job);
+    // /api/events replays every known job oldest-first on connect, so a job
+    // that has already finished must never take the view: only a running one
+    // does that, and a queued one only when nothing holds it yet.
     const current = store.state.current;
-    if(!current || job.id === current || job.status === "running"){
+    if(job.status === "running" || job.id === current
+       || (!current && job.status === "queued")){
       store.setCurrent(job.id);
     }
     if(job.id === store.state.current) setWindowTitle(job);
