@@ -13,10 +13,8 @@ const SLASH = '<path d="M2.2 13.8 13.8 2.2"/>';
 const SHELL = `
   <header>
     <div><h1>Dubbing Studio</h1></div>
-    <div style="display:flex;gap:8px;align-items:center">
+    <div>
       <button class="toggle hidden" id="aAwake"></button>
-      <span class="engine" id="engine">…</span>
-      <button class="icon-btn" id="copyBtn">Copy details</button>
       <button class="icon-btn" id="settingsBtn">Settings</button>
     </div>
   </header>
@@ -33,9 +31,6 @@ class AppHeader extends BaseElement {
   connectedCallback(){
     this.html(SHELL);
     this.$("#aAwake").onclick = () => this.toggleAwake();
-    // Always reachable, not only after a visible failure: "it finished but the
-    // voice is wrong" is a report worth sending too.
-    this.$("#copyBtn").onclick = () => document.querySelector("diagnostics-panel")?.open();
     this.$("#settingsBtn").onclick = () => document.querySelector("settings-panel")?.open();
     this.$("#updateNow").onclick = () => {
       if(!confirm("Update Dubbing Studio?\n\nThis opens the installer in Terminal. "
@@ -53,10 +48,7 @@ class AppHeader extends BaseElement {
 
   update(s){
     // macOS only: caffeinate is its, and the Docker build holds nothing.
-    if(s.machine && s.machine.engine != null){
-      this.$("#engine").textContent = s.machine.engine;
-      this.$("#aAwake").classList.toggle("hidden", s.machine.system !== "Darwin");
-    }
+    this.$("#aAwake").classList.toggle("hidden", s.machine?.system !== "Darwin");
     this.renderAwake(!!s.settings.keep_awake);
   }
 

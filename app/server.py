@@ -50,6 +50,13 @@ class SettingsPatch(BaseModel):
     data: dict
 
 
+class SettingsReset(BaseModel):
+    # None, rather than an empty list, is what means "all of them". A list that
+    # arrives empty resets nothing, which is the harmless reading of a caller
+    # that meant to name some fields and named none.
+    keys: list[str] | None = None
+
+
 # ------------------------------------------------------------------ routes
 
 def _local_only(request: Request) -> None:
@@ -89,6 +96,9 @@ def state() -> dict:
             "suggested_model": suggest_ollama_model(machine.ram_gb),
         },
         "settings": asdict(settings),
+        # What the app ships with, so the interface can mark the fields this
+        # user has moved away from and offer to put them back.
+        "settings_defaults": Settings.defaults(),
         "voices": VOICES,
         "presets": PRESETS,
         "features": _feature_status(),
@@ -222,11 +232,8 @@ def doctor() -> dict:
                          if not c.get("optional") and not c["name"].startswith("MLX"))}
 
 
-@app.post("/api/settings")
-def save_settings(patch: SettingsPatch) -> dict:
-    settings = Settings.load()
-    data = dict(patch.data)
-
+def _apply_settings(settings: Settings, data: dict) -> dict:
+    """Fold a batch of changes into the saved settings and return the result."""
     # A preset change rewrites the stage switches; explicit switches sent in the
     # same request win.
     preset = data.pop("preset", None)
@@ -254,6 +261,34 @@ def save_settings(patch: SettingsPatch) -> dict:
     # Applied now, not at the next job. See JobRunner.sync_keep_awake.
     runner.sync_keep_awake(settings.keep_awake)
     return asdict(settings)
+
+
+@app.post("/api/settings")
+def save_settings(patch: SettingsPatch) -> dict:
+    return _apply_settings(Settings.load(), dict(patch.data))
+
+
+@app.post("/api/settings/reset")
+def reset_settings(req: SettingsReset, request: Request) -> dict:
+    """Put settings back to what the app ships with — named ones, or all.
+
+    A setting in KEEP_ON_RESET is only cleared when it is named. A button that
+    means "undo my fiddling" must not be able to destroy by implication anything
+    that cannot simply be chosen again: an API key comes from an account
+    somewhere else and cannot be read back out of this app, and a glossary of
+    someone's own terms was typed by hand and has no undo. The panel that owns
+    such a field can still reset it, by asking for it by name.
+    """
+    _local_only(request)
+    defaults = Settings.defaults()
+    if req.keys is None:
+        wanted = [k for k in defaults if k not in Settings.KEEP_ON_RESET]
+    else:
+        unknown = [k for k in req.keys if k not in defaults]
+        if unknown:
+            raise HTTPException(400, f"No such setting: {', '.join(unknown)}")
+        wanted = list(req.keys)
+    return _apply_settings(Settings.load(), {k: defaults[k] for k in wanted})
 
 
 @app.post("/api/job")

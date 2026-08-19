@@ -14,16 +14,11 @@
          --accent-fill:#b45309; --on-accent:#fffbeb;
          --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); }
 }
-/* Everything here is decoration. Anyone who has asked their system to stop
-   moving things has asked this app too. */
-@media (prefers-reduced-motion:reduce){
-  *{animation:none !important;transition:none !important}
-}
-*{box-sizing:border-box}
+/* Custom properties are the only thing here that reaches a component: they
+   inherit through a shadow boundary, ordinary rules do not. Anything that has
+   to apply inside a component belongs in shared.css, which every shadow root
+   loads; this file is linked by index.html alone. */
 body{margin:0;background:var(--bg);color:var(--ink);
      font:16px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
      -webkit-font-smoothing:antialiased}
 .wrap{max-width:780px;margin:0 auto;padding:40px 24px 48px}
-/* One focus treatment for everything, so tabbing through reads as designed
-   rather than as whatever each control's platform default happens to be. */
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px}

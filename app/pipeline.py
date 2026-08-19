@@ -191,6 +191,27 @@ def _voice_map(settings: Settings, segments: list[dict], speaker_ids: list[int],
     return voices
 
 
+UNREMARKABLE_SPEAKERS = 2   # two people in conversation; past that, ask
+
+
+def _speaker_note(found: int, sample: bool) -> str:
+    """What to say about a speaker count that is probably wrong; "" if it isn't.
+
+    This step fails by over-segmentation — one person split across several
+    clusters and dubbed in several voices — so only a count that is too high is
+    worth a note. Nothing constrains the count for it to be judged against: the
+    number of speakers is worked out from the audio, and the only answer the user
+    can give is that there is one voice to find.
+    """
+    if found <= UNREMARKABLE_SPEAKERS:
+        return ""
+    later = "before dubbing the whole video" if sample else "and run it again"
+    return (f"{found} different speakers were detected. Telling speakers apart is the "
+            "least reliable step, and it can split one person into several voices. If "
+            "the video has fewer people in it than that, set “Who's speaking?” "
+            f"on the main page to one person {later}.")
+
+
 def _safe_name(text: str) -> str:
     text = re.sub(r"[^\w\s-]", "", text).strip()
     text = re.sub(r"\s+", "-", text)
@@ -367,6 +388,10 @@ class Job:
         # epoch stamp from this machine's clock, and the two need not agree.
         d["stage_elapsed"] = (round(time.time() - self.stage_began, 1)
                               if self.stage_began else 0.0)
+        # Answered every time it is asked, never stored. A finished video can be
+        # moved, renamed or deleted while this app is not running, so a recorded
+        # answer is only ever a claim about the past.
+        d["output_exists"] = bool(self.output) and Path(self.output).is_file()
         return d
 
 
@@ -440,6 +465,9 @@ def _record_history(job: Job) -> None:
     distinction the -2 suffix on the output name already makes.
     """
     entry = job.public()
+    # Derived at read time by public_jobs(); anything stored here would be
+    # answering for a file the app cannot watch while it is not running.
+    entry.pop("output_exists", None)
     # Distinct from the live job id, so a re-run of the same link lists as its
     # own row rather than collapsing onto the previous one.
     entry["id"] = f"{job.id}-{int(job.finished)}"
@@ -637,14 +665,18 @@ class JobRunner:
     def public_jobs(self) -> list[dict]:
         """Live jobs plus previously finished ones, newest first.
 
-        A finished run is dropped if its file has since been deleted or moved,
-        so the panel never offers to reveal something that isn't there.
+        Every entry carries output_exists, worked out here rather than read from
+        the history: a finished video can be moved or deleted while the app is
+        not running. A run whose file has gone is still listed — it is a thing
+        that happened — but it must not be offered as something to open, which
+        is what the flag is for. Capped by HISTORY_LIMIT, so this is a bounded
+        handful of stat calls.
         """
         live = [j.public() for j in self.jobs.values()]
         seen = {j["output"] for j in live if j.get("output")}
-        past = [h for h in _load_history()
-                if h.get("output") and h["output"] not in seen
-                and Path(h["output"]).exists()]
+        past = [{**h, "output_exists": Path(h["output"]).is_file()}
+                for h in _load_history()
+                if h.get("output") and h["output"] not in seen]
         return sorted(live + past, key=lambda j: j.get("started", 0), reverse=True)
 
     def busy(self) -> bool:
@@ -779,7 +811,11 @@ class JobRunner:
         job.engine = "Apple GPU (MLX)" if machine.fast_path else "Portable (CPU)"
         self._emit(job)
 
-        stats: dict = {"preset": settings.preset}
+        # The settings this run was submitted with, not the ones selected by the
+        # time anybody reads the result. Settings can be changed while a job is
+        # queued, and are routinely changed before the next one is started.
+        stats: dict = {"preset": settings.preset,
+                       "settings": settings.run_snapshot()}
         # Things the user should know happened but which are not failures. The
         # progress messages that carry them scroll past while a job runs, so a
         # fallback that changed the result was only visible to whoever happened
@@ -935,8 +971,7 @@ class JobRunner:
             turns: list[dict] = []
             if settings.diarize:
                 report = self._stage(job, plan, "diarize", notes)
-                turns = diarize_backend.diarize(speech16, settings.expected_speakers,
-                                                progress=report)
+                turns = diarize_backend.diarize(speech16, progress=report)
                 cache = workdir / "speakers.json"
                 cache.write_text(json.dumps(turns, indent=1))
                 if not turns:
@@ -946,8 +981,7 @@ class JobRunner:
                     # struggled.
                     stats["diarization_failed"] = True
                     notes.append("Speakers could not be told apart, so the whole "
-                                 "video is dubbed in one voice. If you know how many "
-                                 "people speak, set it in Settings and run it again.")
+                                 "video is dubbed in one voice.")
                     report(1.0, "Couldn't tell the speakers apart — using a single voice")
 
             # -------------------------------------------------- transcribe
@@ -980,12 +1014,13 @@ class JobRunner:
             tcache = workdir / "translated.json"
 
             # Asked of this video before any of it is translated. The built-in
-            # glossary is keyed by craft but written in Spanish, so on a
-            # Portuguese video it matched nothing at all — while the same model,
-            # shown the transcript and asked directly, names the vocabulary
-            # correctly and identically every time. Cached alongside everything
-            # else, and folded into the fingerprint below so that changing it
-            # re-translates rather than replaying a translation made without it.
+            # glossary only chooses between UK and US stitch names, and its
+            # source side is Spanish, so on a Portuguese video it matched nothing
+            # at all — while the same model, shown the transcript and asked
+            # directly, names the vocabulary correctly and identically every
+            # time. Cached alongside everything else, and folded into the
+            # fingerprint below so that changing it re-translates rather than
+            # replaying a translation made without it.
             gcache = workdir / "terminology.txt"
             gprint = _fingerprint(asr_print, settings.translator, settings.target_language,
                                   settings.resolved_ollama_model(machine.ram_gb))
@@ -1040,20 +1075,18 @@ class JobRunner:
             job.speakers = len(speaker_ids)
             stats["speakers"] = len(speaker_ids)
 
-            # More voices than a conversation of this length can plausibly hold.
-            # Diarization reported 28 speakers for a ten-minute film with about
-            # seven characters in it, and the report said "Speakers found: 28"
-            # with no comment — so a dub in 28 different voices arrived looking
-            # like what the app meant to do. There is already a lever for this,
-            # and the person who can pull it is the one who watched the video.
-            if settings.diarize and len(speaker_ids) > max(6, job.duration / 45):
-                stats["speakers_implausible"] = True
-                notes.append(
-                    f"{len(speaker_ids)} different speakers were detected, which is "
-                    "more than a video this length usually has — telling them apart "
-                    "is the least reliable step, and it can split one person into "
-                    "several. If you know how many people speak, set it in Settings "
-                    "and run it again.")
+            # More voices than a video can plausibly hold, judged against a
+            # two-way conversation. Runtime is no guide to how many people
+            # speak: a 90-minute craft tutorial has one or two, and diarization
+            # reported 28 speakers for a ten-minute film with about seven
+            # characters in it, while the report said "Speakers found: 28" with
+            # no comment — so a dub in 28 different voices arrived looking like
+            # what the app meant to do. There is already a lever for this, and
+            # the person who can pull it is the one who watched the video.
+            if settings.diarize:
+                wrong = _speaker_note(len(speaker_ids), bool(window))
+                if wrong:
+                    notes.append(wrong)
 
             # -------------------------------------------------- synthesize
             report = self._stage(job, plan, "synthesize", notes)
@@ -1099,7 +1132,7 @@ class JobRunner:
             # speaker count really does re-render the voices rather than
             # replaying the previous run's.
             speaker_print = _fingerprint(
-                settings.diarize, settings.expected_speakers,
+                settings.diarize,
                 "".join(str(s.get("speaker", 0)) for s in segments),
                 "".join(f"{k}{v}" for k, v in sorted(voice_map.items())))
             segdir = workdir / "lines" / _fingerprint(trans_print, settings.voice_mode,
@@ -1178,7 +1211,7 @@ class JobRunner:
 
             report(0.75, "Mixing")
             speech_only = raw
-            if background and settings.keep_music and settings.audio_mode == "replace":
+            if background and settings.keep_music and settings.keep_music_applies():
                 speech_only = mux.mix_with_background(raw, background, workdir / "mixed.wav")
                 stats["music_kept"] = True
             else:

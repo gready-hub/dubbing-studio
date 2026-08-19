@@ -1,5 +1,17 @@
-/* Wraps: the header carries a title, a toggle, an engine badge and a button,
-   and at 430px an unwrapped row squashes all four. */
+/* Every shadow root loads this file and nothing else, so the rules that have to
+   hold everywhere — the box model, the motion kill switch, the focus ring —
+   live here rather than alongside the tokens. */
+*{box-sizing:border-box}
+/* Everything here is decoration. Anyone who has asked their system to stop
+   moving things has asked this app too. */
+@media (prefers-reduced-motion:reduce){
+  *{animation:none !important;transition:none !important}
+}
+/* One focus treatment for everything, so tabbing through reads as designed
+   rather than as whatever each control's platform default happens to be. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Wraps: the header carries a title, a toggle and a button, and at 430px an
+   unwrapped row squashes all three. */
 header{display:flex;align-items:center;justify-content:space-between;
        margin-bottom:8px;gap:10px;flex-wrap:wrap}
 header > div:last-child{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -7,7 +19,7 @@ header > div:last-child{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
    two lines — "Dubbing" above "Studio" — which is the first thing anyone sees. */
 h1{font-size:clamp(20px,5vw,26px);letter-spacing:-.02em;margin:0;font-weight:650;
    white-space:nowrap}
-.sub{color:var(--muted);font-size:14px;margin:0 0 28px}
+p.sub{color:var(--muted);font-size:14px;margin:0 0 28px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
        box-shadow:var(--shadow);padding:22px;margin-bottom:18px;
        animation:rise .18s ease both}
@@ -72,6 +84,10 @@ button:disabled:hover{filter:none}
    was tried and dropped — muted on a filled pill is 3.8:1 at 12px, which is
    worse to read than the green it replaced. */
 .chip.done::before{content:"✓";margin-right:5px;opacity:.75}
+.chip.failed{border-color:var(--bad);color:var(--bad);font-weight:600}
+.chip.failed::before{content:"✕";margin-right:5px}
+.chip.stopped{border-color:var(--muted);color:var(--ink);font-weight:600}
+.chip.stopped::before{content:"–";margin-right:5px;opacity:.75}
 /* The duration rides inside the pill rather than in a row of its own. Set in
    tabular figures so a running stage does not jitter the chips beside it every
    time the seconds tick over, and dimmed so the row still reads as labels
@@ -115,8 +131,6 @@ video{width:100%;border-radius:10px;margin-top:14px;background:#000;display:bloc
 .banner.bad{background:color-mix(in srgb,var(--bad) 8%,transparent);border-color:var(--bad);
             color:var(--bad)}
 .banner.info{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
-.engine{font-size:12px;color:var(--muted);border:1px solid var(--line);padding:5px 11px;
-        border-radius:99px;white-space:nowrap}
 details summary{cursor:pointer;font-size:14px;color:var(--muted);font-weight:600;
                 list-style:none;padding:4px 0}
 details summary::-webkit-details-marker{display:none}
@@ -165,7 +179,69 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;
 @media (prefers-color-scheme:dark){
   .segmented button.on{box-shadow:0 1px 3px rgba(0,0,0,.4)}
 }
-.segmented button:disabled{opacity:.4}
+/* Drawn in every segment and revealed on the chosen one, so which one is
+   chosen does not rest on the fill alone and the row does not re-flow as it
+   moves. Kept out of the accessibility tree: aria-pressed already says it. */
+.segmented .mark{margin-right:5px;opacity:0}
+.segmented button[aria-pressed="true"] .mark{opacity:.75}
 .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;
      background:var(--accent-soft);color:var(--accent);margin-left:8px;
      font-weight:600;vertical-align:middle}
+/* A modal is the one surface that cannot grow with its content: the window is
+   as tall as it is, and a card taller than that pushes its own Save button
+   somewhere the user cannot reach. Width comes from --modal-w, set by the
+   component on its own dialog; head and foot are fixed and the body is the
+   only part that scrolls, however short the window gets. */
+dialog{
+  --modal-w:640px;
+  --modal-max-h:calc(100dvh - 24px);
+  width:min(var(--modal-w),calc(100vw - 24px));
+  max-width:calc(100vw - 24px);
+  max-height:var(--modal-max-h);
+  margin:auto;padding:0;border:none;background:transparent;color:var(--ink);
+  overflow:visible}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+.modal-card{
+  display:flex;flex-direction:column;width:100%;
+  max-height:var(--modal-max-h,calc(100dvh - 24px));
+  background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.modal-head{
+  flex:none;display:flex;align-items:flex-start;gap:12px;
+  padding:16px 20px 13px;border-bottom:1px solid var(--line)}
+.modal-title{flex:1;min-width:0;margin:0;font-size:17px;font-weight:650;
+             letter-spacing:-.01em;color:var(--ink)}
+.modal-head .hint{margin:4px 0 0;font-weight:400;letter-spacing:0}
+.modal-close{
+  flex:none;width:32px;height:32px;margin:-3px -6px 0 0;padding:0;
+  display:grid;place-items:center;font-size:15px;line-height:1;
+  border:1px solid transparent;border-radius:9px;background:transparent;
+  color:var(--muted)}
+.modal-close:empty::before{content:"✕"}
+.modal-close:hover{color:var(--ink);background:var(--bg);border-color:var(--line)}
+/* Four background layers, two of which scroll with the content and two of
+   which do not: at the top of the scroll the moving pair covers the static
+   pair, so a shadow only appears on an edge that has more content past it. */
+.modal-body{
+  flex:1 1 auto;min-height:0;padding:18px 20px;
+  overflow-y:auto;overscroll-behavior:contain;
+  background:
+    linear-gradient(var(--panel) 60%,transparent) top/100% 22px,
+    linear-gradient(transparent,var(--panel) 40%) bottom/100% 22px,
+    radial-gradient(farthest-side at 50% 0,
+      color-mix(in srgb,var(--ink) 14%,transparent),transparent) top/100% 9px,
+    radial-gradient(farthest-side at 50% 100%,
+      color-mix(in srgb,var(--ink) 14%,transparent),transparent) bottom/100% 9px;
+  background-repeat:no-repeat;
+  background-attachment:local,local,scroll,scroll}
+.modal-body > :first-child{margin-top:0}
+.modal-foot{
+  flex:none;position:sticky;bottom:0;display:flex;flex-wrap:wrap;
+  align-items:center;gap:8px;padding:13px 20px;
+  border-top:1px solid var(--line);background:var(--panel)}
+@media (max-width:420px){
+  .modal-head{padding:14px 15px 11px}
+  .modal-body{padding:15px}
+  .modal-foot{padding:11px 15px}
+  .modal-foot button{flex:1 1 auto;padding:12px 14px}
+}

@@ -6,7 +6,7 @@ import os
 import platform
 import shutil
 import subprocess
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 
 APP_NAME = "Dubbing Studio"
@@ -182,7 +182,10 @@ def suggest_ollama_model(ram_gb: int) -> str:
 
 # ---------------------------------------------------------------- settings
 
-VOICES = [
+# Kokoro's own language codes, the letter each voice id starts with, spelled out.
+LANGUAGE_NAMES = {"a": "English", "b": "English"}
+
+VOICES = [dict(v, language=LANGUAGE_NAMES[v["lang"]]) for v in (
     {"id": "bf_emma", "label": "Emma — British female", "lang": "b"},
     {"id": "bf_alice", "label": "Alice — British female", "lang": "b"},
     {"id": "bf_isabella", "label": "Isabella — British female", "lang": "b"},
@@ -193,7 +196,14 @@ VOICES = [
     {"id": "af_nicole", "label": "Nicole — American female", "lang": "a"},
     {"id": "am_michael", "label": "Michael — American male", "lang": "a"},
     {"id": "am_adam", "label": "Adam — American male", "lang": "a"},
-]
+)]
+
+# Which languages a dub can be into. Only a voice can speak a translation, so
+# the answer is whatever the voices above can say and nothing else: a language
+# with no voice behind it would be translated correctly and then read aloud by
+# an English one, which sounds fluent and is nonsense. Derived rather than
+# listed, so it cannot claim a language the inventory cannot speak.
+DUB_LANGUAGES = list(dict.fromkeys(v["language"] for v in VOICES))
 
 # sherpa-onnx addresses Kokoro voices by index; this is the v1.0 alphabetical order.
 ONNX_VOICE_IDS = {
@@ -205,30 +215,16 @@ ONNX_VOICE_IDS = {
     "bm_daniel": 24, "bm_fable": 25, "bm_george": 26, "bm_lewis": 27,
 }
 
+# The source side of every list here is Spanish, and the app is used mostly on
+# Portuguese; the transcript vocabulary pass is what pins the terminology of the
+# video actually in hand. What is left that no model can work out from a
+# transcript is which side of the Atlantic the viewer's own patterns come from:
+# the same stitch is a US single crochet and a UK double crochet, so a list
+# built for one is wrong in the other and the video says nothing about which.
 BUILTIN_GLOSSARIES = {
-    "none": {"label": "None", "terms": ""},
-    "crochet_us": {
-        "label": "Crochet — US terms",
-        "terms": (
-            "cadeneta/cadenetas -> chain / chains\n"
-            "punto bajo -> single crochet\n"
-            "punto alto, vareta -> double crochet\n"
-            "punto medio alto, media vareta -> half double crochet\n"
-            "punto deslizado, punto raso -> slip stitch\n"
-            "vuelta -> round (or row when worked flat)\n"
-            "hilera -> row\n"
-            "ganchillo, aguja -> hook\n"
-            "marcador -> stitch marker\n"
-            "arco / arcos -> arch / arches\n"
-            "hebra -> strand or yarn; ovillo -> ball\n"
-            "muestra -> gauge swatch; talle -> bodice; sisa -> armhole\n"
-            "manga -> sleeve; escote -> neckline; delantero -> front; espalda -> back\n"
-            "saltar -> skip; aumento -> increase; disminucion -> decrease; rematar -> fasten off\n"
-            "prenda -> garment; puntada/punto -> stitch"
-        ),
-    },
+    "none": {"label": "Not a crochet video", "terms": ""},
     "crochet_uk": {
-        "label": "Crochet — UK terms",
+        "label": "UK terms — double crochet, treble crochet",
         "terms": (
             "cadeneta/cadenetas -> chain / chains\n"
             "punto bajo -> double crochet\n"
@@ -247,23 +243,24 @@ BUILTIN_GLOSSARIES = {
             "prenda -> garment; puntada/punto -> stitch"
         ),
     },
-    "cooking": {
-        "label": "Cooking & baking",
+    "crochet_us": {
+        "label": "US terms — single crochet, double crochet",
         "terms": (
-            "sarten -> frying pan; olla -> pot; cazuela -> casserole dish\n"
-            "batir -> whisk; amasar -> knead; sofreir -> saute; rehogar -> sweat\n"
-            "harina de fuerza -> bread flour; levadura -> yeast; polvo de hornear -> baking powder\n"
-            "a fuego lento -> on a low heat; punto de nieve -> stiff peaks\n"
-            "Convert metric measures to words but keep the metric units."
-        ),
-    },
-    "woodworking": {
-        "label": "Woodworking & DIY",
-        "terms": (
-            "sierra -> saw; cepillo -> plane; formon -> chisel; lija -> sandpaper\n"
-            "tornillo -> screw; clavo -> nail; taladro -> drill; broca -> drill bit\n"
-            "ensamble -> joint; espiga -> tenon; mortaja -> mortise; ingletes -> mitres\n"
-            "contrachapado -> plywood; tablero -> board; veta -> grain"
+            "cadeneta/cadenetas -> chain / chains\n"
+            "punto bajo -> single crochet\n"
+            "punto alto, vareta -> double crochet\n"
+            "punto medio alto, media vareta -> half double crochet\n"
+            "punto deslizado, punto raso -> slip stitch\n"
+            "vuelta -> round (or row when worked flat)\n"
+            "hilera -> row\n"
+            "ganchillo, aguja -> hook\n"
+            "marcador -> stitch marker\n"
+            "arco / arcos -> arch / arches\n"
+            "hebra -> strand or yarn; ovillo -> ball\n"
+            "muestra -> gauge swatch; talle -> bodice; sisa -> armhole\n"
+            "manga -> sleeve; escote -> neckline; delantero -> front; espalda -> back\n"
+            "saltar -> skip; aumento -> increase; disminucion -> decrease; rematar -> fasten off\n"
+            "prenda -> garment; puntada/punto -> stitch"
         ),
     },
 }
@@ -303,7 +300,7 @@ class Settings:
     speed: float = 1.0
     audio_mode: str = "replace"          # replace | duck | dual
     duck_db: float = -18.0
-    target_language: str = "English"
+    target_language: str = DUB_LANGUAGES[0]      # only English has a voice
     # No source_language: it was declared here and never read by anything, and a
     # setting nothing consumes is worse than no setting at all. The recognisers
     # detect the source themselves and the translation prompt never named it.
@@ -339,7 +336,6 @@ class Settings:
     # different voices — far worse than the alternative failure, which is two
     # people sharing one. Asked plainly on the front panel instead.
     diarize: bool = False                # detect multiple speakers
-    expected_speakers: int = -1          # -1 = work it out automatically
     merge_lines: bool = True             # join lines that run straight together
     asr_model: str = "parakeet"          # parakeet | whisper
     voice_mode: str = "fixed"            # fixed | clone
@@ -350,6 +346,50 @@ class Settings:
     # person" flipped the preset to custom, and picking a preset silently
     # overwrote the answer.
     PRESET_KEYS = ("separate_audio", "asr_model", "voice_mode")
+
+    # A key is pasted in from somewhere outside this app and cannot be recovered
+    # from inside it, which is why a finished job's record never carries one.
+    SECRET_KEYS = ("anthropic_key", "openai_key")
+
+    # What a blanket reset leaves alone. Everything else here can be chosen
+    # again in seconds; a key cannot be recovered from inside this app at all,
+    # and the custom glossary is hand-typed text of no fixed length with no undo
+    # anywhere in the app. Naming one of these in the request still clears it,
+    # which is how the panel that owns the field resets it deliberately.
+    KEEP_ON_RESET = SECRET_KEYS + ("custom_glossary",)
+
+    # What a finished job's record leaves out, so that every other field is
+    # recorded by default and a new setting that changes the output is kept with
+    # the runs it shaped without anyone having to remember. Keys are never
+    # written down. keep_awake is a preference about this Mac rather than about
+    # the video, and so is youtube_cookies — it decides whether the video can be
+    # fetched at all, and the format that actually arrived is measured off the
+    # finished file. The last four reach the record in another form, from
+    # run_snapshot(): the model that actually did the words, and whether there
+    # were terms of the user's own rather than the terms themselves.
+    UNRECORDED_KEYS = SECRET_KEYS + ("keep_awake", "youtube_cookies",
+                                     "ollama_model", "anthropic_model",
+                                     "openai_model", "custom_glossary")
+
+    def __post_init__(self) -> None:
+        self.normalise()
+
+    def normalise(self) -> None:
+        """Drop values this build cannot honour.
+
+        Both name a member of a set that a settings file outlives. An
+        unrecognised glossary contributes no terms while still claiming to; a
+        language with no voice behind it is translated into and then read aloud
+        in English, which sounds fluent and is nonsense.
+
+        Called on construction and again from save(), so a value assigned
+        straight onto an existing instance cannot reach the disk or be echoed
+        back to whoever set it.
+        """
+        if self.glossary not in BUILTIN_GLOSSARIES:
+            self.glossary = "none"
+        if self.target_language not in DUB_LANGUAGES:
+            self.target_language = DUB_LANGUAGES[0]
 
     def apply_preset(self, name: str) -> "Settings":
         spec = PRESETS.get(name)
@@ -392,6 +432,61 @@ class Settings:
         return pool[(speaker - 1) % len(pool)]
 
     @classmethod
+    def defaults(cls) -> dict:
+        """The values the app ships with, read off the dataclass itself.
+
+        Constructed rather than listed, so it cannot drift from the declarations
+        above the way a second copy of them would.
+        """
+        return asdict(cls())
+
+    @classmethod
+    def recorded_keys(cls) -> tuple[str, ...]:
+        """Which fields a finished job records, read off the dataclass itself.
+
+        The complement of UNRECORDED_KEYS rather than a list of its own, so
+        adding a setting that changes the output records it without a second
+        declaration to keep in step.
+        """
+        return tuple(f.name for f in fields(cls) if f.name not in cls.UNRECORDED_KEYS)
+
+    def keep_music_applies(self) -> bool:
+        """Whether the keep-the-music choice has any bearing on this run.
+
+        There is only music and effects to put back when speech was separated
+        from them, and only room for them underneath when the original audio is
+        being replaced — ducking it and keeping it as a second track both leave
+        the original soundtrack in the file already.
+        """
+        return self.separate_audio and self.audio_mode == "replace"
+
+    def run_snapshot(self) -> dict:
+        """The settings that shaped a run, kept with its result.
+
+        What a dub sounds and looks like is decided by settings that are free to
+        change afterwards, so a finished job carries its own copy — otherwise
+        the only thing on offer is what happens to be selected now.
+
+        The custom glossary is recorded as whether there was one. The text is
+        unbounded and would be copied whole into every history entry it applied
+        to; the built-in glossary it sits alongside is named in full.
+
+        A setting that had no bearing on the run is left out rather than
+        recorded as whatever it happened to say, so that whoever reads the
+        snapshot back can take the presence of a key as the answer to whether it
+        counted.
+        """
+        snap = {key: getattr(self, key) for key in self.recorded_keys()}
+        snap["translator_model"] = {
+            "anthropic": self.anthropic_model,
+            "openai": self.openai_model,
+        }.get(self.translator, self.ollama_model.strip())
+        snap["has_custom_glossary"] = bool(self.custom_glossary.strip())
+        if not self.keep_music_applies():
+            snap.pop("keep_music", None)
+        return snap
+
+    @classmethod
     def load(cls) -> "Settings":
         if SETTINGS_FILE.exists():
             try:
@@ -415,6 +510,7 @@ class Settings:
         goes. What can be done cheaply is narrowing who can read it: the file is
         owner-only, so another account on the same Mac cannot.
         """
+        self.normalise()
         SETTINGS_FILE.write_text(json.dumps(asdict(self), indent=2))
         try:
             SETTINGS_FILE.chmod(0o600)

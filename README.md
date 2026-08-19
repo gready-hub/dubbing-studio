@@ -56,12 +56,15 @@ panel lists the recent ones and has an **Open folder** button, so nothing has to
 be hunted for. Samples are not saved there — they play in the app and nowhere
 else.
 
-### The two questions on the front panel
+### The two choices on the front panel
 
-| Question | Why it matters |
+| Choice | Why it matters |
 |---|---|
-| **What kind of video is this?** | Locks specialist terms so they translate consistently. Built-in lists for crochet (US and UK), cooking and woodworking. Without one, the same stitch or ingredient comes out three different ways across a video. |
+| **Quality** | How much work goes into the dub, and so how long it takes: *Fast*, *Balanced* or *Best quality*. Described in full further down. |
 | **Who's speaking?** | *One person* is faster and can't mistake one presenter for several. Pick *Several people* for interviews — each gets their own voice. |
+
+Everything else is in **Settings**, and stays as you left it from one video to the
+next.
 
 ---
 
@@ -207,6 +210,15 @@ at the top says so, and switches it off.
 > log in as you can read it. If that isn't an acceptable trade, leave the key
 > blank and use the local model.
 
+**Crochet stitch names**
+
+The same stitch is a US single crochet and a UK double crochet, and a video never
+says which its viewer uses — so this is the one piece of terminology the app
+cannot work out for itself. Choose the side of the Atlantic your own patterns come
+from, or leave it on *Not a crochet video*. Everything else specialist is read off
+the video itself, whatever the subject and whatever language it is spoken in, and
+you can pin your own terms alongside it.
+
 ---
 
 ## Disk space
@@ -276,7 +288,7 @@ it.
 | "Could not reach Ollama" | Open the Ollama app, wait a few seconds, try again |
 | "Translation only returned N of M lines" | The local model is too small. Use a bigger one in Settings, or an API key |
 | Downloads but nothing is heard | No speech in the video, or speech buried in loud music |
-| More speakers found than really exist | Set **Who's speaking?** to *One person*, or say how many under Advanced |
+| More speakers found than really exist | Set **Who's speaking?** to *One person* and run the link again |
 | "YouTube described the video but refused to send it" | Set **Sign in as** in Settings to the browser you watch YouTube in. See below |
 
 ### When YouTube refuses the video

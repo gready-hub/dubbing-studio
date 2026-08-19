@@ -2,40 +2,72 @@ import { BaseElement } from "../base-element.js";
 import { api } from "../api.js";
 
 const SHELL = `
-<dialog id="dlg">
-  <div class="panel" style="margin:0;max-width:560px;width:calc(100vw - 48px)">
-    <p class="job-title">Details to send</p>
-    <p class="hint" style="margin-top:6px">Paste this into a message to whoever
-      helps you with this app. It describes your Mac and what the app has been
-      doing. It contains no passwords or API keys.</p>
-    <pre id="diagText" tabindex="0" style="max-height:320px;overflow:auto;font-size:11px;
-         line-height:1.5;white-space:pre-wrap;word-break:break-word;
-         background:var(--accent-soft);border:1px solid var(--line);
-         border-radius:10px;padding:12px;margin-top:12px">Gathering…</pre>
-    <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
-      <button class="primary" id="copyBtn">Copy</button>
+<dialog id="dlg" aria-labelledby="dlgTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title" id="dlgTitle">Details to send
+        <p class="hint">Paste this into a message to whoever helps you with this
+          app. It describes your Mac and what the app has been doing. It contains
+          no passwords or API keys.</p>
+      </div>
+      <button class="modal-close" id="xBtn" aria-label="Close"></button>
+    </div>
+    <div class="modal-body report">
+      <pre id="diagText" tabindex="0">Gathering…</pre>
+    </div>
+    <div class="modal-foot">
+      <button class="primary" id="copyBtn" autofocus>Copy</button>
       <button class="ghost" id="closeBtn">Close</button>
-      <span id="diagMsg" class="hint" style="margin:0" role="status"
-            aria-live="polite"></span>
+      <span id="diagMsg" class="hint" role="status" aria-live="polite"></span>
     </div>
   </div>
 </dialog>
 `;
 
+const STYLE = `
+<style>
+  /* The report is the body's own surface, so the scroll shadow that shared.css
+     masks with --panel has to be masked in this colour instead. */
+  .modal-body.report{--panel:var(--bg);background-color:var(--bg);padding:0}
+  #diagText{
+    margin:0;max-height:none;padding:18px 20px;
+    background:transparent;border:none;border-radius:0;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:13px;line-height:1.65;
+    white-space:pre-wrap;overflow-wrap:anywhere}
+  /* :focus, not :focus-visible — the clipboard fallback focuses this from a
+     mouse click, and an outward ring would be clipped by the scroller. */
+  #diagText:focus{outline:2px solid var(--accent);outline-offset:-3px}
+  #diagMsg{margin:0;flex:1 1 200px;min-width:0}
+  @media (max-width:420px){
+    #diagText{padding:15px;font-size:12px}
+  }
+</style>
+`;
+
 class DiagnosticsPanel extends BaseElement {
   connectedCallback(){
-    this.html(`<style>
-      dialog{border:none;border-radius:var(--radius);padding:0;background:transparent;
-             max-width:560px;width:calc(100vw - 48px)}
-      dialog::backdrop{background:rgba(0,0,0,.4)}
-    </style>` + SHELL);
+    this.html(STYLE + SHELL);
 
     this.$("#copyBtn").onclick = () => this.copy();
     this.$("#closeBtn").onclick = () => this.close();
+    this.$("#xBtn").onclick = () => this.close();
+
+    const dlg = this.$("#dlg");
+    // The press has to start on the backdrop as well as end there: the fallback
+    // asks people to select the report, and a selection dragged past the card
+    // would otherwise close the dialog out from under them.
+    dlg.addEventListener("mousedown", e => { this._pressedBackdrop = e.target === dlg; });
+    dlg.addEventListener("click", e => {
+      if(e.target === dlg && this._pressedBackdrop) this.close();
+    });
   }
 
   async open(){
-    this.$("#dlg").showModal();
+    const dlg = this.$("#dlg");
+    // Reachable from a failed job and from inside Settings, and showModal()
+    // throws on a dialog that is already showing.
+    if(!dlg.open) dlg.showModal();
     this.$("#diagMsg").textContent = "";
     this.$("#diagText").textContent = "Gathering…";
     try{

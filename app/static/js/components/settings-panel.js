@@ -1,242 +1,329 @@
 import { BaseElement } from "../base-element.js";
 import { store } from "../store.js";
 import { api } from "../api.js";
+import { escapeAttr, escapeHtml, flash } from "../format.js";
+import "./info-tip.js";
 
 const BOOL_SETTINGS = ["write_srt","separate_audio","diarize","keep_music","merge_lines"];
-const NUM_SETTINGS = {speed: 1.0, expected_speakers: -1, duck_db: -18, max_stretch: 1.55};
-const TEXT_SETTINGS = ["voice","audio_mode","glossary","translator","ollama_model",
+const NUM_SETTINGS = ["speed","max_stretch"];
+const TEXT_SETTINGS = ["voice","glossary","translator","ollama_model",
   "youtube_cookies",
-  "anthropic_key","openai_key","anthropic_model","openai_model","target_language",
+  "anthropic_key","openai_key","anthropic_model","openai_model",
   "custom_glossary","keep_video_quality","asr_model","voice_mode"];
 
+// One control for two settings. duck_db is read in duck mode and nowhere else —
+// mux.mux() consults it only there — so there is no separate question to ask,
+// and each option value carries the mode plus, where it applies, the level the
+// original is held at. audio_mode is therefore painted and posted by hand
+// rather than through the lists above, and names duck_db in its data-also so
+// the setting it carries is not invisible to the reset scopes.
+const AUDIO_CHOICES = [
+  ["replace", "Replace completely"],
+  ["duck:-12", "Keep quietly underneath — quiet (-12 dB)"],
+  ["duck:-18", "Keep quietly underneath — very quiet (-18 dB)"],
+  ["duck:-24", "Keep quietly underneath — barely there (-24 dB)"],
+  ["dual", "Keep as a second track"],
+];
+
+// The tabs, in order, and the only place they are declared: the strip is built
+// from this, the panes are shown and hidden by their data-pane, and what each
+// tab owns is read off its pane. See fields().
+const TABS = [
+  {key: "voice", label: "Voice & Audio"},
+  {key: "translation", label: "Translation"},
+  {key: "advanced", label: "Advanced"},
+];
+
+const PRESET_TAG = `<span class="tag">Set by preset</span>`;
+
+const AUDIO_OPTIONS = AUDIO_CHOICES.map(([value, label]) =>
+  `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`).join("");
+
 const SHELL = `
-<dialog id="dlg">
-  <div class="panel" style="margin:0;max-width:640px;max-height:80vh;overflow:auto">
-    <div class="segmented" id="settingsTabs" style="margin-bottom:18px">
-      <button class="on" data-tab="voice">Voice &amp; Audio</button>
-      <button data-tab="translation">Translation</button>
-      <button data-tab="advanced">Advanced</button>
+<dialog id="dlg" aria-labelledby="dlgTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title" id="dlgTitle">Settings
+        <p class="hint" id="dlgSummary"></p>
+      </div>
+      <button class="modal-close" id="xBtn" aria-label="Close"></button>
     </div>
 
-    <div id="tab-voice">
-      <div class="grid">
-        <div>
-          <label for="voice">Voice</label>
-          <select id="voice"></select>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-            <button class="ghost" id="auditionBtn">Hear this voice</button>
-            <span class="hint" id="auditionMsg" style="margin:0" role="status" aria-live="polite"></span>
+    <div class="modal-body">
+      <div class="segmented" id="settingsTabs"></div>
+      <p class="hint" id="presetLine">Three settings here are the ones a quality
+        preset chooses, tagged <b>Set by preset</b>. Changing one by hand turns the
+        preset to Custom. A preset touches nothing else in this window.</p>
+
+      <div data-pane="voice">
+        <div class="grid">
+          <div>
+            <div class="field-head"><label for="voice">Voice</label></div>
+            <select id="voice"></select>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+              <button class="ghost" id="auditionBtn">Hear this voice</button>
+              <span class="hint" id="auditionMsg" style="margin:0" role="status" aria-live="polite"></span>
+            </div>
+            <audio id="auditionAudio" style="display:none"></audio>
           </div>
-          <audio id="auditionAudio" style="display:none"></audio>
+          <div>
+            <div class="field-head"><label for="audio_mode">Original audio</label></div>
+            <select id="audio_mode" data-also="duck_db">${AUDIO_OPTIONS}</select>
+          </div>
+          <div>
+            <div class="field-head"><label for="speed">Speaking speed</label></div>
+            <select id="speed">
+              <option value="0.9">Slower</option>
+              <option value="1.0">Normal</option>
+              <option value="1.1">Slightly faster</option>
+            </select>
+          </div>
+          <div>
+            <div class="field-head"><label for="voice_mode">Voices</label>${PRESET_TAG}<info-tip
+              label="voices"
+              text="Cloning keeps the speaker's identity, but carries their accent into English."></info-tip></div>
+            <select id="voice_mode">
+              <option value="fixed">Use a built-in voice</option>
+              <option value="clone">Clone the original speaker</option>
+            </select>
+          </div>
+          <div>
+            <div class="field-head"><label for="separate_audio">Music and effects</label>${PRESET_TAG}<info-tip
+              label="music and effects"
+              text="Splits speech from the rest so replacing the voices doesn't wipe the soundtrack."></info-tip></div>
+            <select id="separate_audio">
+              <option value="true">Separate and keep them</option>
+              <option value="false">Don't separate (faster)</option>
+            </select>
+          </div>
+          <div id="keepMusicBox">
+            <div class="field-head"><label for="keep_music">The separated music and effects</label></div>
+            <select id="keep_music">
+              <option value="true">Mix it back under the new voices</option>
+              <option value="false">Drop it — voices only</option>
+            </select>
+          </div>
         </div>
+      </div>
+
+      <div data-pane="translation">
+        <div class="grid">
+          <div>
+            <div class="field-head"><label for="translator">Translated by</label></div>
+            <select id="translator">
+              <option value="ollama">Local model (free, private)</option>
+              <option value="anthropic">Claude API (best quality)</option>
+              <option value="openai">OpenAI API</option>
+            </select>
+          </div>
+          <div id="languageBox" data-also="target_language"></div>
+        </div>
+        <div class="grid" style="margin-top:14px">
+          <div id="ollamaBox">
+            <div class="field-head"><label for="ollama_model">Local model</label><info-tip
+              id="modelTip" class="hidden" label="the local model"></info-tip></div>
+            <input type="text" id="ollama_model" placeholder="auto">
+          </div>
+          <div id="anthropicBox" class="hidden">
+            <div class="field-head"><label for="anthropic_key">Anthropic API key</label></div>
+            <input type="password" id="anthropic_key" data-noreset placeholder="sk-ant-…">
+            <div class="field-head" style="margin-top:10px"><label
+              for="anthropic_model">Claude model</label></div>
+            <input type="text" id="anthropic_model" placeholder="claude-sonnet-5">
+            <p class="hint">The key is saved in plain text in
+              <code id="settingsPath1">settings.json</code> on this computer, so that
+              the app can translate without asking for it again. Anyone with access to
+              your account can read it.</p>
+          </div>
+          <div id="openaiBox" class="hidden">
+            <div class="field-head"><label for="openai_key">OpenAI API key</label></div>
+            <input type="password" id="openai_key" data-noreset placeholder="sk-…">
+            <div class="field-head" style="margin-top:10px"><label
+              for="openai_model">OpenAI model</label></div>
+            <input type="text" id="openai_model" placeholder="gpt-4o">
+            <p class="hint">The key is saved in plain text in
+              <code id="settingsPath2">settings.json</code> on this computer, so that
+              the app can translate without asking for it again. Anyone with access to
+              your account can read it.</p>
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <div class="field-head"><label for="glossary">Crochet stitch names</label></div>
+          <select id="glossary"></select>
+        </div>
+        <div style="margin-top:14px">
+          <div class="field-head"><label for="custom_glossary">Your own terms (one per
+            line, “as spoken → English”)</label></div>
+          <textarea id="custom_glossary" placeholder="ponto amêndoa -> almond stitch"></textarea>
+          <p class="hint">Used together with the stitch names above. The rest of a
+            video's specialist vocabulary the app works out from the video itself, in
+            any language.</p>
+        </div>
+      </div>
+
+      <div data-pane="advanced">
+        <div class="grid">
+          <div>
+            <div class="field-head"><label for="asr_model">Transcription
+              engine</label>${PRESET_TAG}</div>
+            <select id="asr_model">
+              <option value="parakeet">Parakeet — fast</option>
+              <option value="whisper">Whisper — more accurate, slower</option>
+            </select>
+          </div>
+          <div>
+            <div class="field-head"><label for="youtube_cookies">Sign in as</label><info-tip
+              label="signing in"
+              text="For videos YouTube refuses to send to a signed-out request. Borrows the session from a browser you're already signed into on this Mac. Nothing is uploaded; the cookies are only sent to the site the video is on."></info-tip></div>
+            <select id="youtube_cookies">
+              <option value="">Don't sign in</option>
+              <option value="safari">Safari</option>
+              <option value="chrome">Chrome</option>
+              <option value="firefox">Firefox</option>
+              <option value="edge">Edge</option>
+              <option value="brave">Brave</option>
+            </select>
+          </div>
+          <div>
+            <div class="field-head"><label for="keep_video_quality">Video
+              quality</label><info-tip label="video quality"
+              text="The picture is copied, never re-encoded, so this decides the download size. On an hour-and-a-half tutorial, 1080p is around 1.8 GB and 720p around 730 MB — and 720p is plenty for following along."></info-tip></div>
+            <select id="keep_video_quality">
+              <option value="best">Best available</option>
+              <option value="1080">Up to 1080p</option>
+              <option value="720">Up to 720p — much smaller</option>
+            </select>
+          </div>
+          <div>
+            <div class="field-head"><label for="write_srt">Subtitles</label></div>
+            <select id="write_srt">
+              <option value="false">No subtitle file</option>
+              <option value="true">Also save an .srt</option>
+            </select>
+          </div>
+          <div>
+            <div class="field-head"><label for="merge_lines">Run-on lines</label><info-tip
+              label="run-on lines"
+              text="Fast dialogue arrives as many very short lines with no gap between them, and each has to be squeezed to fit. Joining them gives the translation room. Material with real pauses is unaffected."></info-tip></div>
+            <select id="merge_lines">
+              <option value="true">Join lines that run together</option>
+              <option value="false">Keep them exactly as heard</option>
+            </select>
+          </div>
+          <div>
+            <div class="field-head"><label for="max_stretch">Hardest allowed
+              squeeze</label><info-tip label="the hardest allowed squeeze"
+              text="How much a line may be sped up to fit the gap the original speaker left. Past about 1.6x it starts to sound hurried; beyond the limit the line runs on and later pauses absorb it."></info-tip></div>
+            <select id="max_stretch">
+              <option value="1.3">Gentle — 1.3x</option>
+              <option value="1.55">Normal — 1.55x</option>
+              <option value="1.8">Firm — 1.8x</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="danger-row">
         <div>
-          <label for="audio_mode">Original audio</label>
-          <select id="audio_mode">
-            <option value="replace">Replace completely</option>
-            <option value="duck">Keep quietly underneath</option>
-            <option value="dual">Keep as a second track</option>
-          </select>
+          <b>Restore defaults</b>
+          <small>Puts settings back to what the app ships with, straight away — there
+            is nothing to save afterwards. Finished videos and saved API keys are
+            never touched.</small>
         </div>
+        <button class="ghost icon-btn" id="resetTabBtn" data-busy="reset">Reset this tab</button>
+        <button class="ghost icon-btn" id="resetAllBtn" data-busy="reset">Reset everything</button>
+      </div>
+
+      <div class="danger-row">
         <div>
-          <label for="speed">Speaking speed</label>
-          <select id="speed">
-            <option value="0.9">Slower</option>
-            <option value="1.0">Normal</option>
-            <option value="1.1">Slightly faster</option>
-          </select>
+          <small>Describes this Mac and what the app has been doing, for when you need
+            to ask someone about it. No passwords or API keys.</small>
         </div>
-        <div>
-          <label for="voice_mode">Voices</label>
-          <select id="voice_mode">
-            <option value="fixed">Use a built-in voice</option>
-            <option value="clone">Clone the original speaker</option>
-          </select>
-          <p class="hint" id="cloneHint">Cloning keeps the speaker's identity, but
-            carries their accent into English.</p>
-        </div>
-        <div>
-          <label for="separate_audio">Music and effects</label>
-          <select id="separate_audio">
-            <option value="true">Separate and keep them</option>
-            <option value="false">Don't separate (faster)</option>
-          </select>
-          <p class="hint">Splits speech from the rest so replacing the voices
-            doesn't wipe the soundtrack.</p>
-        </div>
-        <div>
-          <label for="keep_music">Music and effects bed</label>
-          <select id="keep_music">
-            <option value="true">Mix it back under the new voices</option>
-            <option value="false">Drop it — voices only</option>
-          </select>
-          <p class="hint">Only applies when the soundtrack was separated and the
-            original audio is being replaced.</p>
-        </div>
-        <div>
-          <label for="duck_db">Original volume when kept underneath</label>
-          <select id="duck_db">
-            <option value="-12">Quiet (-12 dB)</option>
-            <option value="-18">Very quiet (-18 dB)</option>
-            <option value="-24">Barely there (-24 dB)</option>
-          </select>
-          <p class="hint">Used only by “Keep quietly underneath”.</p>
-        </div>
+        <button class="ghost icon-btn" id="diagBtn">Copy details</button>
       </div>
     </div>
 
-    <div id="tab-translation" class="hidden">
-      <div class="grid">
-        <div>
-          <label for="translator">Translated by</label>
-          <select id="translator">
-            <option value="ollama">Local model (free, private)</option>
-            <option value="anthropic">Claude API (best quality)</option>
-            <option value="openai">OpenAI API</option>
-          </select>
-        </div>
-        <div>
-          <label for="target_language">Translate into</label>
-          <input type="text" id="target_language" value="English">
-        </div>
-      </div>
-      <div class="grid" style="margin-top:14px">
-        <div id="ollamaBox">
-          <label for="ollama_model">Local model</label>
-          <input type="text" id="ollama_model" placeholder="auto">
-          <p class="hint" id="modelHint"></p>
-        </div>
-        <div id="anthropicBox" class="hidden">
-          <label for="anthropic_key">Anthropic API key</label>
-          <input type="password" id="anthropic_key" placeholder="sk-ant-…">
-          <label for="anthropic_model" style="margin-top:10px">Claude model</label>
-          <input type="text" id="anthropic_model" placeholder="claude-sonnet-5">
-          <p class="hint">The key is saved in plain text in
-            <code id="settingsPath1">settings.json</code> on this computer, so that
-            the app can translate without asking for it again. Anyone with access to
-            your account can read it.</p>
-        </div>
-        <div id="openaiBox" class="hidden">
-          <label for="openai_key">OpenAI API key</label>
-          <input type="password" id="openai_key" placeholder="sk-…">
-          <label for="openai_model" style="margin-top:10px">OpenAI model</label>
-          <input type="text" id="openai_model" placeholder="gpt-4o">
-          <p class="hint">The key is saved in plain text in
-            <code id="settingsPath2">settings.json</code> on this computer, so that
-            the app can translate without asking for it again. Anyone with access to
-            your account can read it.</p>
-        </div>
-      </div>
-      <div style="margin-top:14px">
-        <label for="custom_glossary">Your own terms (one per line, “as spoken → English”)</label>
-        <textarea id="custom_glossary" placeholder="ponto amêndoa -> almond stitch"></textarea>
-      </div>
-    </div>
-
-    <div id="tab-advanced" class="hidden">
-      <div class="grid">
-        <div>
-          <label for="expected_speakers">How many people speak</label>
-          <select id="expected_speakers">
-            <option value="-1">Work it out automatically</option>
-            <option value="1">1 person</option>
-            <option value="2">2 people</option>
-            <option value="3">3 people</option>
-            <option value="4">4 people</option>
-            <option value="5">5 people</option>
-            <option value="6">6 people</option>
-          </select>
-          <p class="hint">Only used when “Who's speaking?” is set to several
-            people. Working it out automatically is the least reliable part of
-            the chain, so if you know the answer, saying so here is better.</p>
-        </div>
-        <div>
-          <label for="asr_model">Transcription engine</label>
-          <select id="asr_model">
-            <option value="parakeet">Parakeet — fast</option>
-            <option value="whisper">Whisper — more accurate, slower</option>
-          </select>
-        </div>
-        <div>
-          <label for="youtube_cookies">Sign in as</label>
-          <select id="youtube_cookies">
-            <option value="">Don't sign in</option>
-            <option value="safari">Safari</option>
-            <option value="chrome">Chrome</option>
-            <option value="firefox">Firefox</option>
-            <option value="edge">Edge</option>
-            <option value="brave">Brave</option>
-          </select>
-          <p class="hint">For videos YouTube refuses to send to a signed-out
-            request. Borrows the session from a browser you're already signed
-            into on this Mac. Nothing is uploaded; the cookies are only sent to
-            the site the video is on.</p>
-        </div>
-        <div>
-          <label for="keep_video_quality">Video quality</label>
-          <select id="keep_video_quality">
-            <option value="best">Best available</option>
-            <option value="1080">Up to 1080p</option>
-            <option value="720">Up to 720p — much smaller</option>
-          </select>
-          <p class="hint">The picture is copied, never re-encoded, so this
-            decides the download size. On an hour-and-a-half tutorial, 1080p is
-            around 1.8 GB and 720p around 730 MB — and 720p is plenty for
-            following along.</p>
-        </div>
-        <div>
-          <label for="write_srt">Subtitles</label>
-          <select id="write_srt">
-            <option value="false">No subtitle file</option>
-            <option value="true">Also save an .srt</option>
-          </select>
-        </div>
-        <div>
-          <label for="merge_lines">Run-on lines</label>
-          <select id="merge_lines">
-            <option value="true">Join lines that run together</option>
-            <option value="false">Keep them exactly as heard</option>
-          </select>
-          <p class="hint">Fast dialogue arrives as many very short lines with no
-            gap between them, and each has to be squeezed to fit. Joining them
-            gives the translation room. Material with real pauses is unaffected.</p>
-        </div>
-        <div>
-          <label for="max_stretch">Hardest allowed squeeze</label>
-          <select id="max_stretch">
-            <option value="1.3">Gentle — 1.3x</option>
-            <option value="1.55">Normal — 1.55x</option>
-            <option value="1.8">Firm — 1.8x</option>
-          </select>
-          <p class="hint">How much a line may be sped up to fit the gap the
-            original speaker left. Past about 1.6x it starts to sound hurried;
-            beyond the limit the line runs on and later pauses absorb it.</p>
-        </div>
-      </div>
-    </div>
-
-    <div style="margin-top:20px;display:flex;gap:8px">
+    <div class="modal-foot">
       <button class="primary" id="saveBtn" data-busy="save">Save</button>
       <button class="ghost" id="closeBtn">Close</button>
-      <span id="savedMsg" class="hint" style="align-self:center;margin:0" role="status" aria-live="polite"></span>
+      <span id="savedMsg" class="hint" style="margin:0" role="status" aria-live="polite"></span>
     </div>
   </div>
 </dialog>
 `;
 
+const STYLE = `
+<style>
+  #presetLine{margin:10px 0 18px}
+  /* The label, the preset tag, the info-tip button and the changed flag sit in
+     a row of their own. Anything inside a <label> joins the accessible name of
+     the control it labels, which turned one field into four concepts read as
+     its name. */
+  .field-head{display:flex;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+  .field-head label{margin-bottom:0}
+  /* A value with nothing to choose between is stated rather than drawn: both a
+     one-item menu and a disabled one read as something that ought to work. */
+  .stated{margin:0;font-size:15px;color:var(--ink)}
+  /* Ambient, not an alarm: a word rather than a colour, so it still says what
+     it says to someone who cannot see the difference. The count on a tab is the
+     same pill, tightened up and taking the button's own colour so it dims with
+     it. Letter-spacing and case are normalised because both sit inside type
+     that sets them — a label, a segmented button. */
+  .pill{margin-left:6px;padding:1px 7px;font-size:10.5px;font-weight:600;
+        border:1px solid var(--line);border-radius:99px;color:var(--muted);
+        vertical-align:middle;text-transform:none;letter-spacing:.01em}
+  .pill.count{padding:0 5px;font-weight:700;font-variant-numeric:tabular-nums;
+              border-color:currentColor;color:inherit;opacity:.7}
+  .pill:empty{display:none}
+  .pill.flag:not(.on){display:none}
+</style>`;
+
+function same(a, b){
+  if(typeof a === "boolean" || typeof b === "boolean") return !!a === !!b;
+  const na = Number(a), nb = Number(b);
+  if(a !== "" && b !== "" && Number.isFinite(na) && Number.isFinite(nb)) return na === nb;
+  return String(a ?? "") === String(b ?? "");
+}
+
 class SettingsPanel extends BaseElement {
   connectedCallback(){
-    this.html(`<style>
-      dialog{border:none;border-radius:var(--radius);padding:0;background:transparent;
-             max-width:640px;width:calc(100vw - 48px)}
-      dialog::backdrop{background:rgba(0,0,0,.4)}
-    </style>` + SHELL);
+    this.html(STYLE + SHELL);
 
-    this.$("#translator").addEventListener("change", () => this.translatorChanged());
+    this._tab = TABS[0].key;
+    this._dirty = new Set();
+
+    this.$("#settingsTabs").innerHTML = TABS.map((t, i) =>
+      `<button data-tab="${escapeAttr(t.key)}"${i ? "" : " autofocus"}>${escapeHtml(t.label)}<span
+        class="pill count" data-tabflag="${escapeAttr(t.key)}" aria-hidden="true"></span></button>`).join("");
+
     this.$("#saveBtn").onclick = () => this.save();
     this.$("#closeBtn").onclick = () => this.close();
+    this.$("#xBtn").onclick = () => this.close();
     this.$("#auditionBtn").onclick = () => this.audition();
+    this.$("#resetTabBtn").onclick = e => this.resetTab(e.currentTarget);
+    this.$("#resetAllBtn").onclick = e => this.resetAll(e.currentTarget);
+    this.$("#diagBtn").onclick = () => this.showDiagnostics();
     this.$$("#settingsTabs button").forEach(b => {
       b.onclick = () => this.selectTab(b.dataset.tab);
+    });
+
+    // The three controls another field's presence depends on. Hiding one takes
+    // it out of the counts as well, which is why they are recounted here and
+    // not only when the store says something changed.
+    ["translator", "separate_audio", "audio_mode"].forEach(id => {
+      this.$(`#${id}`).addEventListener("change", () => {
+        this.applyConditions();
+        this.refreshCounts();
+      });
+    });
+
+    this.watchEdits();
+    this.selectTab(this._tab);
+
+    const dlg = this.$("#dlg");
+    dlg.addEventListener("pointerdown", e => { this._fromBackdrop = e.target === dlg; });
+    dlg.addEventListener("click", e => {
+      if(e.target === dlg && this._fromBackdrop) dlg.close();
     });
 
     this._unsub = store.subscribe(s => this.update(s));
@@ -246,74 +333,347 @@ class SettingsPanel extends BaseElement {
     this._unsub?.();
   }
 
-  open(){ this.$("#dlg").showModal(); }
-  close(){ this.$("#dlg").close(); }
-
-  selectTab(key){
-    this.$$("#settingsTabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === key));
-    this.$("#tab-voice").classList.toggle("hidden", key !== "voice");
-    this.$("#tab-translation").classList.toggle("hidden", key !== "translation");
-    this.$("#tab-advanced").classList.toggle("hidden", key !== "advanced");
+  // The saved value is what a field is painted from, so an edit that has not
+  // been saved yet has to be remembered, or the next thing to write settings
+  // — a reset, or the toggle in the header — repaints over the top of it.
+  watchEdits(){
+    this.$$("input, select, textarea").forEach(el => {
+      if(!el.id) return;
+      const mark = () => this._dirty.add(el.id);
+      el.addEventListener("input", mark);
+      el.addEventListener("change", mark);
+    });
   }
 
+  placeFlags(){
+    TABS.forEach(tab => this.fields(tab).forEach(key => {
+      const head = this.$(`label[for="${key}"]`)?.closest(".field-head");
+      if(!head || head.querySelector(`[data-flag="${key}"]`)) return;
+      const flag = document.createElement("span");
+      flag.className = "pill flag";
+      flag.dataset.flag = key;
+      flag.textContent = "changed";
+      head.append(" ", flag);
+    }));
+  }
+
+  // What a tab owns, read off its pane rather than written down a second time:
+  // an id naming one of the shipped defaults is a setting, which leaves the
+  // buttons, boxes and file paths in the panes out of it. data-also names a
+  // setting with no control of its own — duck_db, chosen by the audio menu
+  // along with the mode, and target_language, which the voices decide.
+  // data-noreset marks a field no reset may name: the server only clears an API
+  // key when it is asked for it by name, because a key is pasted in from an
+  // account elsewhere and cannot be read back out of this app, and emptying the
+  // box and pressing Save still removes one.
+  //
+  // The list is the reset scope: "Reset this tab" puts all of it back, including
+  // a setting whose control is off screen at the time, because a value left at
+  // something other than the shipped one is exactly what the button promises to
+  // undo. The counts — the badge on the tab, and the number in the reset prompt
+  // — are taken over the fields the user can actually see instead, so neither of
+  // them ever points at something invisible. See shown().
+  fields(tab){
+    if(!this._defaults) return [];
+    const cached = (this._fields ??= {})[tab.key];
+    if(cached) return cached;
+    const keys = [];
+    this.$(`[data-pane="${tab.key}"]`).querySelectorAll("[id], [data-also]")
+      .forEach(el => {
+        if(Object.hasOwn(this._defaults, el.id) && !("noreset" in el.dataset)) keys.push(el.id);
+        if(el.dataset.also) keys.push(el.dataset.also);
+      });
+    return (this._fields[tab.key] = keys);
+  }
+
+  open(){
+    flash(this.$("#savedMsg"), "", 0);
+    this.$("#dlg").showModal();
+    // Chrome will focus the scrolling body otherwise, and ring the whole of it.
+    this.$("#settingsTabs button.on")?.focus();
+  }
+
+  close(){ this.$("#dlg").close(); }
+
+  tab(){ return TABS.find(t => t.key === this._tab) || TABS[0]; }
+
+  selectTab(key){
+    this._tab = key;
+    this.$$("#settingsTabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === key));
+    this.$$("[data-pane]").forEach(p => p.classList.toggle("hidden", p.dataset.pane !== key));
+    this.$("#resetTabBtn").textContent = `Reset ${this.tab().label}`;
+  }
+
+  // Nothing here is touched by a job, and the store notifies about twice a
+  // second for as long as one runs, into a dialog that is usually closed. The
+  // key is every value the paint reads.
   update(s){
-    const { settings, voices, machine, settings_path } = s;
+    const { settings, settings_defaults, voices, glossaries, machine, settings_path } = s;
     if(!Object.keys(settings).length) return;
+    this.renderIfChanged(
+      [settings, settings_defaults, voices, glossaries, settings_path,
+       machine?.suggested_model, machine?.ram_gb],
+      () => this.repaint(s));
+  }
 
-    this.$("#voice").innerHTML = (voices || [])
-      .map(o=>`<option value="${o.id}">${o.label}</option>`).join("");
+  repaint(s){
+    const { settings, settings_defaults, voices, glossaries, machine, settings_path } = s;
+    this._state = s;
+    this._settings = settings;
+    this._defaults = settings_defaults || {};
 
-    TEXT_SETTINGS.forEach(k => { if(this.$(`#${k}`)) this.$(`#${k}`).value = settings[k] ?? ""; });
-    BOOL_SETTINGS.forEach(k => { if(this.$(`#${k}`)) this.$(`#${k}`).value = String(!!settings[k]); });
+    this.fillOptions("#voice", (voices || []).map(o => [o.id, o.label]));
+    this.fillOptions("#glossary", Object.entries(glossaries || {}));
+    this.languageControl(voices);
+    this.placeFlags();
+
+    TEXT_SETTINGS.forEach(k => this.paint(k, el => { el.value = settings[k] ?? ""; }));
+    BOOL_SETTINGS.forEach(k => this.paint(k, el => { el.value = String(!!settings[k]); }));
     // Matched numerically, not as a string. JSON turns Python's 1.0 into JS 1,
     // and String(1) is "1", which matches none of the "0.9"/"1.0"/"1.1" options.
-    Object.entries(NUM_SETTINGS).forEach(([k, dflt]) => {
-      const el = this.$(`#${k}`);
-      if(!el) return;
-      const want = Number(settings[k] ?? dflt);
+    NUM_SETTINGS.forEach(k => this.paint(k, el => {
+      const want = Number(settings[k] ?? this._defaults[k]);
       const opt = el.tagName === "SELECT"
         ? [...el.options].find(o => Number(o.value) === want) : null;
       el.value = opt ? opt.value : (el.tagName === "SELECT" ? el.value : String(want));
-    });
+    }));
+    this.paintAudio(settings);
 
-    this.translatorChanged();
+    this.applyConditions();
+    this.markChanged(settings, this._defaults);
 
     this.$("#settingsPath1").textContent = settings_path || "settings.json";
     this.$("#settingsPath2").textContent = settings_path || "settings.json";
 
     if(machine && machine.suggested_model){
-      this.$("#modelHint").textContent =
+      const tip = this.$("#modelTip");
+      tip.text =
         `Leave blank to use ${machine.suggested_model}, chosen for your `
         + `${machine.ram_gb} GB of memory. You can name any model Ollama has — `
         + `qwen3:32b translates specialist material better, but it is a 20 GB `
         + `download and slower per line. Pull it in Ollama first; if it isn't there, `
         + `the nearest installed model is used instead and the report says so.`;
+      tip.classList.remove("hidden");
     }
   }
 
-  translatorChanged(){
+  // Rebuilt only when the list itself changes: writing the options again resets
+  // the selection, which would throw away an unsaved edit.
+  fillOptions(selector, pairs){
+    const el = this.$(selector);
+    if(!el) return;
+    const key = pairs.map(([value]) => value).join(",");
+    if(el.dataset.options === key) return;
+    el.dataset.options = key;
+    el.innerHTML = pairs.map(([value, label]) =>
+      `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`).join("");
+  }
+
+  // The languages on offer are read off the voice inventory, because only a
+  // voice can speak a translation: taking them from there is what stops a
+  // language being offered that nothing could then say out loud. Every voice the
+  // app ships is an English one, so there is nothing to choose — the value is
+  // stated rather than drawn as a control that cannot do anything, and no
+  // control carries it, since what would be saved is what the inventory already
+  // says. A voice in another language wants a real menu here again.
+  languageControl(voices){
+    const langs = [...new Set((voices || []).map(v => v.language).filter(Boolean))];
+    if(!langs.length) return;
+    if(this._language === langs[0]) return;
+    this._language = langs[0];
+    const lang = escapeHtml(langs[0]);
+    this.$("#languageBox").innerHTML =
+      `<div class="field-head"><label>Translate into</label></div>
+       <p class="stated">${lang}</p>
+       <p class="hint">Every voice the app has speaks ${lang}, so that is the
+         only language it can dub into.</p>`;
+  }
+
+  paint(key, write){
+    const el = this.$(`#${key}`);
+    if(el && !this._dirty.has(key)) write(el);
+  }
+
+  paintAudio(settings){
+    this.paint("audio_mode", el => {
+      const mode = settings.audio_mode;
+      if(mode !== "duck"){
+        if([...el.options].some(o => o.value === mode)) el.value = mode;
+        return;
+      }
+      // A level that is none of the three on offer — hand-edited, or left over
+      // from a build that offered others — takes the nearest one rather than
+      // blanking the control or reading as the loudest.
+      const want = Number(settings.duck_db);
+      const level = o => Math.abs(Number(o.value.split(":")[1]) - want);
+      el.value = [...el.options].filter(o => o.value.startsWith("duck:"))
+        .reduce((a, b) => level(b) < level(a) ? b : a).value;
+    });
+  }
+
+  // Whether a field's own control is on screen. A conditional wrapper closed
+  // around it takes the field with it; a tab pane that simply is not the one on
+  // top does not, because the counts are per tab. A setting with no control of
+  // its own — duck_db and target_language, see fields() — is never counted, and
+  // is never flagged either.
+  shown(key){
+    const el = this.$(`#${key}`);
+    if(!el) return false;
+    for(let node = el; node; node = node.parentElement){
+      if(node.dataset.pane) return true;
+      if(node.classList.contains("hidden")) return false;
+    }
+    return true;
+  }
+
+  visibleFields(tab){
+    return this.fields(tab).filter(key => this.shown(key));
+  }
+
+  refreshCounts(){
+    if(this._settings) this.markChanged(this._settings, this._defaults || {});
+  }
+
+  markChanged(settings, defaults){
+    let total = 0;
+    TABS.forEach(tab => {
+      let count = 0;
+      this.fields(tab).forEach(key => {
+        const differs = key in defaults && !same(settings[key], defaults[key])
+                        && this.shown(key);
+        if(differs) count++;
+        const flag = this.$(`[data-flag="${key}"]`);
+        if(!flag) return;
+        flag.classList.toggle("on", differs);
+        if(differs) flag.title = `Ships as ${this.describe(key, defaults[key])}`;
+      });
+      const badge = this.$(`[data-tabflag="${tab.key}"]`);
+      badge.textContent = count ? String(count) : "";
+      const button = badge.closest("button");
+      if(count) button.title = `${count} changed from what the app ships with`;
+      else button.removeAttribute("title");
+      total += count;
+    });
+    this.$("#dlgSummary").textContent = total
+      ? `${total} setting${total === 1 ? "" : "s"} differ${total === 1 ? "s" : ""} from `
+        + `what the app ships with, marked changed below.`
+      : "Everything here is as the app ships.";
+  }
+
+  describe(key, value){
+    const el = this.$(`#${key}`);
+    if(el && el.tagName === "SELECT"){
+      const opt = [...el.options].find(o => same(o.value, value));
+      if(opt) return `“${opt.textContent.trim()}”`;
+    }
+    return value === "" || value == null ? "blank" : `“${value}”`;
+  }
+
+  applyConditions(){
     const t = this.$("#translator").value;
-    this.$("#ollamaBox").classList.toggle("hidden", t!=="ollama");
-    this.$("#anthropicBox").classList.toggle("hidden", t!=="anthropic");
-    this.$("#openaiBox").classList.toggle("hidden", t!=="openai");
+    this.$("#ollamaBox").classList.toggle("hidden", t !== "ollama");
+    this.$("#anthropicBox").classList.toggle("hidden", t !== "anthropic");
+    this.$("#openaiBox").classList.toggle("hidden", t !== "openai");
+    // The pipeline mixes the separated bed back in only when there is a
+    // separated bed and the dub replaces the original: in duck and dual modes
+    // the whole original soundtrack is still there, music included, so the
+    // question does not arise.
+    this.$("#keepMusicBox").classList.toggle("hidden",
+      !(this.$("#separate_audio").value === "true"
+        && this.$("#audio_mode").value === "replace"));
   }
 
   save(){
     const data = {};
     TEXT_SETTINGS.forEach(k => { if(this.$(`#${k}`)) data[k] = this.$(`#${k}`).value; });
     BOOL_SETTINGS.forEach(k => { if(this.$(`#${k}`)) data[k] = this.$(`#${k}`).value === "true"; });
-    Object.keys(NUM_SETTINGS).forEach(k => { if(this.$(`#${k}`)) data[k] = parseFloat(this.$(`#${k}`).value); });
+    NUM_SETTINGS.forEach(k => { if(this.$(`#${k}`)) data[k] = parseFloat(this.$(`#${k}`).value); });
+    Object.assign(data, this.audioChoice());
+    if(this._language) data.target_language = this._language;
     this.emit("save-settings", {data});
   }
 
-  showSaved(){
-    const msg = this.$("#savedMsg");
-    msg.textContent = "Saved";
-    setTimeout(()=>{ if(msg.textContent === "Saved") msg.textContent = ""; }, 1800);
+  audioChoice(){
+    const [mode, level] = this.$("#audio_mode").value.split(":");
+    const data = {audio_mode: mode};
+    // Only duck mode reads a level, so any other mode puts it back to the
+    // shipped one rather than leaving a level saved that nothing consults and
+    // no control shows.
+    const db = mode === "duck" ? parseFloat(level) : this._defaults?.duck_db;
+    if(db !== undefined) data.duck_db = db;
+    return data;
   }
 
+  resetTab(btn){
+    const tab = this.tab();
+    const seen = this.visibleFields(tab).length;
+    const lines = [
+      `Reset the ${seen} setting${seen === 1 ? "" : "s"} on ${tab.label} to what the `
+      + `app ships with?`,
+      "",
+      "It happens straight away — there is nothing to save afterwards. Nothing on the "
+      + "other tabs changes, and finished videos are untouched.",
+    ];
+    if(tab.key === "translation"){
+      lines.push("", "Your saved API keys are left alone. To remove one, empty the box "
+        + "and press Save.");
+    }
+    this.ask(btn, lines, this.fields(tab));
+  }
+
+  resetAll(btn){
+    this.ask(btn, [
+      "Reset every setting to what the app ships with?",
+      "",
+      "That includes the ones outside this window — who's speaking, and keeping the "
+      + "Mac awake. It happens straight away.",
+      "",
+      "Your saved API keys and your finished videos are left alone.",
+    ], null);
+  }
+
+  // A reset is server-side and immediate, while Save submits the whole form, so
+  // the two would fight over a field the user has edited but not saved: the
+  // fields being reset are repainted from the reply, and any edit outside that
+  // list stays on screen for Save to send.
+  ask(btn, lines, keys){
+    const scope = keys || TABS.flatMap(t => this.fields(t));
+    const losing = scope.filter(k => this._dirty.has(k) && this.shown(k)).length;
+    if(losing){
+      lines.push("", `${losing} change${losing === 1 ? "" : "s"} you haven't saved yet `
+        + `${losing === 1 ? "is" : "are"} among them, and will be overwritten.`);
+    }
+    if(!confirm(lines.join("\n"))) return;
+    scope.forEach(k => this._dirty.delete(k));
+    // Both reset buttons answer to the same busy group, so the one that was
+    // pressed travels with the request rather than the group that would label
+    // them both.
+    this.emit("reset-settings", {keys, btn});
+  }
+
+  showDiagnostics(){
+    // Two modal dialogs stack, and the one underneath goes inert and stays
+    // dimmed behind the new backdrop; closing the details returns here.
+    document.querySelector("diagnostics-panel")?.open();
+  }
+
+  showSaved(){
+    // The reply arrives while the edits that produced it are still marked
+    // unsaved, so the fields that carried them kept what was typed rather than
+    // what was stored. Now that nothing is unsaved they can be painted from what
+    // the server actually kept.
+    const unsaved = this._dirty.size;
+    this._dirty.clear();
+    if(unsaved && this._state) this.repaint(this._state);
+    flash(this.$("#savedMsg"), "Saved");
+  }
+
+  showReset(){ flash(this.$("#savedMsg"), "Back to defaults"); }
+
+  // Left up until something replaces it: a save that did not happen is not news
+  // to be missed while looking elsewhere.
   showSaveError(message){
-    this.$("#savedMsg").textContent = message;
+    flash(this.$("#savedMsg"), message, 0);
   }
 
   async audition(){

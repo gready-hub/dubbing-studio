@@ -143,7 +143,7 @@ def test_diarization():
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(clip),
                     "-ar", "16000", "-ac", "1", str(clip16)], check=True)
 
-    turns = D.diarize(clip16, expected_speakers=-1)
+    turns = D.diarize(clip16)
     check("diarization returned turns", len(turns) > 0, f"{len(turns)} turns")
     if not turns:
         return

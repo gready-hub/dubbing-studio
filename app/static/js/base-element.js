@@ -30,24 +30,30 @@ export class BaseElement extends HTMLElement {
     return true;
   }
 
-  setBusy(isBusy, label, group){
-    const selector = group ? `[data-busy="${group}"]` : "[data-busy]";
-    const targets = this.$$(selector);
+  // `target` says which buttons this is about: an element or list of them for
+  // the exact ones — the button that was pressed, say, out of several that
+  // share a group — a string for every [data-busy] answering to that group, and
+  // nothing for all of them.
+  //
+  // The label each button carries is remembered against the button itself, so
+  // two overlapping calls that reach the same one restore what it said before
+  // either of them rather than what the first left on it.
+  setBusy(isBusy, label, target){
+    const targets = target instanceof Element ? [target]
+      : typeof target === "string" ? this.$$(`[data-busy="${target}"]`)
+      : target ? [...target]
+      : this.$$("[data-busy]");
     if(!targets.length) return;
-    this._busyRestore ??= {};
-    if(isBusy){
-      this._busyRestore[group || ""] = targets.map(b => b.textContent);
-      targets.forEach(b => {
-        b.disabled = true;
+    this._busyRestore ??= new WeakMap();
+    targets.forEach(b => {
+      b.disabled = isBusy;
+      if(isBusy){
+        if(!this._busyRestore.has(b)) this._busyRestore.set(b, b.textContent);
         if(label) b.textContent = label;
-      });
-    } else {
-      const restore = this._busyRestore[group || ""];
-      targets.forEach((b, i) => {
-        b.disabled = false;
-        if(restore) b.textContent = restore[i];
-      });
-      delete this._busyRestore[group || ""];
-    }
+      } else if(this._busyRestore.has(b)){
+        b.textContent = this._busyRestore.get(b);
+        this._busyRestore.delete(b);
+      }
+    });
   }
 }

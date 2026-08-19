@@ -46,9 +46,15 @@ def prefetch(progress: Progress = None) -> None:
     _ensure_models(progress)
 
 
-def diarize(audio_wav: Path, expected_speakers: int = -1,
-            threshold: float = 0.5, progress: Progress = None) -> list[dict]:
-    """Returns [{"start", "end", "speaker"}]. Empty list if it can't run."""
+def diarize(audio_wav: Path, threshold: float = 0.5,
+            progress: Progress = None) -> list[dict]:
+    """Returns [{"start", "end", "speaker"}]. Empty list if it can't run.
+
+    The number of speakers is always worked out from the audio. Naming one
+    instead makes the clustering produce exactly that many groups whether the
+    voices support it or not, which is a guess dressed up as a measurement — and
+    it leaves nothing for the over-segmentation check downstream to notice.
+    """
     try:
         import sherpa_onnx
     except ImportError:
@@ -68,7 +74,7 @@ def diarize(audio_wav: Path, expected_speakers: int = -1,
         ),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(emb_model)),
         clustering=sherpa_onnx.FastClusteringConfig(
-            num_clusters=expected_speakers, threshold=threshold),
+            num_clusters=-1, threshold=threshold),
         min_duration_on=0.3,
         min_duration_off=0.5,
     )

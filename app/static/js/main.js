@@ -94,6 +94,7 @@ async function boot(){
   const initial = await api.state();
   store.set({
     settings: initial.settings,
+    settings_defaults: initial.settings_defaults,
     settings_path: initial.settings_path,
     features: initial.features,
     presets: initial.presets,
@@ -140,19 +141,43 @@ document.addEventListener("cancel-job", e => {
   api.cancelJob(e.detail.id).catch(()=>{});
 });
 
-document.addEventListener("save-settings", async e => {
-  const source = e.target;
-  source.setBusy?.(true, "Saving…", "save");
+// A settings write ends in the same two places whichever way it was made: the
+// reply is what the store holds from then on, and the setup check is re-run,
+// because an API key or a model named in the settings decides what passes it.
+async function writeSettings(source, {label, busy, write, done}){
+  source.setBusy?.(true, label, busy);
   try{
-    const settings = await api.saveSettings(e.detail.data);
-    store.setSettings(settings);
+    store.setSettings(await write());
     refreshDoctor();
-    source.showSaved?.();
+    done();
   }catch(err){
     source.showSaveError?.(err.message);
   }finally{
-    source.setBusy?.(false, null, "save");
+    source.setBusy?.(false, null, busy);
   }
+}
+
+document.addEventListener("save-settings", e => {
+  const source = e.target;
+  // A panel whose fields write straight through has no Save button to put the
+  // label on, so it is told separately that a save is in flight.
+  source.showSaving?.();
+  writeSettings(source, {
+    label: "Saving…", busy: "save",
+    write: () => api.saveSettings(e.detail.data),
+    done: () => source.showSaved?.(),
+  });
+});
+
+document.addEventListener("reset-settings", e => {
+  const source = e.target;
+  writeSettings(source, {
+    // The panel names the button that was pressed; without one, every button in
+    // the group.
+    label: "Resetting…", busy: e.detail.btn || "reset",
+    write: () => api.resetSettings(e.detail.keys),
+    done: () => source.showReset?.(),
+  });
 });
 
 document.addEventListener("reset", () => {

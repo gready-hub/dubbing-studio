@@ -1,7 +1,8 @@
 import { BaseElement } from "../base-element.js";
 import { store } from "../store.js";
 import { escapeHtml, fmt } from "../format.js";
-import { STAGE_LABELS } from "../stages.js";
+import { OUTPUT_GONE, SAMPLE_GONE, knownGone, outputGone, runRows, statRows, stages }
+  from "../run-report.js";
 
 const SHELL = `
   <div class="panel">
@@ -9,9 +10,12 @@ const SHELL = `
     <p class="msg" id="dPath"></p>
     <div id="dNotes"></div>
     <video id="dVideo" controls preload="none"></video>
-    <p class="hint hidden" id="dGone">That sample has been cleared away — samples live in
-      the working files, which get tidied up. Run it again to make a new one.</p>
+    <p class="hint hidden" id="dGone"></p>
     <div style="display:flex;gap:8px;margin:16px 0 4px;flex-wrap:wrap" id="dActions"></div>
+    <details style="margin-top:14px" class="hidden" id="dSettingsBox">
+      <summary>Settings this run used</summary>
+      <div id="dSettings" style="margin-top:10px"></div>
+    </details>
     <details style="margin-top:14px">
       <summary>Quality report</summary>
       <div id="dStats" style="margin-top:10px"></div>
@@ -36,50 +40,75 @@ class DonePanel extends BaseElement {
     if(!isDone) return;
 
     const sample = !!job.preview;
+    // A running job reports this false because it has no output yet, but only a
+    // finished one is ever drawn here.
+    const here = job.output_exists !== false && !knownGone(job.output);
     this.$("#dTitle").textContent = (sample ? "Sample — " : "") + job.title;
     this.$("#dPath").textContent = job.message;
 
-    const vid = this.$("#dVideo");
-    if(vid.dataset.job !== job.id){
-      vid.dataset.job = job.id;
-      // A sample lives in the working files, which Clear working files can take
-      // away while this panel is still on screen. Say so instead of leaving a
-      // broken player the user has no way to interpret.
-      vid.onerror = () => {
-        vid.classList.add("hidden");
-        this.$("#dGone").classList.remove("hidden");
-      };
-      vid.classList.remove("hidden");
-      this.$("#dGone").classList.add("hidden");
-      vid.src = `/api/job/${job.id}/video`;
+    const key = `${job.id}|${here}`;
+    const vid = this.$("#dVideo"), gone = this.$("#dGone");
+    if(vid.dataset.key !== key){
+      vid.dataset.key = key;
+      gone.textContent = sample ? SAMPLE_GONE : OUTPUT_GONE;
+      vid.classList.toggle("hidden", !here);
+      gone.classList.toggle("hidden", here);
+      if(here){
+        // The file can also go while the panel is open, which no flag fetched
+        // earlier can know about.
+        vid.onerror = () => {
+          vid.classList.add("hidden");
+          gone.classList.remove("hidden");
+        };
+        vid.src = `/api/job/${job.id}/video`;
+      } else {
+        vid.onerror = null;
+        vid.removeAttribute("src");
+      }
     }
 
     const actions = this.$("#dActions");
-    if(actions.dataset.job !== job.id){
-      actions.dataset.job = job.id;
-      actions.innerHTML = sample
-        ? `<button class="primary" id="dEscalate">Dub it</button>
-           <button class="ghost" id="dReset">Dub another</button>`
-        : `<button class="primary" id="dReveal">Show in Finder</button>
-           <button class="ghost" id="dReset">Dub another</button>`;
+    if(actions.dataset.key !== key){
+      actions.dataset.key = key;
+      actions.innerHTML = (sample
+        ? `<button class="primary" id="dEscalate">Dub it</button>`
+        : here ? `<button class="primary" id="dReveal">Show in Finder</button>` : "")
+        + `<button class="ghost" id="dReset">Dub another</button>`;
       // Two clicks are one job — the id a full run gets is the same either
       // time, so this reuses the start-job path rather than a separate one.
       const escalate = this.$("#dEscalate");
       if(escalate) escalate.onclick = () => this.emit("start-job", {url: job.url, preview: false});
       const reveal = this.$("#dReveal");
-      if(reveal) reveal.onclick = () => this.emit("reveal", {path: job.output});
+      if(reveal) reveal.onclick = () => this.reveal(job);
       this.$("#dReset").onclick = () => this.emit("reset");
     }
 
+    // A frame arrives about twice a second, and rebuilding the quality report
+    // drops any selection made inside it — the one part of this panel meant to
+    // be read and copied out of. Nothing below it changes again once a run has
+    // finished.
+    this.renderIfChanged(
+      [job.id, job.status, job.finished, here, (s.voices || []).length,
+       Object.keys(s.presets || {}).length, Object.keys(s.glossaries || {}).length],
+      () => this.paint(job, s)
+    );
+  }
+
+  paint(job, s){
+    const sample = !!job.preview;
     const stats = job.stats || {};
     const yn = v => v === true ? "yes" : v === false ? "no" : "—";
     this.$("#dNotes").innerHTML = (stats.notes || []).length
       ? `<div class="banner info" style="margin:0 0 12px">`
         + (stats.notes || []).map(n=>`<div>${escapeHtml(n)}</div>`).join("") + `</div>`
       : "";
-    this.$("#dStats").innerHTML = [
+
+    const settings = runRows(job, s);
+    this.$("#dSettingsBox").classList.toggle("hidden", !settings.length);
+    this.$("#dSettings").innerHTML = statRows(settings);
+
+    this.$("#dStats").innerHTML = statRows([
       ...(sample ? [["Sample taken from", stats.preview_from ?? "0:00"]] : []),
-      ["Quality preset", stats.preset ?? "—"],
       ["Speakers found", stats.speakers ?? "—"],
       ["Translated by", stats.translated_by ?? "—"],
       ["Voices used", stats.voices ?? "—"],
@@ -99,14 +128,18 @@ class DonePanel extends BaseElement {
       ...(sample ? [] : [["Working files freed",
                           stats.working_files_freed ? stats.working_files_freed+" MB" : "—"]]),
       ["Took", fmt(job.elapsed)]
-    ].map(([k,v])=>`<div class="stat"><span>${k}</span><span>${v}</span></div>`).join("")
-      // Longest first, and only the stages that took real time.
-      + Object.entries(job.stage_times || {})
-        .filter(([,sec]) => sec >= 1)
-        .sort((a,b) => b[1]-a[1])
-        .map(([key,sec]) => `<div class="stat sub"><span>${
-          escapeHtml(STAGE_LABELS[key] || key)}</span><span>${fmt(sec)}</span></div>`)
-        .join("");
+    ]) + stages(job);
+  }
+
+  // Asked again at the click, because the flag saying the file is there was
+  // answered when the run finished and /api/reveal on a path that has gone
+  // opens nothing and says nothing.
+  async reveal(job){
+    if(await outputGone(job.output)){
+      this.update(store.state);
+      return;
+    }
+    this.emit("reveal", {path: job.output});
   }
 }
 

@@ -50,3 +50,12 @@ export function errorDetailHtml(message, detail){
     <pre>${escapeHtml(trimmed)}</pre>
   </details>`;
 }
+
+// A message put on an element and taken off again after `ms`. A later message
+// on the same element cancels the pending clear, so the last one written is the
+// one that stands; `ms` of 0 leaves it there until something replaces it.
+export function flash(el, text, ms = 1800){
+  clearTimeout(el._flashTimer);
+  el.textContent = text;
+  if(ms) el._flashTimer = setTimeout(() => { el.textContent = ""; }, ms);
+}

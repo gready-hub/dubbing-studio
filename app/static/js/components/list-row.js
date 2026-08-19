@@ -1,16 +1,32 @@
 import { BaseElement } from "../base-element.js";
 
+const HEAD = `
+  <span class="caret" aria-hidden="true"></span>
+  <span class="swatch" id="swatch" style="margin-top:5px;display:none"></span>
+  <span class="lines">
+    <b><span id="title"></span><span class="qty" id="qty" style="display:none"></span><span class="tag" id="badge" style="display:none"></span></b>
+    <small id="subtitle"></small>
+  </span>
+`;
+
 const SHELL = `
+  <style>
+    .head{flex:1;min-width:0;display:flex;align-items:flex-start}
+    .lines{min-width:0;flex:1}
+    .caret{display:none}
+    button.head{font:inherit;font-size:14px;font-weight:inherit;color:inherit;
+                text-align:left;background:none;border:none;padding:0;
+                border-radius:8px;cursor:pointer}
+    button.head .caret{display:block;flex:none;width:18px;color:var(--muted)}
+    button.head .caret::before{content:"▸"}
+    button.head[aria-expanded="true"] .caret::before{content:"▾"}
+    button.head:hover .caret{color:var(--ink)}
+    .detail{padding:2px 0 14px 18px;font-size:14px}
+  </style>
   <div class="past">
-    <div style="min-width:0;display:flex;align-items:flex-start">
-      <span class="swatch" id="swatch" style="margin-top:5px;display:none"></span>
-      <div style="min-width:0">
-        <b><span id="title"></span><span class="qty" id="qty" style="display:none"></span><span class="tag" id="badge" style="display:none"></span></b>
-        <small id="subtitle"></small>
-      </div>
-    </div>
     <div id="actions" style="display:flex;gap:8px;flex-shrink:0"></div>
   </div>
+  <div class="detail" id="detail" hidden></div>
 `;
 
 class ListRow extends BaseElement {
@@ -28,8 +44,18 @@ class ListRow extends BaseElement {
     return this._data;
   }
 
+  // Public, because a list that keeps one row open at a time has to be able to
+  // shut the others: a row knows nothing about the rows beside it.
+  setOpen(open){
+    const wanted = !!(open && this._data && this._data.detail);
+    if(this._data) this._data.open = wanted;
+    this.$("#detail").hidden = !wanted;
+    this._toggle?.setAttribute("aria-expanded", String(wanted));
+  }
+
   _render(){
     const d = this._data || {};
+    if(!this.$("#head")) this._buildHead(!!d.detail);
 
     const swatch = this.$("#swatch");
     if(d.color){ swatch.style.background = d.color; swatch.style.display = "inline-block"; }
@@ -47,6 +73,9 @@ class ListRow extends BaseElement {
 
     this.$("#subtitle").textContent = d.subtitle || "";
 
+    this.$("#detail").innerHTML = d.detail || "";
+    this.setOpen(d.open);
+
     const actions = this.$("#actions");
     actions.innerHTML = "";
     (d.actions || []).forEach(a => {
@@ -57,6 +86,24 @@ class ListRow extends BaseElement {
       btn.onclick = () => a.onClick(btn);
       actions.appendChild(btn);
     });
+  }
+
+  // A row with nothing to reveal must not be a button: it would take a tab stop
+  // and announce itself as something to press.
+  _buildHead(expandable){
+    const tag = expandable ? "button" : "div";
+    const attrs = expandable
+      ? ' type="button" aria-controls="detail" aria-expanded="false"'
+      : "";
+    this.$("#actions").insertAdjacentHTML("beforebegin",
+      `<${tag} class="head" id="head"${attrs}>${HEAD}</${tag}>`);
+    this._toggle = expandable ? this.$("#head") : null;
+    if(!this._toggle) return;
+    this._toggle.onclick = () => {
+      const open = !(this._data && this._data.open);
+      this.setOpen(open);
+      this._data?.onToggle?.(open);
+    };
   }
 }
 

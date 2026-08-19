@@ -453,6 +453,163 @@ def test_server():
     check("but saying several people speak leaves the preset alone",
           r.json()["preset"] == "balanced", r.json()["preset"])
 
+    # --- values the app cannot honour, on the way out as well as the way in
+    #
+    # A language with no voice behind it is translated into and then read aloud in
+    # English, which sounds fluent and is nonsense; an unrecognised glossary
+    # contributes no terms while still claiming to. Both were caught when a saved
+    # file was read and nowhere else, so this endpoint assigned onto a live
+    # instance, wrote the value to disk and echoed it back — and only the next
+    # load put it right. Normalisation belongs to the model, so every write path
+    # is covered by construction rather than by remembering.
+    from app.config import SETTINGS_FILE
+    r = client.post("/api/settings", json={"data": {"target_language": "French"}})
+    check("a language no voice can speak is not echoed back as accepted",
+          r.json()["target_language"] == Settings().target_language,
+          r.json()["target_language"])
+    check("and is not what lands in settings.json either",
+          json.loads(SETTINGS_FILE.read_text())["target_language"]
+          == Settings().target_language,
+          json.loads(SETTINGS_FILE.read_text())["target_language"])
+    r = client.post("/api/settings", json={"data": {"glossary": "crochet_atlantis"}})
+    check("nor is a glossary this build does not have",
+          r.json()["glossary"] == "none", r.json()["glossary"])
+    # The next write path added — another endpoint, a preset, a command line —
+    # gets this without knowing it exists, because save() is the one gate.
+    straight = Settings.load()
+    straight.target_language, straight.glossary = "Klingon", "not_a_glossary"
+    straight.save()
+    check("a value set straight onto the dataclass is corrected by the save",
+          straight.target_language == Settings().target_language
+          and straight.glossary == "none",
+          f"{straight.target_language} {straight.glossary}")
+
+    # --- what the app ships with, and putting it back
+    # The settings panel marks every field the user has moved away from, which
+    # needs the shipped values as well as the saved ones.
+    from dataclasses import asdict as _asdict
+    body = client.get("/api/state").json()
+    check("state carries the shipped defaults alongside the saved settings",
+          body["settings_defaults"] == _asdict(Settings()),
+          str(len(body.get("settings_defaults", {}))) + " fields")
+    check("and they are the defaults, not this user's values",
+          body["settings_defaults"]["diarize"] is False
+          and body["settings"]["diarize"] is True)
+
+    client.post("/api/settings", json={"data": {
+        "voice": "bf_lily", "speed": 1.4, "keep_video_quality": "720",
+        "anthropic_key": "sk-ant-RESET-CANARY", "asr_model": "whisper"}})
+
+    # The panel resets one tab at a time, so a subset has to be resettable
+    # without disturbing the rest.
+    r = client.post("/api/settings/reset", json={"keys": ["voice", "speed"]})
+    got = r.json()
+    check("a named subset goes back to its defaults",
+          got["voice"] == Settings().voice and got["speed"] == Settings().speed,
+          f'{got["voice"]} {got["speed"]}')
+    check("and leaves everything else exactly where it was",
+          got["keep_video_quality"] == "720", got["keep_video_quality"])
+    # Whisper is still on, so the preset is still not one of the named ones.
+    check("a partial reset still reads the preset back off the switches",
+          got["preset"] == "custom", got["preset"])
+
+    r = client.post("/api/settings/reset", json={})
+    got = r.json()
+    check("naming nothing resets everything",
+          got["keep_video_quality"] == Settings().keep_video_quality
+          and got["asr_model"] == Settings().asr_model
+          and got["diarize"] is False, str(got["keep_video_quality"]))
+    check("and the preset follows the switches back",
+          got["preset"] == Settings().preset, got["preset"])
+    # A key is pasted in from an account somewhere else and cannot be read back
+    # out of this app. Everything else here can be chosen again in seconds, so
+    # "reset" must not be able to destroy one by implication.
+    check("a blanket reset does not throw away an API key",
+          got["anthropic_key"] == "sk-ant-RESET-CANARY", got["anthropic_key"][:12])
+    r = client.post("/api/settings/reset", json={"keys": ["anthropic_key"]})
+    check("but asking for the key by name does clear it",
+          r.json()["anthropic_key"] == "", r.json()["anthropic_key"])
+
+    check("the reset is saved, not merely reported",
+          client.get("/api/state").json()["settings"]["voice"] == Settings().voice)
+    r = client.post("/api/settings/reset", json={"keys": ["not_a_setting"]})
+    check("a field that does not exist is refused rather than ignored",
+          r.status_code == 400, str(r.status_code))
+    r = client.post("/api/settings/reset", json={"keys": []})
+    check("and naming none of them resets none of them",
+          r.status_code == 200
+          and r.json() == client.get("/api/state").json()["settings"])
+
+    # --- what a blanket reset is allowed to destroy
+    #
+    # Both confirm dialogs promise that API keys and finished videos survive, and
+    # the promise has to be kept here rather than in the wording in front of it. A
+    # glossary of someone's own terms is unbounded text typed by hand with no undo
+    # anywhere in the app, which is not something that "can be chosen again in
+    # seconds". Checked as the rule: everything moved off its default, then a
+    # blanket reset, and exactly the spared fields are the ones still moved.
+    moved = {"voice": "bf_lily", "speed": 1.4, "keep_video_quality": "720",
+             "asr_model": "whisper", "write_srt": True, "diarize": True,
+             "translator": "openai", "keep_awake": False,
+             "anthropic_key": "sk-ant-SPARE-CANARY", "openai_key": "sk-oai-SPARE-CANARY",
+             "custom_glossary": "punto raso -> slip stitch"}
+    client.post("/api/settings", json={"data": dict(moved)})
+    got = client.post("/api/settings/reset", json={}).json()
+    survived = {k for k, v in moved.items() if got[k] == v}
+    check("a blanket reset spares exactly the settings that cannot be re-chosen",
+          survived == set(Settings.KEEP_ON_RESET), str(sorted(survived)))
+    check("the hand-typed glossary is one of them",
+          got["custom_glossary"] == moved["custom_glossary"], got["custom_glossary"])
+    check("and it is spared on disk, not merely in the reply",
+          client.get("/api/state").json()["settings"]["custom_glossary"]
+          == moved["custom_glossary"])
+    # Naming one is the escape hatch that keeps a deliberate wipe possible, and it
+    # is the same escape hatch the keys already have.
+    for key in Settings.KEEP_ON_RESET:
+        client.post("/api/settings", json={"data": {key: moved[key]}})
+        got = client.post("/api/settings/reset", json={"keys": [key]}).json()
+        check(f"but asking for {key} by name still clears it",
+              got[key] == Settings.defaults()[key], repr(got[key])[:24])
+
+    # keep_awake acts on the assertion being held right now, so a reset has to
+    # go through the same path a save does rather than wait for the next job.
+    from app import server as _srv3
+    awoken = []
+    real_sync = _srv3.runner.sync_keep_awake
+    _srv3.runner.sync_keep_awake = lambda wanted: (awoken.append(wanted), False)[1]
+    try:
+        client.post("/api/settings", json={"data": {"keep_awake": False}})
+        client.post("/api/settings/reset", json={"keys": ["keep_awake"]})
+    finally:
+        _srv3.runner.sync_keep_awake = real_sync
+    check("a reset applies keep-awake the same way a save does",
+          awoken == [False, True], str(awoken))
+
+    # --- a settings file written by an earlier build
+    #
+    # settings.json outlives the build that wrote it, and this one names a setting
+    # that no longer exists. Unknown keys are dropped before the constructor sees
+    # them, so an old file loads with the fields it still shares rather than
+    # raising and losing every one of them.
+    from app.config import SETTINGS_FILE as _SF
+    saved = _SF.read_text() if _SF.exists() else None
+    try:
+        _SF.write_text(json.dumps({"voice": "bm_daniel", "speed": 1.1,
+                                   "expected_speakers": 4, "gone_entirely": True}))
+        revived = Settings.load()
+        check("a settings file naming a setting since removed still loads",
+              revived.voice == "bm_daniel" and revived.speed == 1.1,
+              f"{revived.voice} {revived.speed}")
+        check("and the setting it named is not revived along with it",
+              not hasattr(revived, "expected_speakers"))
+        check("the app is still answerable while holding one",
+              client.get("/api/state").status_code == 200)
+    finally:
+        if saved is None:
+            _SF.unlink(missing_ok=True)
+        else:
+            _SF.write_text(saved)
+
 
 # ======================================================= 4. full pipeline run
 def test_end_to_end():
@@ -528,6 +685,14 @@ def test_end_to_end():
           f"{s.get('drift_seconds')}s")
     check("lines were spoken", s.get("lines_spoken", 0) > 0, str(s.get("lines_spoken")))
     check("timing drift stayed small", s.get("max_drift", 99) < 2.0, f"{s.get('max_drift')}s")
+    # What produced this file, kept with the file. Settings are free to change
+    # between one run and the next, so the panel cannot read them off the app.
+    used = s.get("settings") or {}
+    check("the finished job recorded the settings it ran under",
+          used.get("voice") == "bf_emma" and used.get("write_srt") is True
+          and used.get("translator") == "ollama", str(used)[:90])
+    check("and no API key went into that record",
+          not any(k in used for k in Settings.SECRET_KEYS), str(sorted(used)))
 
     stages = [e[0] for e in events]
     for want in ("download", "transcribe", "translate", "synthesize", "assemble", "finish"):
@@ -976,17 +1141,61 @@ def test_segments_and_voices():
         check(f"pitch of a {hz:.0f} Hz tone is found", abs(got - hz) < 12,
               f"{got:.1f} Hz")
 
-    # A speaker count that cannot be right. The real run that prompted this
-    # reported 28 speakers for a 10m35s film with about seven characters, and
-    # said so without comment.
-    def implausible(count, seconds):
-        return count > max(6, seconds / 45)
+    # --- a speaker count that cannot be right
+    #
+    # Asked of the pipeline itself rather than of a copy of the rule kept here: a
+    # test that re-derives the threshold agrees with itself whatever the app goes
+    # on to say.
+    from app.pipeline import _speaker_note
 
-    check("28 speakers in a ten-minute film is flagged", implausible(28, 635))
-    check("three people in an hour-long podcast is not", not implausible(3, 3600))
-    check("eight on a long panel show is not", not implausible(8, 3600))
-    check("four in a two-minute clip is not", not implausible(4, 120))
-    check("twelve in a two-minute clip is", implausible(12, 120))
+    def note(count, sample=False):
+        return _speaker_note(count, sample)
+
+    # Over-segmentation of a single presenter, which is how this step actually
+    # fails. The real run that prompted the guard reported 28 speakers for a
+    # 10m35s film with about seven characters and said so without comment.
+    for count in (3, 4, 5):
+        check(f"one presenter split into {count} voices is flagged", bool(note(count)))
+    check("28 speakers in a ten-minute film is flagged", bool(note(28)))
+
+    # And the material that is genuinely what it looks like.
+    check("a two-person interview is left alone", not note(2))
+    check("a single-voice dub is left alone", not note(1))
+
+    # Length is not evidence either way — a 90-minute craft tutorial has one or
+    # two speakers and a ten-minute film can have seven — so it is not an input
+    # at all, and no video is long enough to talk the guard out of firing.
+    #
+    # Nor is a stated speaker count: the clustering is never told how many people
+    # to find, so the count it reports is evidence rather than an instruction
+    # played back. A count the guard was measured against could never be exceeded
+    # by one it had itself fixed, which is what made this silent.
+    import inspect
+    check("the count found is the only evidence the guard weighs",
+          list(inspect.signature(_speaker_note).parameters) == ["found", "sample"],
+          str(list(inspect.signature(_speaker_note).parameters)))
+    check("a 90-minute video does not need dozens of voices to be flagged",
+          bool(note(3)))
+
+    # A sample is the cheap moment to fix this, so it says so instead of
+    # telling the user to run the whole thing again.
+    check("a sample points at the run still to come",
+          "before dubbing the whole video" in note(5, sample=True))
+    check("a full run asks for a re-run", "run it again" in note(5))
+    check("a sample of a two-person interview is still left alone",
+          not note(2, sample=True))
+
+    # Register: what was found, why it might be wrong, one thing to do — and the
+    # thing to do has to be a control that exists.
+    for label, text in (("the note", note(4)), ("the sample note", note(5, sample=True))):
+        check(f"{label} is plain, calm copy",
+              "!" not in text and "diariz" not in text.lower()
+              and "cluster" not in text.lower() and "segment" not in text.lower(),
+              text)
+        check(f"{label} says what was found and what to do",
+              text.split()[0].isdigit() and "Who's speaking" in text, text)
+        check(f"{label} does not send the user to a setting that is gone",
+              "how many" not in text.lower(), text)
 
     s_ = Settings()
     s_.voice = "bf_emma"
@@ -1956,14 +2165,41 @@ def test_observability():
     # The frontend is now split into one Web Component per panel rather than
     # one file, so each of these lives in the component that owns it.
     header_js = (ROOT / "app" / "static" / "js" / "components" / "app-header.js").read_text()
+    doctor_js = (ROOT / "app" / "static" / "js" / "components" / "doctor-panel.js").read_text()
     failed_js = (ROOT / "app" / "static" / "js" / "components" / "failed-panel.js").read_text()
     diag_js = (ROOT / "app" / "static" / "js" / "components" / "diagnostics-panel.js").read_text()
     active_js = (ROOT / "app" / "static" / "js" / "components" / "active-panel.js").read_text()
     format_js = (ROOT / "app" / "static" / "js" / "format.js").read_text()
-    check("Copy details is reachable without a failure having happened",
-          'diagnostics-panel")?.open()' in header_js
-          and 'diagnostics-panel")?.open()' in failed_js,
-          "header and failed panel")
+    settings_js = (ROOT / "app" / "static" / "js" / "components" / "settings-panel.js").read_text()
+    main_js = (ROOT / "app" / "static" / "js" / "main.js").read_text()
+    api_js = (ROOT / "app" / "static" / "js" / "api.js").read_text()
+    check("a failed job can hand over the details",
+          'diagnostics-panel")?.open()' in failed_js, "failed panel")
+    # "It finished but the voice is wrong" is a report worth sending too, so the
+    # details have to be reachable when nothing has visibly failed. They live in
+    # Settings now rather than in the header.
+    check("and they are reachable when nothing has failed, from Settings",
+          'diagnostics-panel")?.open()' in settings_js
+          and "copyBtn" not in header_js, "settings panel")
+    check("the shipped defaults reach the panel that marks what differs from them",
+          "settings_defaults: initial.settings_defaults" in main_js
+          and "settings_defaults" in settings_js)
+    check("a reset is asked about before it happens", "confirm(" in settings_js)
+    check("and it goes through main.js and api.js like a save does",
+          '"reset-settings"' in main_js and "resetSettings" in api_js
+          and "/api/settings/reset" in api_js)
+    # A blanket reset already spares the keys server-side; naming one in a
+    # per-tab list would clear it by the back door.
+    tabs_block = settings_js.split("const TABS = ", 1)[1].split("];", 1)[0]
+    check("no tab's reset list names an API key",
+          "anthropic_key" not in tabs_block and "openai_key" not in tabs_block)
+    from app.config import Settings as _S
+    check("the three settings a preset owns say so beside the field",
+          settings_js.count("${PRESET_TAG}") == len(_S.PRESET_KEYS)
+          and all(f'"{k}"' in settings_js for k in _S.PRESET_KEYS))
+    check("the engine is stated where the machine is described, not in the header",
+          "engine" in doctor_js and "ram_gb" in doctor_js
+          and 'class="engine"' not in header_js, "setup check")
     check("the text is shown before it is sent, not just copied",
           'id="diagText"' in diag_js)
     check("a refused clipboard tells the user what to do instead",
@@ -2077,6 +2313,183 @@ def test_terminology():
 
 
 
+# ===================== 16. what a finished run keeps about itself
+def test_job_record():
+    """A finished run has to answer for a file the app cannot watch.
+
+    Dubbed videos are moved and deleted in the Finder, usually with the app
+    closed, and the settings that produced one are free to change the moment it
+    is done — so the history has to carry the settings and work out the file
+    afresh, and it has to do both for entries written before either existed.
+    """
+    print("\n[16] What a finished run records")
+    from app import pipeline
+    from app.config import HISTORY_FILE, OUTPUT_DIR, Settings
+
+    # --- the settings a run was made under
+    s = Settings()
+    s.voice, s.speed, s.keep_video_quality = "bm_george", 1.2, "720"
+    s.anthropic_key, s.openai_key = "sk-ant-SNAP-CANARY", "sk-oai-SNAP-CANARY"
+    s.custom_glossary = "punto -> stitch"
+    s.translator, s.anthropic_model = "anthropic", "claude-sonnet-5"
+    s.youtube_cookies, s.keep_awake = "safari", False
+    snap = s.run_snapshot()
+
+    check("the record carries what changed the result",
+          snap["voice"] == "bm_george" and snap["speed"] == 1.2
+          and snap["keep_video_quality"] == "720"
+          and snap["max_stretch"] == s.max_stretch, str(snap)[:70])
+    check("including which translator and model did the words",
+          snap["translator"] == "anthropic"
+          and snap["translator_model"] == "claude-sonnet-5",
+          str(snap.get("translator_model")))
+    # A key in the history file is a key in a file nobody thinks of as holding
+    # one, and history is copied around far more freely than settings.json is.
+    check("no API key reaches the record",
+          "CANARY" not in json.dumps(snap)
+          and not any(k in snap for k in Settings.SECRET_KEYS), str(sorted(snap)))
+    # Free text of no fixed size, which would be copied whole into every entry
+    # it applied to.
+    check("a custom glossary is recorded as a fact, not copied in",
+          snap["has_custom_glossary"] is True and "punto" not in json.dumps(snap))
+    # Preferences about this Mac, not about the video. Cookies decide whether
+    # the video can be fetched at all; what actually arrived is measured off the
+    # finished file.
+    for skip in ("keep_awake", "youtube_cookies"):
+        check(f"{skip} is left out of the record", skip not in snap)
+
+    # --- which fields get recorded, asserted as a rule and not as a sample
+    #
+    # A hand-kept list of them drifts in the unsafe direction: add a setting that
+    # changes the output, forget the list, and it is silently absent from every
+    # entry written from then on with nothing anywhere to raise. Naming four of
+    # them here would not catch that either — a hand-written expectation only
+    # ever agrees with itself. So the record is the complement of a short list of
+    # exclusions, and that is what is checked.
+    import dataclasses as _dc
+    declared = {f.name for f in _dc.fields(Settings)}
+    missing = declared - set(Settings.recorded_keys()) - set(Settings.UNRECORDED_KEYS)
+    check("every setting is recorded unless it is named as an exception",
+          not missing, str(sorted(missing)))
+    check("and no exception names a field that does not exist",
+          set(Settings.UNRECORDED_KEYS) <= declared,
+          str(sorted(set(Settings.UNRECORDED_KEYS) - declared)))
+    check("the exceptions are the short list, not most of the dataclass",
+          len(Settings.UNRECORDED_KEYS) < len(Settings.recorded_keys()),
+          f"{len(Settings.UNRECORDED_KEYS)} of {len(declared)}")
+
+    # The safe direction, demonstrated rather than asserted: a setting the app
+    # does not yet have is in the record the moment it is declared.
+    @_dc.dataclass
+    class _NextRelease(Settings):
+        pitch_shift: float = 0.0
+    check("a setting added later is recorded without anyone remembering to",
+          _NextRelease().run_snapshot().get("pitch_shift") == 0.0,
+          str(sorted(_NextRelease().run_snapshot()))[:70])
+
+    # --- a setting that had no bearing on the run is left out of the record
+    #
+    # Whether the separated music was mixed back is only a question when there was
+    # separated music and the original audio was being replaced. Answered by
+    # whether the key is there at all, so a panel that shows the row does not need
+    # its own copy of the rule to decide.
+    applied = Settings()
+    applied.separate_audio, applied.audio_mode = True, "replace"
+    applied.keep_music = False
+    check("the choice is recorded when it applied, including when it said drop it",
+          applied.run_snapshot().get("keep_music") is False)
+    applied.keep_music = True
+    check("and when it said keep it", applied.run_snapshot().get("keep_music") is True)
+    for label, separate, mode in (("separation never ran", False, "replace"),
+                                  ("the original was ducked instead", True, "duck"),
+                                  ("the original was kept as a second track", True, "dual")):
+        idle = Settings()
+        idle.separate_audio, idle.audio_mode = separate, mode
+        check(f"and left out when {label}",
+              "keep_music" not in idle.run_snapshot(),
+              str(sorted(idle.run_snapshot()))[:70])
+
+    # --- whether the file is still there, asked every time it is asked for
+    backup = HISTORY_FILE.read_text() if HISTORY_FILE.exists() else None
+    here = OUTPUT_DIR / "record-still-here.mp4"
+    gone = OUTPUT_DIR / "record-taken-away.mp4"
+    try:
+        for path in (here, gone):
+            path.write_bytes(b"x" * 64)
+        HISTORY_FILE.write_text(json.dumps([
+            {"id": "rec-here", "title": "Still Here", "output": str(here),
+             "status": "done", "started": 1, "finished": 2, "elapsed": 1,
+             "stats": {"preset": "balanced"}},
+            {"id": "rec-gone", "title": "Taken Away", "output": str(gone),
+             "status": "done", "started": 3, "finished": 4, "elapsed": 1,
+             "stats": {"preset": "balanced"}},
+        ]))
+        rows = {j["id"]: j for j in pipeline.runner.public_jobs()}
+        check("a finished run whose file is there says so",
+              rows["rec-here"]["output_exists"] is True)
+
+        gone.unlink()
+        rows = {j["id"]: j for j in pipeline.runner.public_jobs()}
+        # Listed, because it happened; flagged, because it must not be offered
+        # as something to open.
+        check("one whose file has been deleted is still listed",
+              "rec-gone" in rows, str(sorted(rows))[:70])
+        check("and says plainly that the file is not there",
+              rows["rec-gone"]["output_exists"] is False)
+        check("nothing was rewritten into the history to work that out",
+              not any("output_exists" in h
+                      for h in json.loads(HISTORY_FILE.read_text())))
+        # The stored answer would have been "yes" for both of these.
+        here.unlink()
+        rows = {j["id"]: j for j in pipeline.runner.public_jobs()}
+        check("a file removed with the app closed flips the flag on the next read",
+              rows["rec-here"]["output_exists"] is False)
+
+        # --- entries written before any of this existed
+        check("an old entry with no settings block is served without complaint",
+              (rows["rec-here"].get("stats") or {}).get("settings") is None)
+        # A history file outlives the build that wrote it, and these entries name
+        # a setting the app no longer has. Snapshots are carried through as they
+        # were found rather than validated against today's fields, so a run
+        # recorded under a setting since removed still describes itself.
+        HISTORY_FILE.write_text(json.dumps(
+            [{"id": "rec-legacy", "output": str(here), "started": 7, "finished": 8,
+              "stats": {"preset": "balanced",
+                        "settings": {"preset": "balanced", "diarize": True,
+                                     "expected_speakers": 4, "voice": "bf_emma"}}}]))
+        rows = {j["id"]: j for j in pipeline.runner.public_jobs()}
+        check("an entry recorded under a setting since removed is served intact",
+              rows["rec-legacy"]["stats"]["settings"]["expected_speakers"] == 4,
+              str(rows["rec-legacy"]["stats"]["settings"]))
+        HISTORY_FILE.write_text(json.dumps(
+            [{"id": "rec-ancient", "output": str(here), "started": 5, "finished": 6}]))
+        rows = {j["id"]: j for j in pipeline.runner.public_jobs()}
+        check("and one carrying nothing but a filename survives too",
+              rows["rec-ancient"]["output_exists"] is False, str(rows["rec-ancient"]))
+
+        # --- and what the writer itself puts on disk
+        HISTORY_FILE.write_text("[]")
+        job = pipeline.Job(id="rec-written", url="https://example.com/rec")
+        job.status, job.output, job.finished = "done", str(here), time.time()
+        job.stats = {"preset": "fast", "settings": Settings().run_snapshot()}
+        check("a live job answers for its own file too",
+              job.public()["output_exists"] is False)
+        pipeline._record_history(job)
+        stored = json.loads(HISTORY_FILE.read_text())
+        check("a recorded run keeps the settings it used",
+              stored[0]["stats"]["settings"]["voice"] == Settings().voice,
+              str(stored[0]["stats"]["settings"])[:60])
+        check("but never a claim about whether its file still exists",
+              "output_exists" not in stored[0], str(sorted(stored[0]))[:80])
+    finally:
+        here.unlink(missing_ok=True)
+        gone.unlink(missing_ok=True)
+        if backup is None:
+            HISTORY_FILE.unlink(missing_ok=True)
+        else:
+            HISTORY_FILE.write_text(backup)
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -2093,6 +2506,7 @@ if __name__ == "__main__":
     test_translation_qc()
     test_observability()
     test_terminology()
+    test_job_record()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

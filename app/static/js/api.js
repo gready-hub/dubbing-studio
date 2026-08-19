@@ -18,6 +18,9 @@ const json = data => ({
 export const api = {
   state: () => request("/api/state"),
   saveSettings: data => request("/api/settings", json({data})),
+  // null means every setting the app ships with a default for, which the
+  // server reads as "all but the API keys".
+  resetSettings: keys => request("/api/settings/reset", json({keys: keys ?? null})),
   startJob: (url, preview) => request("/api/job", json({url, preview: !!preview})),
   cancelJob: id => request(`/api/job/${encodeURIComponent(id)}/cancel`, {method: "POST"}),
   storage: () => request("/api/storage"),

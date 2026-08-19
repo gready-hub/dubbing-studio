@@ -1,6 +1,36 @@
 import { BaseElement } from "../base-element.js";
 import { store } from "../store.js";
-import { escapeHtml, escapeAttr } from "../format.js";
+import { escapeHtml, escapeAttr, flash } from "../format.js";
+import "./info-tip.js";
+
+const PRESET_TIP =
+  "A preset is a name for three settings: whether music and effects are "
+  + "separated from the speech, which transcription engine runs, and whether "
+  + "voices are built-in or cloned.\n\n"
+  + "Everything else in Settings — voice, speed, translator, language — is "
+  + "left as you set it.\n\n"
+  + "Change any of the three and no preset stays highlighted; the line below "
+  + "then says which one differs.";
+
+const SPEAKERS_BLURB = {
+  false: "One speaker can't be split into several voices — the usual mishap.",
+  true: "Telling people apart is unreliable — check the result.",
+};
+
+const MARK = `<span class="mark" aria-hidden="true">✓</span>`;
+
+const STYLE = `
+<style>
+  #speakersLabel{margin-top:18px}
+  /* aria-disabled rather than disabled, so a blocked preset stays focusable:
+     the reason it is blocked is the button's description, and a disabled
+     button cannot be reached to hear it. */
+  .segmented button[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
+  /* Its height is held whether or not it says anything, so acknowledging a save
+     never moves the controls that were just used. */
+  #saveMsg{min-height:1.45em;margin:10px 0 0}
+  #saveMsg.bad{color:var(--bad)}
+</style>`;
 
 const SHELL = `
   <div class="panel hidden" id="compactBar"
@@ -21,25 +51,22 @@ const SHELL = `
       can hear the voice before waiting for a whole video.</p>
 
     <div class="preset-wrap">
-      <div class="segmented" id="presets"></div>
+      <label id="presetLabel">Quality
+        <info-tip id="presetTip" label="quality presets"
+                  text="${escapeAttr(PRESET_TIP)}"></info-tip>
+      </label>
+      <div class="segmented" id="presets" role="group" aria-labelledby="presetLabel"></div>
       <p class="hint" id="presetBlurb"></p>
       <p class="hint hidden" id="presetBlocked" role="status" aria-live="polite"></p>
 
-      <div class="grid" style="margin-top:16px">
-        <div>
-          <label for="glossary">What kind of video is this?</label>
-          <select id="glossary"></select>
-        </div>
-        <div>
-          <label for="diarize">Who's speaking?</label>
-          <select id="diarize">
-            <option value="false">One person</option>
-            <option value="true">Several people</option>
-          </select>
-        </div>
+      <label id="speakersLabel">Who's speaking?</label>
+      <div class="segmented" id="speakers" role="group" aria-labelledby="speakersLabel">
+        <button data-diarize="false">${MARK}One person — faster, safer</button>
+        <button data-diarize="true">${MARK}Several people — a voice each</button>
       </div>
-      <p class="hint" id="glossaryHint" role="status" aria-live="polite"></p>
-      <p class="hint" id="speakersHint" role="status" aria-live="polite"></p>
+      <p class="hint" id="speakersBlurb"></p>
+
+      <p class="hint" id="saveMsg" role="status" aria-live="polite"></p>
     </div>
   </div>
 `;
@@ -52,35 +79,71 @@ function blockedReasons(features){
   };
 }
 
-function glossaryHint(value){
-  return value && value !== "none"
-    ? "Specialist terms will be translated the way this subject uses them, not "
-      + "the way a dictionary would. The app also learns the video's own "
-      + "vocabulary as it goes, whatever language it is in."
-    : "The app works out a video's specialist vocabulary by itself, in any "
-      + "language. Naming the subject helps it choose between meanings, and "
-      + "for crochet it decides whether to use US or UK stitch names.";
+// The three settings a preset is a name for, matching Settings.PRESET_KEYS on
+// the server. Everything else in Settings is independent of the preset.
+const PRESET_KEYS = ["separate_audio", "asr_model", "voice_mode"];
+
+const DIFFERENCES = {
+  separate_audio: {
+    true: "music and effects separated from the speech",
+    false: "music and effects left un-separated",
+  },
+  asr_model: {
+    whisper: "Whisper transcribing instead of Parakeet",
+    parakeet: "Parakeet transcribing instead of Whisper",
+  },
+  voice_mode: {
+    clone: "each speaker's own voice cloned",
+    fixed: "a built-in voice instead of cloning",
+  },
+};
+
+const PRESET_SUMMARY =
+  "Your own mix of the three settings a preset sets: music separation, the "
+  + "transcription engine, and built-in versus cloned voices. Pick one above "
+  + "to take all three from it.";
+
+function differingKeys(spec, settings){
+  return PRESET_KEYS.filter(k => spec[k] !== settings[k]);
 }
 
-function speakersHint(value){
-  return value === "true"
-    ? "Each speaker gets their own voice. Telling people apart is the least "
-      + "reliable step, so check the result — if it finds more people than are "
-      + "really there, say how many in Settings."
-    : "Faster, and it can't mistake one person for several — which is the most "
-      + "common way a dub of a tutorial goes wrong.";
+// "custom" is a real state now that the preset is read back off the switches
+// rather than left as whatever was last named. Nothing records which preset was
+// departed from, so it is the nearest that gets named — which, for the presets
+// that exist, is always a single switch away.
+function customBlurb(presets, settings){
+  const nearest = Object.values(presets || {})
+    .map(p => ({p, keys: differingKeys(p, settings)}))
+    .sort((a, b) => a.keys.length - b.keys.length)[0];
+  if(!nearest) return PRESET_SUMMARY;
+  if(!nearest.keys.length) return nearest.p.blurb;
+  const parts = nearest.keys.map(k => DIFFERENCES[k]?.[String(settings[k])]);
+  if(parts.some(part => !part)) return PRESET_SUMMARY;
+  const list = parts.length > 1
+    ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`
+    : parts[0];
+  return `Your own mix: ${nearest.p.label}, but with ${list}. Pick a preset `
+    + "above to go back to it, or change it in Settings.";
+}
+
+function select(container, attr, value){
+  container.querySelectorAll("button").forEach(b => {
+    const on = b.dataset[attr] === String(value);
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", String(on));
+  });
 }
 
 class NewJobPanel extends BaseElement {
   connectedCallback(){
-    this.html(SHELL);
+    this.html(STYLE + SHELL);
     this.$("#tryBtn").onclick = () => this.start(true);
     this.$("#go").onclick = () => this.start(false);
     this.$("#url").addEventListener("keydown", e => { if(e.key === "Enter") this.start(false); });
-    this.$("#glossary").onchange = e =>
-      this.emit("save-settings", {data: {glossary: e.target.value}});
-    this.$("#diarize").onchange = e =>
-      this.emit("save-settings", {data: {diarize: e.target.value === "true"}});
+    this.$$("#speakers button").forEach(b => {
+      b.onclick = () =>
+        this.emit("save-settings", {data: {diarize: b.dataset.diarize === "true"}});
+    });
     this.$("#expandBtn").onclick = () => {
       this._expanded = true;
       this.applyCollapse(store.state);
@@ -126,37 +189,83 @@ class NewJobPanel extends BaseElement {
 
   update(s){
     this.applyCollapse(s);
-    const { settings, presets, glossaries, features } = s;
+    const { settings, presets, features } = s;
     this.renderIfChanged(
-      [settings.preset, settings.glossary, settings.diarize, features],
+      [settings.diarize, features, PRESET_KEYS.map(k => settings[k])],
       () => {
-        const blocked = blockedReasons(features);
-        this.$("#presets").innerHTML = Object.entries(presets || {}).map(([k,p]) =>
-          `<button class="${k===settings.preset?"on":""}" data-preset="${k}"
-                   ${blocked[k]?`disabled title="${escapeAttr(blocked[k])}"`:""}
-                   >${escapeHtml(p.label)}</button>`).join("");
-        this.$$("#presets button").forEach(b => {
-          b.onclick = () => this.emit("save-settings", {data: {preset: b.dataset.preset}});
-        });
-        // "custom" is a real state now that the preset is read back off the
-        // switches rather than left as whatever was last named.
-        const p = (presets || {})[settings.preset];
-        this.$("#presetBlurb").textContent = blocked[settings.preset] || (p ? p.blurb
-          : "Your own mix of settings — change them back in Settings to return to one "
-            + "of these.");
-        const notes = Object.entries(blocked).filter(([,why]) => why)
-          .map(([k,why]) => `${presets[k]?.label || k}: ${why}`);
-        this.$("#presetBlocked").textContent = notes.join(". ");
-        this.$("#presetBlocked").classList.toggle("hidden", !notes.length);
-
-        this.$("#glossary").innerHTML = Object.entries(glossaries || {})
-          .map(([k,l])=>`<option value="${escapeAttr(k)}">${escapeHtml(l)}</option>`).join("");
-        this.$("#glossary").value = settings.glossary ?? "";
-        this.$("#diarize").value = String(!!settings.diarize);
-        this.$("#glossaryHint").textContent = glossaryHint(settings.glossary);
-        this.$("#speakersHint").textContent = speakersHint(String(!!settings.diarize));
+        this.paintPresets(presets, settings, blockedReasons(features));
+        this.paintSpeakers(!!settings.diarize);
       }
     );
+  }
+
+  // The buttons are built once and then only re-labelled, because rebuilding
+  // them takes the focus off the one that was just activated.
+  paintPresets(presets, settings, blocked){
+    const keys = Object.keys(presets || {});
+    if(keys.join(",") !== this._presetKeys){
+      this._presetKeys = keys.join(",");
+      const had = this.shadowRoot.activeElement?.dataset?.preset;
+      this.$("#presets").innerHTML = keys.map(k =>
+        `<button data-preset="${escapeAttr(k)}">${MARK}${escapeHtml(presets[k].label)}</button>`
+      ).join("");
+      this.$$("#presets button").forEach(b => {
+        b.onclick = () => {
+          if(b.getAttribute("aria-disabled") === "true") return;
+          this.emit("save-settings", {data: {preset: b.dataset.preset}});
+        };
+      });
+      if(had) this.$(`#presets button[data-preset="${CSS.escape(had)}"]`)?.focus();
+    }
+
+    const notes = Object.entries(blocked).filter(([, why]) => why);
+    this.$("#presetBlocked").innerHTML = notes.map(([k, why]) =>
+      `<span id="blocked-${escapeAttr(k)}">${escapeHtml(presets[k]?.label || k)}: `
+      + `${escapeHtml(why)}</span>`).join(". ");
+    this.$("#presetBlocked").classList.toggle("hidden", !notes.length);
+
+    select(this.$("#presets"), "preset", settings.preset);
+    this.$$("#presets button").forEach(b => {
+      const k = b.dataset.preset;
+      if(blocked[k]){
+        b.setAttribute("aria-disabled", "true");
+        b.setAttribute("aria-describedby", `blocked-${k}`);
+      } else {
+        b.removeAttribute("aria-disabled");
+        b.removeAttribute("aria-describedby");
+      }
+    });
+
+    const p = (presets || {})[settings.preset];
+    this.$("#presetBlurb").textContent = blocked[settings.preset]
+      || (p ? p.blurb : customBlurb(presets, settings));
+  }
+
+  paintSpeakers(diarize){
+    select(this.$("#speakers"), "diarize", diarize);
+    this.$("#speakersBlurb").textContent = SPEAKERS_BLURB[String(diarize)];
+  }
+
+  // These controls write straight through — there is no Save button here — so
+  // the only thing that can say a change landed is the panel itself.
+  status(text, ms, bad){
+    const msg = this.$("#saveMsg");
+    msg.classList.toggle("bad", !!bad);
+    flash(msg, text, ms);
+  }
+
+  showSaving(){
+    this.status("Saving…", 0);
+  }
+
+  showSaved(){
+    this.status("Saved");
+  }
+
+  // Left up until something replaces it: a save that did not happen is not news
+  // to be missed while looking elsewhere.
+  showSaveError(message){
+    this.status(`Not saved — ${message}`, 0, true);
   }
 }
 

@@ -4,7 +4,8 @@ import { escapeHtml } from "../format.js";
 
 const SHELL = `
   <div class="panel">
-    <b style="font-size:15px">Setup check</b>
+    <b class="job-title">Setup check</b>
+    <p class="hint hidden" id="machine" style="margin-bottom:0"></p>
     <div id="doctor" style="margin-top:10px"></div>
   </div>
 `;
@@ -20,14 +21,25 @@ class DoctorPanel extends BaseElement {
   }
 
   update(s){
-    if(!s.doctor) return;
-    const d = s.doctor;
-    this.$("#doctor").innerHTML = d.checks.map(c=>`
-      <div class="check">
-        <span class="dot ${c.ok?"ok":(c.optional?"opt":"bad")}"></span>
-        <div><b>${escapeHtml(c.name)}</b>${c.optional&&!c.ok?'<span class="tag">optional</span>':""}
-          ${c.ok?"":`<br><code>${escapeHtml(c.hint)}</code>`}</div>
-      </div>`).join("");
+    this.renderIfChanged([s.machine, s.doctor], () => {
+      this.paintMachine(s.machine);
+      if(!s.doctor) return;
+      this.$("#doctor").innerHTML = s.doctor.checks.map(c=>`
+        <div class="check">
+          <span class="dot ${c.ok?"ok":(c.optional?"opt":"bad")}"></span>
+          <div><b>${escapeHtml(c.name)}</b>${c.optional&&!c.ok?'<span class="tag">optional</span>':""}
+            ${c.ok?"":`<br><code>${escapeHtml(c.hint)}</code>`}</div>
+        </div>`).join("");
+    });
+  }
+
+  paintMachine(m){
+    const bits = [];
+    if(m?.engine) bits.push(m.engine);
+    if(m?.ram_gb) bits.push(`${m.ram_gb} GB memory`);
+    if(m?.in_docker) bits.push("in Docker");
+    this.$("#machine").textContent = bits.join(" · ");
+    this.$("#machine").classList.toggle("hidden", !bits.length);
   }
 }
 
