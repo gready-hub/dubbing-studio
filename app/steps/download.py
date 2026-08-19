@@ -397,8 +397,21 @@ def download(url: str, workdir: Path, quality: str = "best",
         except OSError:
             return 0
 
+    # yt-dlp's own words, with the progress records left out. --progress-template
+    # emits a DUBPROG line per update and a large download emits thousands, so
+    # the tail stream() keeps was all progress and no diagnosis. Seen in the
+    # field: a real 403 reported with a detail that began "DUBPROG|64512|3" and
+    # never reached the error at all. Collected here rather than filtered in
+    # stream(), which drives Demucs too and has no business knowing what a
+    # progress line looks like.
+    said: list[str] = []
+
     def show(line: str) -> None:
-        if not progress or not line.startswith(_PROGRESS_PREFIX):
+        if not line.startswith(_PROGRESS_PREFIX):
+            said.append(line)
+            del said[:-25]
+            return
+        if not progress:
             return
         got, total = (line[len(_PROGRESS_PREFIX):].split("|") + ["", ""])[:2]
         try:
@@ -424,7 +437,10 @@ def download(url: str, workdir: Path, quality: str = "best",
 
     code, problem = stream(cmd, show, tail_lines=25)
     if code != 0:
-        raise DownloadError(_friendly(problem), problem)
+        # stream()'s own tail stays as the fallback, for a failure that produced
+        # nothing but progress lines before dying.
+        detail = "".join(said).strip() or problem
+        raise DownloadError(_friendly(detail), detail)
 
     video = _finished_file(workdir)
     if video is None:

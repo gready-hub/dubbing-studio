@@ -1911,6 +1911,43 @@ def test_translation_qc():
     check("and nothing decides what to retry by reading yt-dlp's error text",
           "_looks_transient" not in src and "_TRANSIENT" not in src
           and "_looks_terminal" not in src)
+    # Seen in the field before this was fixed: a real 403 logged with
+    # "detail": "DUBPROG|64512|3..." — the progress template had filled the tail
+    # stream() keeps, so the pasteable detail held no error at all. A clean copy
+    # of the module, because earlier sections leave download() stubbed.
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location(
+        "app.steps._download_under_test", ROOT / "app" / "steps" / "download.py")
+    dlfresh = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(dlfresh)
+
+    def failing_download():
+        """Run the real download() against a yt-dlp that talks then dies."""
+        def fake_stream(cmd, on_line=None, tail_lines=30):
+            for n in range(40):                 # a large download's worth
+                on_line(f"{dlfresh._PROGRESS_PREFIX}{n * 1024}|41943040\n")
+            on_line("ERROR: unable to download video data: HTTP Error 403: Forbidden\n")
+            # what stream() would hand back: its tail is all progress
+            return 1, "".join(f"{dlfresh._PROGRESS_PREFIX}{n}|1\n" for n in range(25))
+        dlfresh.stream = fake_stream
+        dlfresh.probe = lambda url, cookies_from="": {
+            "title": "t", "duration": 1.0, "formats": [], "is_live": False}
+        pen = SCRATCH / "detail"
+        shutil.rmtree(pen, ignore_errors=True)
+        pen.mkdir(parents=True)
+        try:
+            dlfresh.download("https://youtu.be/x", pen)
+        except Exception as exc:                                 # noqa: BLE001
+            return exc
+        return None
+
+    err = failing_download()
+    detail = str(getattr(err, "detail", ""))
+    check("the pasteable detail carries yt-dlp's error, not the progress records",
+          "403" in detail and dlfresh._PROGRESS_PREFIX not in detail, detail[:70])
+    check("and the message the user reads is the plain-English one",
+          "refused to send it" in str(err), str(err)[:60])
+
     check("the plain-English message for a format refusal names no CLI flags",
           "--list-formats" not in dlmod._friendly(
               "ERROR: [youtube] x: Requested format is not available. "
