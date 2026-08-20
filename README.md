@@ -248,9 +248,13 @@ finishes.
 
 ## Uninstall
 
-Double-click **Uninstall** in the app folder, or press **Uninstall…** in the
-Disk space panel. It shows what it will delete, with sizes, and asks before
+Press **Uninstall…** in the Disk space panel, or run **Uninstall.command**
+from the app folder. It shows what it will remove, with sizes, and asks before
 touching anything.
+
+Everything it removes goes to the Bin rather than off the disk, so a change of
+mind costs nothing — though the space only comes back when the Bin is emptied.
+Your dubbed videos are never touched.
 
 | | |
 |---|---|

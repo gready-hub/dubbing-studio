@@ -2664,7 +2664,11 @@ def test_observability():
     check("and the ending cannot fire twice", "HANDLED" in inst)
     check("the installer will not replace a folder that is not an install",
           "is_install" in (ROOT / "install.sh").read_text())
-    for script in ("Install.command", "install.sh", "Update.command"):
+    unin = (ROOT / "Uninstall.command").read_text()
+    check("removal goes to the Bin rather than straight off the disk",
+          "bin_it" in unin and "rm -rf" not in unin)
+    for script in ("Install.command", "install.sh", "Update.command",
+                   "Uninstall.command"):
         ok = subprocess.run(["bash", "-n", str(ROOT / script)],
                             capture_output=True).returncode == 0
         check(f"{script} parses", ok)
