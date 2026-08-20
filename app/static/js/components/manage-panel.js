@@ -1,6 +1,7 @@
 import { BaseElement } from "../base-element.js";
 import { store } from "../store.js";
 import "./queue-list.js";
+import "./failed-list.js";
 import "./history-list.js";
 import "./storage-panel.js";
 import "./doctor-panel.js";
@@ -14,6 +15,7 @@ const TABS = [
 const SHELL = `
   <queue-list></queue-list>
   <div class="segmented" id="tabs" style="margin-bottom:14px"></div>
+  <failed-list></failed-list>
   <history-list></history-list>
   <storage-panel></storage-panel>
   <doctor-panel></doctor-panel>
@@ -58,6 +60,11 @@ class ManagePanel extends BaseElement {
       b.classList.toggle("on", on);
       b.setAttribute("aria-pressed", String(on));
     });
+    // A failed run sits alongside the dubbed-videos list rather than behind a
+    // tab of its own, so it shares the same visibility switch: whichever run
+    // just broke, a worried person reloading or reopening the app lands on
+    // History by default and finds it right there, not one more tab away.
+    this.$("failed-list").hidden = key !== "history";
     this.$("history-list").hidden = key !== "history";
     this.$("storage-panel").hidden = key !== "storage";
     this.$("doctor-panel").hidden = key !== "doctor";

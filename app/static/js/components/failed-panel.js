@@ -6,7 +6,7 @@ const SHELL = `
     <p class="job-title" id="fTitle"></p>
     <div class="banner bad" id="fMsg" style="margin:10px 0 0" role="status" aria-live="polite"></div>
     <details id="fDetailWrap" class="hidden" style="margin-top:4px">
-      <summary>What the downloader actually said</summary>
+      <summary>What the error actually said</summary>
       <pre id="fDetail"></pre>
     </details>
     <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">

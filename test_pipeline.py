@@ -2736,6 +2736,48 @@ def test_observability():
           "is walked again after all three, not just a success",
           '"cancelled"' in settled_block and '"error"' in settled_block)
 
+    # A failed run used to have nowhere to be after a reload: /api/events
+    # replays every known job, but main.js only ever took the view for one that
+    # was running, already current, or queued with nothing else current — so an
+    # errored job arrived over the wire and was never shown. Reachable after a
+    # reload or a restart means not depending on "current" at all, the same way
+    # the dubbed-videos list already does not.
+    manage_js = (ROOT / "app" / "static" / "js" / "components" / "manage-panel.js").read_text()
+    failed_list_js = (ROOT / "app" / "static" / "js" / "components" / "failed-list.js").read_text()
+    check("a failed run is read straight from the job store, not from whichever "
+          "job happens to be current",
+          "s.current" not in failed_list_js)
+    check("it is told apart from a dubbed video by its own status",
+          'status !== "error"' in failed_list_js or 'status === "error"' in failed_list_js)
+    check("it can still hand over the details and offer another attempt",
+          'diagnostics-panel")?.open()' in failed_list_js
+          and '"start-job"' in failed_list_js, "failed list")
+    # The disclosure used to name the downloader by name, which stopped being
+    # true the moment a translation failure started filling the same pane.
+    check("the failed run's disclosure names no particular stage",
+          "downloader" not in failed_js and "downloader" not in failed_list_js)
+    check("both places that disclosure appears say it the same way",
+          "What the error actually said" in failed_js
+          and "What the error actually said" in failed_list_js)
+    check("a failed run's disclosure says what settings it ran under, since a "
+          "retry runs under whatever Settings holds now instead",
+          "job.preset" in failed_list_js and "presetLabel" in failed_list_js)
+    # A third tab would need its own logic to decide when to jump to it, and a
+    # commit already had to undo exactly that kind of code walking over a
+    # tab the user picked by hand. Sitting inside History instead means the
+    # existing tab switch is the only thing that can show or hide it.
+    check("a failed run sits inside the History tab rather than a tab of its "
+          "own that would need its own switch-to logic",
+          '"failed-list"' not in manage_js.split("const TABS = ", 1)[1].split("];", 1)[0])
+    check("and shares that tab's visibility switch outright",
+          '$("failed-list").hidden = key !== "history"' in manage_js)
+    # update() is what auto-picks a tab, and it must never learn about jobs —
+    # that is exactly the door a failure walking in and stealing the tab would
+    # open back up.
+    update_block = manage_js.split("update(s){", 1)[1].split("\n  }", 1)[0]
+    check("a job failing never drives the auto-picked tab",
+          "s.jobs" not in update_block, update_block.strip()[:200])
+
 
 # ============================ 15. terminology lifted from the video itself
 def test_terminology():
@@ -3008,6 +3050,225 @@ def test_job_record():
               str(stored[0]["stats"]["settings"])[:60])
         check("but never a claim about whether its file still exists",
               "output_exists" not in stored[0], str(sorted(stored[0]))[:80])
+
+        # --- a failed run has to survive exactly as far as a finished one does
+        #
+        # The four-session audit this shipped to fix found the same complaint
+        # from two testers who never spoke to each other: reload the page after
+        # a failure and it is gone — no error, no Try again, no Copy details,
+        # and nothing in the history panel, even though jobs/*/error.log sat on
+        # disk the whole time. A fresh JobRunner stands in for a restart: its
+        # self.jobs is empty exactly the way the real one is on every launch.
+        #
+        # Every access below goes through .get() rather than [] — a regression
+        # here has to be reported by check() and let the rest of the suite keep
+        # running, not abort the whole function on the first KeyError or
+        # IndexError it happens to hit.
+        HISTORY_FILE.write_text("[]")
+        r = pipeline.JobRunner()
+        failed = pipeline.Job(id="rec-failed", url="https://example.com/broke",
+                              title="Broke It")
+        failed.began = time.time() - 4
+        failed.status, failed.finished = "error", time.time()
+        failed.error = "That link isn't one yt-dlp recognises."
+        failed.error_detail = "raw tool words"
+        pipeline._record_history(failed)
+        stored = json.loads(HISTORY_FILE.read_text())
+        first = stored[0] if stored else {}
+        check("a failed run is recorded the same way a finished one is",
+              first.get("status") == "error" and first.get("error") == failed.error,
+              str(first)[:100])
+        check("carrying the detail a Copy-details style pane would show",
+              first.get("error_detail") == "raw tool words")
+        check("and the job it came from, so a live copy can be told from a "
+              "recorded one that has no file to be told apart by",
+              first.get("job_id") == "rec-failed")
+
+        # While the job is still in memory the live copy answers for it, the
+        # same as a job that just finished — the recorded entry must not
+        # repeat the row.
+        r.jobs["rec-failed"] = failed
+        rows = [j.get("id") for j in r.public_jobs()]
+        check("a failure still in memory is listed once, not twice",
+              rows.count("rec-failed") == 1
+              and not any(str(x).startswith("rec-failed-") for x in rows), str(rows))
+
+        # Closing and reopening the app rebuilds self.jobs from nothing — the
+        # in-memory copy is gone, and the record is what is left to read back.
+        r.jobs.clear()
+        rows = {j.get("id"): j for j in r.public_jobs()}
+        recovered = [j for j in rows.values() if j.get("job_id") == "rec-failed"]
+        first_recovered = recovered[0] if recovered else {}
+        check("a restart still finds the failure, from the record alone",
+              len(recovered) == 1, str(sorted(rows))[:100])
+        check("with what was being dubbed, when, and why, all still readable",
+              first_recovered.get("title") == "Broke It"
+              and first_recovered.get("url") == "https://example.com/broke"
+              and first_recovered.get("error") == failed.error,
+              str(first_recovered)[:150])
+        check("and Try again has what it would need — the same url and preview "
+              "flag a fresh submission takes",
+              "url" in first_recovered and "preview" in first_recovered)
+
+        # --- a failure and a success are not the same kind of claim
+        #
+        # A repeat failure of the same link used to pile up as its own row —
+        # three genuine failures of one link left three duplicate rows sitting
+        # in the panel after a real restart. A failure is "what happened, most
+        # recently", not "what happened, once" — so a later one replaces the
+        # earlier rather than sitting beside it, and a later success replaces it
+        # too: the link did finish in the end, and a "didn't finish" row next to
+        # a "dubbed video" row for the very same run is two contradictory claims
+        # about one thing, not two things that both happened.
+        again = pipeline.Job(id="rec-failed", url="https://example.com/broke")
+        again.began, again.finished = failed.finished + 1, failed.finished + 5
+        again.status, again.error = "error", "A different failure this time."
+        pipeline._record_history(again)
+        stored = json.loads(HISTORY_FILE.read_text())
+        matching = [h for h in stored if h.get("job_id") == "rec-failed"]
+        check("a repeat failure of the same link replaces the earlier one, "
+              "rather than sitting beside it",
+              len(matching) == 1 and matching[0].get("error") == again.error,
+              str(matching)[:150])
+
+        succeeded = pipeline.Job(id="rec-failed", url="https://example.com/broke")
+        succeeded.status = "done"
+        succeeded.output = str(here)
+        succeeded.finished = again.finished + 5
+        pipeline._record_history(succeeded)
+        stored = json.loads(HISTORY_FILE.read_text())
+        matching = [h for h in stored if h.get("job_id") == "rec-failed"]
+        check("and a success clears the recorded failure for that link outright",
+              len(matching) == 1 and matching[0].get("status") == "done",
+              str(matching)[:150])
+
+        # A failure of the same link *after* the success must not be able to
+        # take the success's row back — the file the success produced is still
+        # on disk, and a failed retry does not un-produce it.
+        failed_again = pipeline.Job(id="rec-failed", url="https://example.com/broke")
+        failed_again.status, failed_again.error = "error", "failed on retry"
+        failed_again.finished = succeeded.finished + 5
+        pipeline._record_history(failed_again)
+        stored = json.loads(HISTORY_FILE.read_text())
+        matching = [h for h in stored if h.get("job_id") == "rec-failed"]
+        check("a failure after a success does not erase the success",
+              len(matching) == 2
+              and {m.get("status") for m in matching} == {"done", "error"},
+              str(matching)[:200])
+
+        # Two real successes of the same link — the ordinary "-2" case — must
+        # both still keep their row: successes are deduped by output, never by
+        # job_id, so this fix cannot start collapsing them the way it collapses
+        # failures.
+        HISTORY_FILE.write_text("[]")
+        for suffix in ("", "-2"):
+            done = pipeline.Job(id="rec-twice", url="https://example.com/twice")
+            done.status = "done"
+            done.output = str(here) + suffix
+            done.finished = time.time() + (1 if suffix else 0)
+            pipeline._record_history(done)
+        stored = json.loads(HISTORY_FILE.read_text())
+        check("two successful runs of the same link both keep their row",
+              len({h.get("output") for h in stored}) == 2, str(stored)[:200])
+
+        # --- a live job only speaks for a recorded failure while it is itself
+        #     the same failure
+        #
+        # The suppression in public_jobs() used to fire for a live job in *any*
+        # state at that id. Retrying a link and then cancelling the retry made
+        # the earlier, still-true failure disappear the instant the cancel
+        # landed — as if the link had never failed — and it only came back after
+        # the app was restarted. Nothing about the earlier failure changed by
+        # being retried, so nothing but another live failure at that id should
+        # be able to hide it.
+        HISTORY_FILE.write_text("[]")
+        r2 = pipeline.JobRunner()
+        stale = pipeline.Job(id="rec-stale", url="https://example.com/stale")
+        stale.status, stale.error, stale.finished = "error", "first failure", time.time()
+        pipeline._record_history(stale)
+
+        def recorded_failure_visible():
+            return any(j.get("job_id") == "rec-stale" and j.get("status") == "error"
+                      and j.get("id") != "rec-stale"
+                      for j in r2.public_jobs())
+
+        for live_status in ("running", "queued", "cancelled", "done"):
+            live_job = pipeline.Job(id="rec-stale", url="https://example.com/stale")
+            live_job.status = live_status
+            if live_status == "done":
+                live_job.output = str(gone)
+            r2.jobs["rec-stale"] = live_job
+            check(f"a live {live_status} job at that id does not silence a "
+                  "true recorded failure",
+                  recorded_failure_visible())
+
+        live_job = pipeline.Job(id="rec-stale", url="https://example.com/stale")
+        live_job.status = "error"
+        r2.jobs["rec-stale"] = live_job
+        check("a live job that is itself the same failure does suppress the "
+              "recorded duplicate",
+              not recorded_failure_visible())
+
+        # --- the two kinds do not compete for the same shelf space
+        #
+        # Before failures were recorded at all, HISTORY_LIMIT was 50 finished
+        # videos, full stop. Recording failures into the same flat, truncated
+        # list would let a long enough losing streak — a stale yt-dlp, a host
+        # that keeps refusing this machine, the exact shape of the audit this
+        # item answers to — silently push every one of those videos off the
+        # end, which is backwards: a losing streak is exactly when the history
+        # panel, and the finished file it points at, matters most.
+        HISTORY_FILE.write_text("[]")
+        for i in range(3):
+            done = pipeline.Job(id=f"rec-succ-{i}", url=f"https://example.com/ok{i}")
+            done.status = "done"
+            done.output = str(here) + f".{i}"
+            done.finished = 1000.0 + i
+            pipeline._record_history(done)
+        for i in range(pipeline.FAILED_HISTORY_LIMIT + 10):
+            broke = pipeline.Job(id=f"rec-fail-{i}", url=f"https://example.com/bad{i}")
+            broke.status, broke.error = "error", "boom"
+            broke.finished = 2000.0 + i
+            pipeline._record_history(broke)
+        stored = json.loads(HISTORY_FILE.read_text())
+        kept_succ = [h for h in stored if h.get("output")]
+        kept_fail = [h for h in stored if not h.get("output")]
+        check("a run of failures well past the failure cap leaves every "
+              "recorded success untouched",
+              len(kept_succ) == 3, str(len(kept_succ)))
+        check("and is itself capped at its own limit, not HISTORY_LIMIT",
+              len(kept_fail) == pipeline.FAILED_HISTORY_LIMIT, str(len(kept_fail)))
+        check("keeping the most recent failures, not the oldest",
+              {h.get("job_id") for h in kept_fail} ==
+              {f"rec-fail-{i}" for i in range(10, pipeline.FAILED_HISTORY_LIMIT + 10)},
+              str(sorted(h.get("job_id") for h in kept_fail))[:120])
+        check("the file itself stays newest-last, whichever kind trimmed it",
+              all(stored[i].get("finished", 0) <= stored[i + 1].get("finished", 0)
+                  for i in range(len(stored) - 1)))
+
+        # And the other way round: a long run of successes must not be able to
+        # starve the failure shelf either — the two caps are independent, not
+        # one budget split at read time.
+        HISTORY_FILE.write_text("[]")
+        for i in range(2):
+            broke = pipeline.Job(id=f"rec-fail2-{i}", url=f"https://example.com/bad2-{i}")
+            broke.status, broke.error = "error", "boom"
+            broke.finished = 1000.0 + i
+            pipeline._record_history(broke)
+        for i in range(pipeline.HISTORY_LIMIT + 5):
+            done = pipeline.Job(id=f"rec-succ2-{i}", url=f"https://example.com/ok2-{i}")
+            done.status = "done"
+            done.output = str(gone) + f".{i}"
+            done.finished = 2000.0 + i
+            pipeline._record_history(done)
+        stored = json.loads(HISTORY_FILE.read_text())
+        kept_succ = [h for h in stored if h.get("output")]
+        kept_fail = [h for h in stored if not h.get("output")]
+        check("a run of successes well past HISTORY_LIMIT leaves both recorded "
+              "failures untouched",
+              len(kept_fail) == 2, str(len(kept_fail)))
+        check("and is itself capped at HISTORY_LIMIT",
+              len(kept_succ) == pipeline.HISTORY_LIMIT, str(len(kept_succ)))
     finally:
         here.unlink(missing_ok=True)
         gone.unlink(missing_ok=True)
