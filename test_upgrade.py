@@ -19,8 +19,8 @@ WORK.mkdir(parents=True, exist_ok=True)
 
 # Point the scratch model folder at the real one so a test run doesn't re-fetch
 # 700 MB of speech models it already has. Jobs and output stay isolated.
-_real_models = Path.home() / "Library" / "Application Support" / "DubbingStudio" / "models"
-_scratch_models = SCRATCH / "models"
+_real_models = Path.home() / "Library" / "Caches" / "DubbingStudio" / "models"
+_scratch_models = SCRATCH / "cache" / "models"
 if _real_models.is_dir() and not _scratch_models.exists():
     _scratch_models.parent.mkdir(parents=True, exist_ok=True)
     _scratch_models.symlink_to(_real_models)

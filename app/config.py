@@ -9,22 +9,45 @@ import subprocess
 from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 
+from platformdirs import user_cache_dir, user_data_dir
+
+from . import logs
+
 APP_NAME = "Dubbing Studio"
 
 # ---------------------------------------------------------------- paths
 
+# Two roots, because the platform draws a line here and so should we. Settings
+# and history are the only things on this disk nobody can regenerate, so they go
+# where Time Machine looks and macOS never reclaims. The working files and the
+# downloaded models are re-fetchable by definition and belong in the cache, which
+# is skipped by backups and purgeable under pressure — sparing Time Machine the
+# tens of gigabytes a speech model collection can run to.
 def _base_dir() -> Path:
     env = os.environ.get("DUBBING_STUDIO_HOME")
     if env:
         return Path(env)
-    if platform.system() == "Darwin":
-        return Path.home() / "Library" / "Application Support" / "DubbingStudio"
-    return Path.home() / ".dubbing-studio"
+    return Path(user_data_dir("DubbingStudio", appauthor=False))
+
+
+def _cache_dir() -> Path:
+    env = os.environ.get("DUBBING_STUDIO_CACHE")
+    if env:
+        return Path(env)
+    # DUBBING_STUDIO_HOME means "keep it all here": Docker mounts one volume and
+    # the test suite points at one scratch folder. Splitting the cache out from
+    # under either would put the working files somewhere neither expects, so the
+    # split only applies when the location was left to us.
+    if os.environ.get("DUBBING_STUDIO_HOME"):
+        return _base_dir() / "cache"
+    return Path(user_cache_dir("DubbingStudio", appauthor=False))
 
 
 BASE = _base_dir()
-JOBS = BASE / "jobs"
-MODELS = BASE / "models"
+CACHE = _cache_dir()
+JOBS = CACHE / "jobs"
+MODELS = CACHE / "models"
+PREVIEWS = CACHE / "previews"
 SETTINGS_FILE = BASE / "settings.json"
 HISTORY_FILE = BASE / "history.json"
 OUTPUT_DIR = Path(os.environ.get("DUBBING_STUDIO_OUTPUT", str(Path.home() / "Movies" / "Dubbed")))
@@ -42,7 +65,19 @@ def ollama_host() -> str:
         host = f"http://{host}"
     return host.rstrip("/")
 
-for _p in (BASE, JOBS, MODELS, OUTPUT_DIR):
+# Existing jobs, models or previews under the data folder are moved into the
+# cache rather than left behind: the models alone run to several gigabytes,
+# and leaving them behind would mean downloading all of them again.
+for _name in ("jobs", "models", "previews"):
+    _was, _now = BASE / _name, CACHE / _name
+    if _was.is_dir() and not _was.is_symlink() and not _now.exists():
+        try:
+            _now.parent.mkdir(parents=True, exist_ok=True)
+            _was.rename(_now)
+        except OSError as _exc:
+            logs.queue_early(f"could not move {_was} to {_now}: {_exc}")
+
+for _p in (BASE, CACHE, JOBS, MODELS, OUTPUT_DIR):
     _p.mkdir(parents=True, exist_ok=True)
 
 

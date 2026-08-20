@@ -36,8 +36,8 @@ WORK.mkdir(parents=True, exist_ok=True)
 # suite failed from deep inside sherpa-onnx with "File doesn't exist" — an
 # environment problem wearing a code regression's clothes. A real directory that
 # is not the symlink we intended is therefore replaced, not respected.
-_real_models = Path.home() / "Library" / "Application Support" / "DubbingStudio" / "models"
-_scratch_models = SCRATCH / "models"
+_real_models = Path.home() / "Library" / "Caches" / "DubbingStudio" / "models"
+_scratch_models = SCRATCH / "cache" / "models"
 if _real_models.is_dir() and not _scratch_models.is_symlink():
     if _scratch_models.is_dir():
         shutil.rmtree(_scratch_models, ignore_errors=True)

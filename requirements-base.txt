@@ -2,6 +2,9 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 python-json-logger>=3.1
 pydantic>=2.9
+# The standard-directory resolver: ~/Library/Application Support and
+# ~/Library/Caches on macOS, the XDG equivalents elsewhere.
+platformdirs>=4.0
 numpy>=1.26
 soundfile>=0.12
 yt-dlp>=2025.1.1

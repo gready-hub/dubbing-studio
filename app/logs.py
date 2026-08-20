@@ -57,6 +57,16 @@ _NOISY = ("huggingface_hub", "httpx", "httpcore", "urllib3", "requests",
 
 _ready = False
 
+# Things worth a log entry that happen before there is a file to put one in —
+# config.py resolves paths and migrates old ones at import time, which is
+# earlier than anything here can run. Queued, then drained once setup() has
+# somewhere to send them.
+_EARLY: list[str] = []
+
+
+def queue_early(message: str) -> None:
+    _EARLY.append(message)
+
 
 def setup(level: int = logging.INFO) -> Path:
     """Wire up the file. Safe to call more than once; only the first does work."""
@@ -117,6 +127,11 @@ def setup(level: int = logging.INFO) -> Path:
 
     sys.excepthook = crashed
     _ready = True
+
+    for _msg in _EARLY:
+        logging.getLogger("app").warning(_msg)
+    _EARLY.clear()
+
     return LOG_FILE
 
 

@@ -16,9 +16,7 @@ import shutil
 import urllib.request
 from pathlib import Path
 
-from .config import BASE, JOBS, MODELS, OUTPUT_DIR, ollama_host
-
-PREVIEWS = BASE / "previews"
+from .config import CACHE, JOBS, MODELS, OUTPUT_DIR, PREVIEWS, ollama_host
 
 # The app's own folder, and the Python environment inside it. Between them these
 # are larger than everything under Application Support, and neither was visible
@@ -77,7 +75,7 @@ def dir_size(path: Path) -> int:
     return total
 
 
-def free_bytes(path: Path = BASE) -> int:
+def free_bytes(path: Path = CACHE) -> int:
     """Room left on the volume this path lives on."""
     try:
         return shutil.disk_usage(path if path.exists() else path.parent).free
@@ -211,7 +209,8 @@ def groups() -> list[dict]:
 
 
 def summary(title_for=None) -> dict:
-    return {"free": free_bytes(BASE), "low": free_bytes(BASE) < LOW_DISK,
+    free = free_bytes(CACHE)
+    return {"free": free, "low": free < LOW_DISK,
             "groups": groups(), "jobs": job_folders(title_for),
             "path": str(JOBS)}
 

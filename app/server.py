@@ -329,12 +329,12 @@ def voice_preview(voice: str, speed: float = 1.0):
     instant and flicking between voices is quick enough to actually compare
     them.
     """
-    from .config import BASE, VOICES
+    from .config import PREVIEWS, VOICES
     if not any(v["id"] == voice for v in VOICES):
         raise HTTPException(404, "No such voice.")
 
     speed = max(0.5, min(2.0, float(speed)))
-    out = BASE / "previews" / f"{voice}-{speed:.2f}.wav"
+    out = PREVIEWS / f"{voice}-{speed:.2f}.wav"
     if not out.exists():
         # Rendering a new one loads a second copy of the speech model. Doing
         # that while a job is running competes with it for the GPU and pushed
