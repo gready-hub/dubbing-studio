@@ -2715,6 +2715,27 @@ def test_observability():
     check("durations reuse the existing formatter rather than a new one",
           "fmtShort" not in format_js and "fmtShort" not in active_js)
 
+    # A run stays "current" — the success card keeps naming it — for as long as
+    # nothing else has taken its place there, which can be indefinitely if
+    # nobody starts another job. Filtering the dubbed-videos list on that same
+    # flag meant a finished run waited for someone to move on before it showed
+    # up below its own success message; a reload "fixed" it only because
+    # reloading forgets what was current.
+    hist_js = (ROOT / "app" / "static" / "js" / "components" / "history-list.js").read_text()
+    check("a finished run is listed the moment it's done, not once something "
+          "else takes its place as the current job",
+          "s.current" not in hist_js)
+    check("the list still leaves samples out, done or not",
+          '"done" && !j.preview' in hist_js)
+    check("the refresh reaches it through the store every panel already "
+          "listens to, not main.js reaching into the history component",
+          "history-list" not in main_js)
+    settled_block = main_js.split("const settled = ", 1)[1].split(";", 1)[0]
+    check("a run that stopped by cancelling or by failing leaves the same "
+          "kind of workdir behind as one that finished, so the storage panel "
+          "is walked again after all three, not just a success",
+          '"cancelled"' in settled_block and '"error"' in settled_block)
+
 
 # ============================ 15. terminology lifted from the video itself
 def test_terminology():

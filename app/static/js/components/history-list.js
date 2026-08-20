@@ -86,18 +86,23 @@ class HistoryList extends BaseElement {
   update(s){
     // Samples are excluded for the same reason they never reach the videos
     // folder: a sample's file is a working intermediate meant to be thrown away.
+    // A finished run stays "current" — the success card above keeps pointing
+    // at it — for as long as nothing has taken its place there, which can be
+    // indefinitely if nobody starts another job. This list is where "it's
+    // done" gets confirmed, so it has to carry the run from the instant it
+    // lands, not from whenever the user happens to move on from that card.
     // Counted rather than collected, because a frame arrives every second while
     // a job runs and this has to be cheaper than the paint it is turning away:
     // a run that has finished has nothing left to change but its file.
     let listed = 0, gone = 0, newest = 0;
     for(const j of Object.values(s.jobs)){
-      if(j.status !== "done" || j.id === s.current || j.preview) continue;
+      if(j.status !== "done" || j.preview) continue;
       listed++;
       if(j.output_exists === false || knownGone(j.output)) gone++;
       if(j.started > newest) newest = j.started;
     }
     this.renderIfChanged(
-      [listed, gone, newest, s.current, s.output_dir, (s.voices || []).length,
+      [listed, gone, newest, s.output_dir, (s.voices || []).length,
        Object.keys(s.presets || {}).length, Object.keys(s.glossaries || {}).length],
       () => this.paint(s)
     );
@@ -105,7 +110,7 @@ class HistoryList extends BaseElement {
 
   paint(s){
     const past = Object.values(s.jobs)
-      .filter(j => j.status === "done" && j.id !== s.current && !j.preview)
+      .filter(j => j.status === "done" && !j.preview)
       .sort((a,b) => b.started - a.started);
 
     this.$("#outputWhere").textContent = past.length

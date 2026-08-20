@@ -65,12 +65,16 @@ function listen(){
   const es = api.events();
   // /api/events replays every known job on connect, and reconnects every few
   // seconds if the stream drops. Only a job that has just *changed* state to
-  // done/cancelled is worth a full storage walk.
+  // done, cancelled or errored is worth a full storage walk: whatever it
+  // downloaded or transcribed on the way there is still sitting in its
+  // workdir whichever of the three it ended on, and the storage panel's
+  // per-job breakdown goes stale after any of them, not just the first.
   es.onmessage = e => {
     const job = JSON.parse(e.data);
     const prevStatus = store.state.jobs[job.id]?.status;
     const settled = prevStatus !== job.status
-                  && (job.status === "done" || job.status === "cancelled");
+                  && (job.status === "done" || job.status === "cancelled"
+                      || job.status === "error");
     store.setJob(job);
     // /api/events replays every known job oldest-first on connect, so a job
     // that has already finished must never take the view: only a running one
