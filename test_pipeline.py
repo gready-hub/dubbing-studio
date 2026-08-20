@@ -268,8 +268,131 @@ def test_translate():
     try:
         T.translate([dict(s) for s in segs], settings, 16)
         check("empty backend raises", False)
-    except T.TranslationError:
+    except T.TranslationError as exc:
         check("empty backend raises", True)
+        check("a local model's own incomplete-translation advice is unchanged",
+              "If you are using a local model" in str(exc), str(exc))
+
+    # A tester put a bogus key in Settings, ran a job, and ninety seconds and
+    # thirty retries later was told "Translation only returned 0 of 30 lines.
+    # If you are using a local model, try a larger one in Settings" — despite
+    # having said, ten seconds earlier in its own progress line, that it was
+    # translating with claude-sonnet-5. The words "API key" appeared nowhere.
+    # _call_anthropic() and _call_openai() had no exception handling at all, so
+    # the 401 raised urllib.error.HTTPError, which is not a TranslationError and
+    # was swallowed by _ask()'s "except Exception: return {}" as an ordinary
+    # empty reply — indistinguishable from a slow model, and retried the same way.
+    import io
+    import urllib.error
+    import urllib.request as _urlreq
+
+    real_urlopen = _urlreq.urlopen
+    api_segs = [{"start": i * 2.0, "end": i * 2.0 + 1.8, "text": f"line {i}"} for i in range(10)]
+
+    def hit_provider(provider_key, build_error, status):
+        """Run translate() against a stubbed HTTP layer that always answers
+        with one status and body, and report (exception, request count, the
+        canary key that was set, the settings used)."""
+        calls = {"n": 0}
+        s = Settings()
+        s.translator = provider_key
+        key = f"sk-{provider_key}-CANARY-SECRET"
+        setattr(s, f"{provider_key}_key", key)
+
+        def counted(req, timeout=None):
+            calls["n"] += 1
+            raise urllib.error.HTTPError(
+                req.full_url, status, "err", {}, io.BytesIO(json.dumps(build_error(key)).encode()))
+
+        _urlreq.urlopen = counted
+        try:
+            T.translate([dict(x) for x in api_segs], s, 16)
+            return None, calls["n"], key
+        except T.TranslationError as exc:
+            return exc, calls["n"], key
+        finally:
+            _urlreq.urlopen = real_urlopen
+
+    # OpenAI's own 401 body echoes the key back ("Incorrect API key provided:
+    # sk-..."); Anthropic's does not. Both are exercised so the redaction in
+    # _redact() is tested against a body that actually contains the secret,
+    # not just against one that never had it to begin with.
+    for provider, build_error in (
+            ("anthropic", lambda k: {"type": "error", "error": {
+                "type": "authentication_error", "message": "invalid x-api-key"}}),
+            ("openai", lambda k: {"error": {
+                "message": f"Incorrect API key provided: {k}.",
+                "type": "invalid_request_error", "code": "invalid_api_key"}})):
+        exc, n_calls, key = hit_provider(provider, build_error, 401)
+        label = "Anthropic" if provider == "anthropic" else "OpenAI"
+        check(f"a 401 from {label} raises a TranslationError, not a silent miss",
+              exc is not None)
+        msg = str(exc) if exc else ""
+        check(f"it names {label}", label in msg, msg)
+        check("it points at Settings → Translation",
+              "Settings" in msg and "Translation" in msg, msg)
+        check("it says the key was rejected",
+              "reject" in msg.lower() and "key" in msg.lower(), msg)
+        check("it does not contain the key itself",
+              key not in msg and key not in (exc.detail if exc else ""), msg)
+        check(f"{label} fails on the first request rather than after thirty retries",
+              n_calls == 1, f"{n_calls} calls")
+
+    # A whitespace-only key is still truthy, so backend_for()'s "if not
+    # settings.anthropic_key" guard never catches it, and matching it against a
+    # message the ordinary way would replace every run of spaces in the text —
+    # reachable by nothing more than a stray space pasted into Settings.
+    check("a whitespace-only key is not redacted, and doesn't corrupt the message",
+          T._redact("Anthropic said the key was invalid.", "   ")
+          == "Anthropic said the key was invalid.")
+    check("but a real key, however it's padded, still gets redacted",
+          "[key redacted]" in T._redact("key: '  sk-test-123  ' is bad", "  sk-test-123  "))
+
+    # A 429 must read differently from a 401 — one is fixed by a different key,
+    # the other by waiting or paying, and conflating them sends someone to
+    # Settings to fix a key that was never the problem.
+    exc429, n429, _ = hit_provider(
+        "anthropic", lambda k: {"error": {"message": "rate limit exceeded"}}, 429)
+    check("a 429 is distinguished from a 401",
+          exc429 is not None and "reject" not in str(exc429).lower()
+          and ("rate" in str(exc429).lower() or "credit" in str(exc429).lower()), str(exc429))
+    check("a 429 also fails fast rather than retrying thirty times",
+          n429 == 1, f"{n429} calls")
+
+    # The final incomplete-translation message used to hardcode local-model
+    # advice regardless of which backend actually ran.
+    settings4 = Settings()
+    settings4.translator = "anthropic"
+    settings4.anthropic_key = "sk-ant-whatever"
+    settings4.anthropic_model = "claude-sonnet-5"
+    T._call_anthropic = lambda *a, **kw: ""
+    try:
+        T.translate([dict(x) for x in api_segs], settings4, 16)
+        check("an incomplete remote translation raises", False)
+    except T.TranslationError as exc:
+        msg = str(exc)
+        check("an incomplete remote translation raises", True)
+        check("the message names the translator that actually ran",
+              "claude-sonnet-5" in msg, msg)
+        check("and does not blame a local model that was never in use",
+              "If you are using a local model" not in msg, msg)
+
+    # anthropic_model and openai_model are free-text fields in Settings, so the
+    # advice above is keyed off settings.translator rather than sniffing the
+    # label string — a user is free to name their model "local model special"
+    # and the advice must still be the remote one.
+    settings5 = Settings()
+    settings5.translator = "anthropic"
+    settings5.anthropic_key = "sk-ant-whatever"
+    settings5.anthropic_model = "local model special"
+    T._call_anthropic = lambda *a, **kw: ""
+    try:
+        T.translate([dict(x) for x in api_segs], settings5, 16)
+        check("an adversarial model name still raises", False)
+    except T.TranslationError as exc:
+        msg = str(exc)
+        check("the advice is keyed off the backend, not the model's own name",
+              "If you are using a local model" not in msg, msg)
 
 
 # ============================================================ 3. HTTP layer

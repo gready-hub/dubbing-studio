@@ -69,7 +69,20 @@ def _is_example(text: str) -> bool:
 
 
 class TranslationError(RuntimeError):
-    pass
+    """A translation failure, with the provider's own words kept alongside the
+    plain one.
+
+    Shaped like download.DownloadError on purpose: pipeline.py already knows how
+    to lift a `.detail` into job.error_detail, and the UI already knows how to
+    render whatever lands there, so a translation failure needs no special-casing
+    on either side to get the same treatment. Before this, a rejected key
+    surfaced only as "translation batch incomplete, halving" repeated thirty
+    times in Copy details — never the rejection itself.
+    """
+
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__(message)
+        self.detail = detail.strip()
 
 
 # ------------------------------------------------------------- prompt build
@@ -352,6 +365,101 @@ def _call_ollama(prompt: str, model: str, host: str = "",
     return ""
 
 
+# --------------------------------------------------------- provider HTTP errors
+
+def _provider_message(body: bytes) -> str:
+    """The provider's own explanation, if the body is shaped like one.
+
+    Anthropic and OpenAI both nest it as {"error": {"message": ...}} once
+    decoded, which is also the only field read here — anything else in the body
+    is left alone rather than guessed at.
+    """
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ""
+    err = data.get("error") if isinstance(data, dict) else None
+    return str(err.get("message") or "").strip() if isinstance(err, dict) else ""
+
+
+def _redact(text: str, key: str) -> str:
+    """Strip the literal key out of anything about to be shown or logged.
+
+    OpenAI's own 401 body echoes the key back — "Incorrect API key provided:
+    sk-proj-...cdef" — so a provider's message is not safe to relay unexamined.
+    Matched against the real key rather than a pattern, because the one string
+    that must never reach a message, a detail or a log is the one already
+    sitting in Settings.
+
+    Guarded on the *stripped* key, not the key itself: backend_for()'s "if not
+    settings.anthropic_key" check does not catch a key that is just whitespace
+    — a stray leading or trailing space is an easy slip, and a whitespace-only
+    string is still truthy — and replacing every run of spaces in a message
+    with "[key redacted]" is worse than the empty problem it was guarding
+    against. A key of only whitespace was never a real key, so there is
+    nothing here to redact.
+
+    This is an exact, case-sensitive match against the literal key — no
+    tolerance for whitespace variation, case folding, or a provider's own
+    partial masking. That is deliberately narrow rather than a gap: checked
+    directly against both providers, Anthropic's 401 body never echoes the key
+    at all, and OpenAI's masks all but about eleven characters of it, so a
+    full-string match catches both as they behave today. This is belt and
+    braces over that checked behaviour, not a guarantee that no provider could
+    ever leak a key some other way.
+    """
+    return text.replace(key, "[key redacted]") if key.strip() and key in text else text
+
+
+def _retry_hint(exc: urllib.error.HTTPError) -> str:
+    """What the provider itself said to wait, when it said anything at all."""
+    after = exc.headers.get("retry-after") if exc.headers else None
+    try:
+        seconds = int(float(after))
+    except (TypeError, ValueError):
+        return ""
+    return f" It suggested waiting about {seconds}s before trying again." if seconds > 0 else ""
+
+
+def _api_error(provider: str, exc: urllib.error.HTTPError, key: str) -> TranslationError:
+    """Turn a rejected HTTP request into the thing a user can act on.
+
+    The Ollama path below already does this; the two API paths used to do
+    nothing at all, so a 401 raised urllib.error.HTTPError, which is not a
+    TranslationError and was swallowed a few lines down in _ask() as "no lines
+    came back" — thirty retries and ninety seconds later the report blamed a
+    local model that was never in use. The distinction made here is what lets
+    that swallow-and-retry loop be skipped rather than merely renamed: _ask()
+    re-raises a TranslationError instead of eating it, so a request that can
+    never succeed fails on the first try.
+    """
+    body = exc.read()
+    said = _redact(_provider_message(body), key)
+    quote = f" {provider} said: \u201c{said}\u201d." if said else ""
+    detail = _redact(body.decode("utf-8", "replace"), key)[:2000]
+
+    if exc.code in (401, 403):
+        return TranslationError(
+            f"{provider} rejected the API key in Settings \u2192 Translation.{quote} "
+            "Check the key is correct and hasn't been revoked.", detail)
+    if exc.code == 429:
+        return TranslationError(
+            f"{provider} is rate-limiting this key, or it's out of credit.{quote}"
+            f"{_retry_hint(exc)}", detail)
+    if exc.code >= 500:
+        return TranslationError(
+            f"{provider}'s API is having problems on its end (HTTP {exc.code})."
+            f"{quote} This is usually temporary.", detail)
+    return TranslationError(
+        f"{provider} refused the request (HTTP {exc.code}).{quote}", detail)
+
+
+def _unreachable(provider: str, exc: urllib.error.URLError) -> TranslationError:
+    return TranslationError(
+        f"Could not reach {provider}'s API. Check the internet connection and try again.",
+        str(exc.reason))
+
+
 def _call_anthropic(prompt: str, model: str, key: str,
                     system: str = SYSTEM) -> str:
     body = json.dumps({
@@ -372,8 +480,13 @@ def _call_anthropic(prompt: str, model: str, key: str,
         "https://api.anthropic.com/v1/messages", data=body,
         headers={"Content-Type": "application/json", "x-api-key": key,
                  "anthropic-version": "2023-06-01"})
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        data = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise _api_error("Anthropic", exc, key) from exc
+    except urllib.error.URLError as exc:
+        raise _unreachable("Anthropic", exc) from exc
     return "".join(b.get("text", "") for b in data.get("content", []))
 
 
@@ -388,8 +501,13 @@ def _call_openai(prompt: str, model: str, key: str,
     req = urllib.request.Request(
         "https://api.openai.com/v1/chat/completions", data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        data = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise _api_error("OpenAI", exc, key) from exc
+    except urllib.error.URLError as exc:
+        raise _unreachable("OpenAI", exc) from exc
     return data["choices"][0]["message"]["content"]
 
 
@@ -664,13 +782,13 @@ def backend_for(settings, ram_gb: int, progress: Progress = None):
                 f"local model {model}")
     if backend == "anthropic":
         if not settings.anthropic_key:
-            raise TranslationError("No Anthropic API key set in Settings.")
+            raise TranslationError("No Anthropic API key set in Settings \u2192 Translation.")
         return ((lambda p, system=SYSTEM: _call_anthropic(
                     p, settings.anthropic_model, settings.anthropic_key, system=system)),
                 settings.anthropic_model)
     if backend == "openai":
         if not settings.openai_key:
-            raise TranslationError("No OpenAI API key set in Settings.")
+            raise TranslationError("No OpenAI API key set in Settings \u2192 Translation.")
         return ((lambda p, system=SYSTEM: _call_openai(
                     p, settings.openai_model, settings.openai_key, system=system)),
                 settings.openai_model)
@@ -705,9 +823,23 @@ def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = 
 
     missing = [s for s in segments if s["i"] not in done]
     if len(missing) > len(segments) * 0.05:
+        # settings.translator, not label: label is "local model X" for Ollama
+        # and a free-text model id the user typed into Settings for the other
+        # two, and parsing that string to decide the advice below couples the
+        # message to a display convention when the definitive answer — which
+        # backend actually ran — is sitting right here. This used to ignore
+        # both and always blame a local model, so a paid API key that had
+        # translated all but a few lines of the video was told, in the
+        # failure it caused, to go find a bigger local model.
+        if settings.translator == "ollama":
+            hint = "If you are using a local model, try a larger one in Settings \u2192 Translation."
+        else:
+            hint = (f"{label} isn't a local model, so a bigger one won't help — "
+                    "try the job again; if it keeps happening, a handful of lines "
+                    "are likely tripping it up rather than the whole batch.")
         raise TranslationError(
-            f"Translation only returned {len(done)} of {len(segments)} lines. "
-            "If you are using a local model, try a larger one in Settings."
+            f"Translation only returned {len(done)} of {len(segments)} lines, "
+            f"translating with {label}. {hint}"
         )
     for seg in segments:
         seg["translation"] = done.get(seg["i"], "").strip()

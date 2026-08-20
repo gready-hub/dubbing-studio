@@ -1362,7 +1362,9 @@ class JobRunner:
             job.error_detail = exc.detail
             self._emit(job)
         except TranslationError as exc:
-            self._fail(job, str(exc))
+            self._fail(job, str(exc), exc.detail)
+            job.error_detail = exc.detail
+            self._emit(job)
         except FileNotFoundError as exc:
             missing = getattr(exc, "filename", "") or str(exc)
             hint = ("ffmpeg is missing — re-run the installer."
