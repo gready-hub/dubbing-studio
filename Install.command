@@ -369,8 +369,9 @@ python -m pip install --quiet pywebview pillow 2>/dev/null || \
 
 if [[ -n "$PROTECTED" ]]; then
   warn "This folder is in $PROTECTED, which macOS stops apps from reading."
-  warn "The app icon will not open until you move this folder somewhere else —"
-  warn "your home folder ($HOME) works. Move it, then run this installer again."
+  warn "The app icon will not open until the app lives somewhere else. Re-run"
+  warn "the one-line installer from the README and it will move it to"
+  warn "Application Support, which macOS never blocks."
   warn "Meanwhile \"Start Dubbing Studio\" in this folder still works."
 fi
 

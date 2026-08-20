@@ -23,16 +23,33 @@ set -uo pipefail
 
 REPO="gready-hub/dubbing-studio"
 BRANCH="${DUBBING_STUDIO_BRANCH:-main}"
+
+# Whatever is at DEST is replaced wholesale: moved aside, then deleted with the
+# temporary folder at the end. So it has to be a folder this app owns.
+# DUBBING_STUDIO_DIR pointed at Documents, or at a home folder, would take that
+# folder with it, and there is nothing in a path itself that says which it is.
+# An empty folder passes because someone making it first is a reasonable way to
+# choose where this goes.
+is_install() { [[ -f "$1/Install.command" && -f "$1/app/pipeline.py" ]]; }
+is_empty()   { [[ -d "$1" && -z "$(ls -A "$1" 2>/dev/null)" ]]; }
+
 # Where to install. Piped from curl there is no script on disk, so this is the
 # default location; run from inside an install — which is what the app's own
-# "Update now" does — it is that install, wherever the user happens to keep it.
+# "Update now" does — it is that install, wherever the user happens to keep it,
+# so nobody's existing copy moves underneath them.
+#
+# Application Support rather than a folder in the home directory: that is where
+# macOS keeps code and data an app manages on the user's behalf, and it is not
+# one of the locations the system refuses to let a locally-built app read. The
+# nesting is deliberate — settings.json and history.json live in the folder
+# above, and an update replaces this one wholesale.
 DEST="${DUBBING_STUDIO_DIR:-}"
 if [[ -z "$DEST" ]]; then
   HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || HERE=""
-  if [[ -n "$HERE" && -f "$HERE/app/pipeline.py" && -f "$HERE/Install.command" ]]; then
+  if [[ -n "$HERE" ]] && is_install "$HERE"; then
     DEST="$HERE"
   else
-    DEST="$HOME/Dubbing Studio"
+    DEST="$HOME/Library/Application Support/DubbingStudio/program"
   fi
 fi
 TARBALL="https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz"
@@ -46,6 +63,16 @@ printf "\n${BOLD}Dubbing Studio${RESET}\n\n"
 
 if [[ "$(uname)" != "Darwin" ]]; then
   bad "This is for macOS. On Windows or Linux use the Docker version instead."
+  exit 1
+fi
+
+if [[ -e "$DEST" ]] && ! is_install "$DEST" && ! is_empty "$DEST"; then
+  bad "That path holds something that is not a Dubbing Studio install:"
+  say "      $DEST"
+  say ""
+  say "  Installing would replace it, so this stops here instead. Move that"
+  say "  folder yourself if it should go, or point DUBBING_STUDIO_DIR somewhere"
+  say "  else."
   exit 1
 fi
 
@@ -109,6 +136,8 @@ xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 chmod +x "$DEST/Install.command" "$DEST/Update.command" \
          "$DEST/Uninstall.command" "$DEST/install.sh" 2>/dev/null || true
 ok "Installed to $DEST"
+# Hidden in Finder, so the path alone is not much use to anyone.
+say "    Open that folder later with:  open \"$DEST\""
 
 # Used by the test suite, and genuinely useful on its own: update the code
 # without sitting through the full setup again.

@@ -2662,6 +2662,8 @@ def test_observability():
     check("an unexpected death is caught too, not just the checked failures",
           "trap 'code=$?" in inst and "finish_badly" in inst)
     check("and the ending cannot fire twice", "HANDLED" in inst)
+    check("the installer will not replace a folder that is not an install",
+          "is_install" in (ROOT / "install.sh").read_text())
     for script in ("Install.command", "install.sh", "Update.command"):
         ok = subprocess.run(["bash", "-n", str(ROOT / script)],
                             capture_output=True).returncode == 0

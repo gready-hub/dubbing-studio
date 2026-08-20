@@ -28,10 +28,14 @@ leave it and come back.
 <details>
 <summary>Prefer to install by hand?</summary>
 
-Download the zip from GitHub, unzip it, and move the folder somewhere like
-`/Users/you/Dubbing Studio` — **not** Downloads, Desktop, Documents or iCloud
-Drive, which macOS blocks the app from reading. Then right-click
+Download the zip from GitHub, unzip it, and move the folder somewhere that is
+**not** Downloads, Desktop, Documents or iCloud Drive — macOS blocks the app
+from reading those. Your home folder works. Then right-click
 **Install.command**, choose **Open**, and click **Open** again in the dialog.
+
+The Terminal line installs to `~/Library/Application Support/DubbingStudio/`
+instead, which is where macOS expects an app to keep this and is never one of
+the blocked locations.
 
 The Terminal line above exists to skip all of that. Files a browser downloads
 are tagged by macOS as coming from an unidentified developer; files fetched by
@@ -325,7 +329,13 @@ details are on your clipboard when the window closes.
 |---|---|
 | App log | `~/Library/Logs/DubbingStudio.log` — one JSON record per line |
 | Install log | `~/Library/Logs/DubbingStudio-install.log` |
-| Working files | `~/Library/Application Support/DubbingStudio/jobs` |
+| Settings and history | `~/Library/Application Support/DubbingStudio/` |
+| The app itself | `~/Library/Application Support/DubbingStudio/program/` |
+| Working files, models, voice samples | `~/Library/Caches/DubbingStudio/` |
+
+Two roots on purpose. The first holds the only things here nobody can
+regenerate, so backups keep them. The second is re-downloadable by definition,
+which is why it lives where Time Machine skips it and macOS can reclaim it.
 
 The app log rotates at 5 MB and keeps three, so a whole job always fits in one
 file and it can never grow without limit.

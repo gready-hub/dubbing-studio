@@ -55,7 +55,8 @@ cd "\$SRC" || {
 }
 
 if [[ ! -d .venv ]]; then
-  osascript -e 'display alert "Dubbing Studio" message "Setup is incomplete. Open the Dubbing Studio folder and double-click Install."'
+  osascript -e 'display alert "Dubbing Studio" message "Setup is not finished. The installer will open in a Terminal window — let it run, then start Dubbing Studio again."'
+  open -a Terminal "\$SRC/Install.command"
   exit 1
 fi
 
@@ -66,7 +67,7 @@ source .venv/bin/activate 2>/dev/null
 # one. The read fails silently, so check for it here and say what to do instead
 # of exiting into a log file nobody looks at.
 if ! command -v python >/dev/null 2>&1; then
-  osascript -e 'display alert "Dubbing Studio" message "macOS is blocking the app from reading its own folder.\n\nThis happens when the Dubbing Studio folder is kept in Downloads, Desktop or Documents. Move the folder to your home folder — for example /Users/'"\$USER"'/Dubbing Studio — then double-click Install once more.\n\nUntil then you can still use \"Start Dubbing Studio\" inside the folder." as critical'
+  osascript -e 'display alert "Dubbing Studio" message "macOS is blocking the app from reading its own folder.\n\nThis happens when the app is kept in Downloads, Desktop or Documents. Re-run the one-line installer from the README — it installs to Application Support, which macOS allows.\n\nUntil then you can still use \"Start Dubbing Studio\" inside the folder." as critical'
   exit 1
 fi
 
