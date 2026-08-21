@@ -2709,6 +2709,103 @@ def test_observability():
     check("the three settings a preset owns say so beside the field",
           settings_js.count("${PRESET_TAG}") == len(_S.PRESET_KEYS)
           and all(f'"{k}"' in settings_js for k in _S.PRESET_KEYS))
+    # A creator set Original audio to keep the original quietly underneath,
+    # meaning to keep the music bed, and got his original speech back too —
+    # established from outside by holding everything else constant and
+    # flipping only that one select. The panel used to just make the "mix it
+    # back" control disappear when that happens, which told him nothing; it
+    # has to say so in Settings, at the moment of choice, not only in a report
+    # row read after the run.
+    check("the panel explains itself instead of just disappearing when the "
+          "music-and-effects mix-back is overridden",
+          "keepMusicTag" in settings_js and "keepMusicHint" in settings_js
+          and "keep_music_applies" in settings_js)
+    check("the explanation points at how to actually get the bed under the "
+          "new voices without the original speech",
+          "Set Original audio " in settings_js
+          and "to Replace completely for the music and effects" in settings_js)
+    # A disabled control drops out of the tab order outright: tabbing from
+    # "Music and effects" landed straight on "Speaking speed" and a keyboard
+    # user never reached this field, its tag or its hint at all — the one
+    # control this item exists to make legible was the one control a keyboard
+    # user could not reach. The reviewer sided against disabling it for
+    # exactly that reason, so the fix has to stay operable while inert rather
+    # than frozen.
+    check("the control stays enabled while overridden — dimmed, not disabled, "
+          "so a keyboard user still reaches it",
+          '.disabled = overridden' not in settings_js
+          and '$("#keep_music").classList.toggle("dim", overridden)' in settings_js)
+    # Sighted-only was the same complaint one layer up: a tag and a hint that
+    # only ever sat on screen told a screen reader nothing when it landed on
+    # the control they are about. Both ids ride on the one attribute assistive
+    # tech already reads for every other hint in this panel.
+    check("the tag and the hint are both reachable from the control itself, "
+          "not merely present on screen",
+          'aria-describedby="keepMusicTag keepMusicHint"' in settings_js)
+    # "changed" and "Not in force" side by side contradicted each other, and
+    # the dialog's own total counted a setting it had just said was inert.
+    # shown() already keeps a hidden field out of that accounting; overridden()
+    # is the same idea for a field that is on screen but not acting on
+    # anything, and markChanged() has to consult it or the contradiction is
+    # back the moment the control is visible rather than hidden.
+    check("an overridden field is excluded from the changed count and flag "
+          "the same way a hidden one already is",
+          "&& this.shown(key) && !this.overridden(key)" in settings_js)
+    check("overridden() is read off the tag applyConditions() already shows, "
+          "not a second copy of keep_music_applies()'s own condition",
+          "data-override=" in settings_js
+          and "overridden(key){" in settings_js)
+    # The truncation fix was giving the control room, not shorter words — this
+    # is the property that actually did that, and until now nothing asserted
+    # it, so the rejected "shorten the labels" fix could have silently come
+    # back in its place.
+    grid_full_block = settings_js.split('class="grid-full"', 1)[1][:200]
+    check("Original audio spans the full grid row rather than sharing a half "
+          "column, which is what actually fixed the truncation",
+          'for="audio_mode"' in grid_full_block)
+    # Duck mode ducks the whole original track, its own speech included, not
+    # only the music riding along in it — the exact misreading that put a
+    # creator's original speech under his dub when all he asked for was the
+    # crowd noise. Saying so inside the option label pushed the dB figure —
+    # the only thing telling the three duck levels apart — past what a closed
+    # <select> shows, trading one unreadable thing for another; the labels
+    # stay at their shipped length and the disambiguation lives in a hint
+    # under the control instead, shown whenever there is a whole original in
+    # the running to talk about.
+    check("the Original-audio option labels stay short enough that the "
+          "chosen one — duck level included — is still readable closed",
+          "Keep quietly underneath — quiet (-12 dB)" in settings_js
+          and "Keep as a second track" in settings_js
+          and "Keep the whole original" not in settings_js)
+    check("what keeping the original actually keeps is said once, in a hint, "
+          "not folded into every option label",
+          "audioModeHint" in settings_js
+          and "not just its music" in settings_js)
+    # Settings and the Quality report used to name this same option two
+    # different ways once the Settings label grew a qualifier the report's own
+    # copy never got — one control with two names in one product is exactly
+    # the kind of thing that let the original bug hide. Reusing the shipped
+    # option wording keeps them in step without the report needing its own
+    # copy of the rule.
+    report_js = (ROOT / "app" / "static" / "js" / "run-report.js").read_text()
+    check("the Quality report names Original audio the same way Settings does",
+          "Keep quietly underneath" in report_js
+          and "Keep as a second track" in report_js)
+    # "Voice" (which built-in voice speaks) and "Voices" (built-in versus
+    # cloned) were a tester's own reported confusion in the audit that
+    # produced this whole item, one letter apart and easy to mistake even
+    # while a row apart. Making Original audio span the full grid row to fix
+    # the truncation above closed that gap and put them side by side, which
+    # would have sharpened the exact confusion already on file rather than
+    # waiting for it to be renamed separately. "Cloning" is reused from
+    # wording the app already uses for this same choice elsewhere, so nothing
+    # new is coined and nothing shares a stem with "Voice" left to misread.
+    check("the built-in-versus-cloned field is named apart from \"Voice\", "
+          "not \"Voices\"",
+          'label for="voice_mode">Cloning<' in settings_js
+          and 'label for="voice_mode">Voices<' not in settings_js)
+    check("and the Quality report calls it the same thing",
+          'add("voice_mode", "Cloning"' in report_js)
     check("the engine is stated where the machine is described, not in the header",
           "engine" in doctor_js and "ram_gb" in doctor_js
           and 'class="engine"' not in header_js, "setup check")

@@ -17,6 +17,15 @@ const TEXT_SETTINGS = ["voice","glossary","translator","ollama_model",
 // original is held at. audio_mode is therefore painted and posted by hand
 // rather than through the lists above, and names duck_db in its data-also so
 // the setting it carries is not invisible to the reset scopes.
+//
+// The dB figure is the only thing telling the three duck options apart, and
+// a closed <select> shows only as much of its chosen option as the control is
+// wide — spelling out "the whole original" here once pushed the figure past
+// that edge, so the selection itself could no longer be read without opening
+// the menu. That is a worse failure than the misreading it was trying to
+// fix. The labels stay short; what they mean — that duck and dual both keep
+// the whole original, its own speech included, not only the music riding
+// along in it — is said once, in full, in the hint under the control instead.
 const AUDIO_CHOICES = [
   ["replace", "Replace completely"],
   ["duck:-12", "Keep quietly underneath — quiet (-12 dB)"],
@@ -66,26 +75,40 @@ const SHELL = `
             </div>
             <audio id="auditionAudio" style="display:none"></audio>
           </div>
+          <!-- Named "Cloning" rather than "Voices": a tester in the same audit
+               that produced this whole item had already flagged "Voice" and
+               "Voices" as easy to mistake for each other — one picks who
+               speaks, the other picks how the voice is produced — and putting
+               them side by side in the row above, once Original audio grew to
+               full width and closed the gap that used to sit between them,
+               would have sharpened exactly that confusion rather than waited
+               for it to be renamed separately. "Cloning" is the word the rest
+               of the app already uses for this same choice — the info-tip
+               below, and the preset descriptions in new-job-panel.js both say
+               it — so nothing new is coined, and nothing shares a stem with
+               "Voice" left to misread it against. -->
           <div>
-            <div class="field-head"><label for="audio_mode">Original audio</label></div>
-            <select id="audio_mode" data-also="duck_db">${AUDIO_OPTIONS}</select>
-          </div>
-          <div>
-            <div class="field-head"><label for="speed">Speaking speed</label></div>
-            <select id="speed">
-              <option value="0.9">Slower</option>
-              <option value="1.0">Normal</option>
-              <option value="1.1">Slightly faster</option>
-            </select>
-          </div>
-          <div>
-            <div class="field-head"><label for="voice_mode">Voices</label>${PRESET_TAG}<info-tip
-              label="voices"
+            <div class="field-head"><label for="voice_mode">Cloning</label>${PRESET_TAG}<info-tip
+              label="cloning"
               text="Cloning keeps the speaker's identity, but carries their accent into English."></info-tip></div>
             <select id="voice_mode">
               <option value="fixed">Use a built-in voice</option>
               <option value="clone">Clone the original speaker</option>
             </select>
+          </div>
+          <!-- Full width, not a half column: three of the five options carry a
+               dB figure that is the only thing telling them apart, and a half
+               column here clipped it off the end of every one of them — even
+               before wording was added to spell out what "kept" actually
+               means. A creator with -18 dB selected could no longer tell that
+               was his level rather than -12 or -24. Spanning the row is
+               costless — nothing else needs to sit beside it — and keeps the
+               wording exactly as shipped rather than trading readability for
+               width. -->
+          <div class="grid-full">
+            <div class="field-head"><label for="audio_mode">Original audio</label></div>
+            <select id="audio_mode" data-also="duck_db" aria-describedby="audioModeHint">${AUDIO_OPTIONS}</select>
+            <p class="hint hidden" id="audioModeHint"></p>
           </div>
           <div>
             <div class="field-head"><label for="separate_audio">Music and effects</label>${PRESET_TAG}<info-tip
@@ -97,10 +120,20 @@ const SHELL = `
             </select>
           </div>
           <div id="keepMusicBox">
-            <div class="field-head"><label for="keep_music">The separated music and effects</label></div>
-            <select id="keep_music">
+            <div class="field-head"><label for="keep_music">The separated music and effects</label><span
+              class="tag off hidden" id="keepMusicTag" data-override="keep_music">Not in force</span></div>
+            <select id="keep_music" aria-describedby="keepMusicTag keepMusicHint">
               <option value="true">Mix it back under the new voices</option>
               <option value="false">Drop it — voices only</option>
+            </select>
+            <p class="hint hidden" id="keepMusicHint"></p>
+          </div>
+          <div>
+            <div class="field-head"><label for="speed">Speaking speed</label></div>
+            <select id="speed">
+              <option value="0.9">Slower</option>
+              <option value="1.0">Normal</option>
+              <option value="1.1">Slightly faster</option>
             </select>
           </div>
         </div>
@@ -277,6 +310,25 @@ const STYLE = `
               border-color:currentColor;color:inherit;opacity:.7}
   .pill:empty{display:none}
   .pill.flag:not(.on){display:none}
+  /* "Set by preset" is drawn in the accent colour because it is telling the
+     truth about a control that is fully in force. A control this same tag
+     shape sits on that has been quietly overridden needs the opposite
+     read at a glance — dim rather than featured — so the same silhouette
+     does not say the same thing twice over for two opposite states. */
+  .tag.off{background:transparent;border:1px solid var(--line);color:var(--muted)}
+  /* De-emphasis that keeps the control operable and in the tab order, unlike
+     the native disabled state this replaced: a disabled select is unreachable
+     by keyboard, which hid the one field this item exists to make legible
+     from exactly the person who cannot see a greyed-out control change
+     colour. Opacity alone dims every part of it together — text, border,
+     arrow — without touching focusability. */
+  select.dim{opacity:.65}
+  /* Spans both tracks of the two-column grid it sits in, rather than sharing
+     one — see the markup comment above #audio_mode for why a half column
+     wasn't enough room for that control. At the single-column width the media
+     query below already forces, this is a no-op: there is only one track to
+     span. */
+  .grid-full{grid-column:1/-1}
   /* A save that did not happen must not read as the acknowledgement it stands
      in the place of. */
   #savedMsg.bad{color:var(--bad)}
@@ -539,17 +591,32 @@ class SettingsPanel extends BaseElement {
     return this.fields(tab).filter(key => this.shown(key));
   }
 
+  // Whether a field's own value currently has no bearing on the run — read
+  // off the same tag applyConditions() shows beside it, the way shown() reads
+  // the .hidden class it toggles, rather than re-deriving keep_music_applies()
+  // a second time here in this file's own image. A field with no such tag
+  // present is never overridden.
+  overridden(key){
+    const tag = this.$(`[data-override="${key}"]`);
+    return !!tag && !tag.classList.contains("hidden");
+  }
+
   refreshCounts(){
     if(this._settings) this.markChanged(this._settings, this._defaults || {});
   }
 
+  // A control an override has made inert is not "changed" in any sense worth
+  // reporting: the value on screen may be exactly what was saved, but with no
+  // bearing on the run right now, counting it — or badging it "changed" right
+  // beside its own "Not in force" tag — tells the user two contradictory
+  // things about the same field in the same breath. See overridden().
   markChanged(settings, defaults){
     let total = 0;
     TABS.forEach(tab => {
       let count = 0;
       this.fields(tab).forEach(key => {
         const differs = key in defaults && !same(settings[key], defaults[key])
-                        && this.shown(key);
+                        && this.shown(key) && !this.overridden(key);
         if(differs) count++;
         const flag = this.$(`[data-flag="${key}"]`);
         if(!flag) return;
@@ -587,13 +654,66 @@ class SettingsPanel extends BaseElement {
     this.$("#ollamaBox").classList.toggle("hidden", t !== "ollama");
     this.$("#anthropicBox").classList.toggle("hidden", t !== "anthropic");
     this.$("#openaiBox").classList.toggle("hidden", t !== "openai");
-    // The pipeline mixes the separated bed back in only when there is a
-    // separated bed and the dub replaces the original: in duck and dual modes
-    // the whole original soundtrack is still there, music included, so the
-    // question does not arise.
-    this.$("#keepMusicBox").classList.toggle("hidden",
-      !(this.$("#separate_audio").value === "true"
-        && this.$("#audio_mode").value === "replace"));
+
+    // "Keep quietly underneath" and "Keep as a second track" both read, to
+    // whoever picks either for that reason, as "keep the music underneath" —
+    // but duck and dual both carry the whole original along, its own speech
+    // included, not only the music and effects riding in it. A creator chose
+    // exactly the first of those meaning to keep the crowd noise and
+    // commentary bed under his English dub, and got his original speech back
+    // too, with the option's own wording giving him no reason to expect
+    // otherwise. Spelling that out in the option label itself pushed the one
+    // thing that tells the three duck levels apart — the dB figure — past
+    // what a closed <select> shows, so the fix said here instead, in full,
+    // whenever there is a whole original in the running to talk about.
+    const replacing = this.$("#audio_mode").value.split(":")[0] === "replace";
+    const audioHint = this.$("#audioModeHint");
+    audioHint.classList.toggle("hidden", replacing);
+    audioHint.textContent = replacing ? "" :
+      "Keeps the whole original in the file, not just its music — the "
+      + "original speech rides along with it.";
+
+    // Mirrors Settings.keep_music_applies() in config.py: there is a separated
+    // bed to put back only when speech was actually split out, and only room
+    // for it when the original is being replaced outright — ducking it or
+    // keeping it as a second track leaves the whole original, its own speech
+    // included, in the file already (see the hint above). A creator set
+    // exactly that pairing, meaning to keep the crowd noise and commentary bed
+    // under his English dub, and got the opposite: the bed was never mixed
+    // back and his original speech sat under the new track instead, with
+    // nothing in Settings to say why — the only word of it was one row in a
+    // report read after the run had already finished. Hiding "Mix it back"
+    // outright, the way the unused translator boxes above hide, would repeat
+    // that same silence: a control that just disappears reads as tidying up,
+    // not as an answer. So only the case with nothing to speak of at all —
+    // separation never asked for — hides the box; the case where the ask is
+    // being overridden keeps it on screen, tagged, with the reason spelled
+    // out right there.
+    //
+    // Disabling it was tried and reverted: a disabled control drops out of
+    // the tab order entirely, so a keyboard user tabbing from "Music and
+    // effects" landed on "Speaking speed" next and never reached this field,
+    // its tag or its hint at all — the one control this whole item exists to
+    // make legible became the one control a keyboard user could not reach.
+    // The value also still means something while inert: it is what applies
+    // the moment Original audio goes back to Replace completely, so leaving
+    // it choosable rather than frozen is correct, not confusing — "Not in
+    // force" already says it is not acting on anything right now. Dimmed
+    // rather than disabled keeps the affordance and the explanation both
+    // reachable by the same means: focus, not sight.
+    const separating = this.$("#separate_audio").value === "true";
+    const overridden = separating && !replacing;
+    this.$("#keepMusicBox").classList.toggle("hidden", !separating);
+    this.$("#keep_music").classList.toggle("dim", overridden);
+    this.$("#keepMusicTag").classList.toggle("hidden", !overridden);
+    const hint = this.$("#keepMusicHint");
+    hint.classList.toggle("hidden", !overridden);
+    hint.textContent = overridden
+      ? "There's no room to mix a separate copy of the music in while the "
+        + "whole original is already staying in the file. Set Original audio "
+        + "to Replace completely for the music and effects under the new "
+        + "voices without the original speech."
+      : "";
   }
 
   save(){

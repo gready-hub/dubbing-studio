@@ -72,7 +72,7 @@ export function runRows(job, state, {outcomes = false} = {}){
     rows.push(["Quality preset", ((state.presets || {})[preset] || {}).label
       || String(preset).charAt(0).toUpperCase() + String(preset).slice(1)]);
   }
-  add("voice_mode", "Voices", from(VOICE_MODES));
+  add("voice_mode", "Cloning", from(VOICE_MODES));
   // The chosen built-in voice had no part in a run that cloned the original
   // speakers; what did the speaking is a result rather than a choice.
   if(snap.voice_mode !== "clone"){
