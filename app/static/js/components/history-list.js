@@ -126,7 +126,10 @@ class HistoryList extends BaseElement {
       const gone = j.output_exists === false || knownGone(j.output);
       const data = {
         title: j.title,
-        subtitle: [(finishedOn(j) || {}).day, fmt(j.elapsed),
+        // Bare beside a title, a duration reads as the video's own length —
+        // it is how long the dub took. "Took", the same word the detail rows
+        // below and the sample report use for the same number, says so.
+        subtitle: [(finishedOn(j) || {}).day, `Took ${fmt(j.elapsed)}`,
                    ...(gone ? ["file no longer there"] : [])].filter(Boolean).join(" · "),
         detail: detail(j, s, gone),
         // Nothing to show: the file has been moved or deleted, and offering to

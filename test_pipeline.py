@@ -64,6 +64,12 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 
+def note_text(n):
+    """A job.stats note may be a bare string (a warning, always) or an
+    app.notes.info()-tagged dict. Read the words either way."""
+    return n["text"] if isinstance(n, dict) else n
+
+
 def stub_download(clip: Path, title: str, duration: float, replace: bool = False):
     """Stand in for the download step, probe included.
 
@@ -1723,7 +1729,7 @@ def test_preview():
         if brief.status == "done":
             check("it was dubbed whole rather than sampled", brief.preview is False)
             check("and it says why",
-                  any("only" in n and "whole thing" in n
+                  any("only" in note_text(n) and "whole thing" in note_text(n)
                       for n in brief.stats.get("notes", [])),
                   str(brief.stats.get("notes")))
             check("so it did reach the finished videos folder",
@@ -3144,6 +3150,71 @@ def test_observability():
           "if(live) store.setCurrent(live.id);\n  else {" in boot_block
           and "latestSample(jobs)" in boot_block)
 
+    # The "Won't sleep" / "May sleep" pill read as a status badge rather than a
+    # control: a tester clicked it just to see what it was and silently gave up
+    # the thing keeping her Mac awake through a long dub. An info-tip beside it,
+    # the same device Settings already uses to explain a control before it's
+    # changed, says what it is and what turning it off means before that click.
+    check("the awake pill has an info-tip beside it, the same device Settings "
+          "uses to explain a control before it's changed",
+          'id="awakeTip"' in header_js and "info-tip" in header_js)
+    check("the tip explains both what being kept awake means and what "
+          "clicking it off costs, not just repeating the pill's own label",
+          "kept awake for as long as a video is dubbing" in header_js
+          and "pauses" in header_js and "until you wake it" in header_js)
+
+    # A history row said e.g. "August 19 · 52s" beside the title — the time the
+    # dub took, read next to a title as if it were the video's own length.
+    check("a history row's duration says it is how long the dub took, not the "
+          "video's own length",
+          '`Took ${fmt(j.elapsed)}`' in hist_js)
+
+    # The sample screen's note explaining what a 30-second sample can and
+    # cannot promise is good, honest writing — styling it in the same amber
+    # box as a real problem made a successful sample read as a second error.
+    # pipeline.py now tags that note (and every other explanation-or-good-news
+    # note) "info" at the source, rather than the panel guessing which one it
+    # was by popping the last entry off the list.
+    done_js = (ROOT / "app" / "static" / "js" / "components" / "done-panel.js").read_text()
+    check("an info-tagged note is read by its kind, not by its position in "
+          "the list",
+          "notes.pop()" not in done_js
+          and "const isInfo = n => n && typeof n === \"object\" && n.kind === \"info\";"
+          in done_js)
+    check("an info note is shown as plain text instead of in the warning box",
+          'notes.filter(isInfo).map(n=>`<p class="hint" style="margin:0 0 12px">'
+          in done_js)
+    check("real notes — actual fallbacks and warnings, and any note recorded "
+          "before this tagging existed — still get the warning box",
+          'class="banner info" style="margin:0 0 12px">`\n          + warnings.map'
+          in done_js)
+
+    # Proven against the panel's own classifier, extracted verbatim, rather
+    # than reimplemented here: a stored job or a history.json written before
+    # this change holds notes as bare strings, and one of those must still
+    # come out a warning instead of crashing the panel or vanishing.
+    classifier = "\n".join(l.strip() for l in done_js.splitlines()
+                           if l.strip().startswith(("const isInfo", "const text")))
+    script = classifier + """
+const oldStyle = "Speech and music could not be separated, so the original "
+  + "soundtrack was replaced rather than kept.";
+const tagged = {kind: "info", text: "This is a 30-second sample..."};
+console.log(JSON.stringify({
+  oldStyleIsInfo: isInfo(oldStyle), oldStyleText: text(oldStyle),
+  taggedIsInfo: isInfo(tagged), taggedText: text(tagged),
+}));
+"""
+    result = json.loads(subprocess.run(["node", "-e", script], capture_output=True,
+                                       text=True, check=True).stdout)
+    check("an old-style plain-string note is classified as a warning, its "
+          "text unchanged",
+          result["oldStyleIsInfo"] is False
+          and result["oldStyleText"].startswith("Speech and music"), str(result))
+    check("a new info-tagged note is classified as info, its text read from "
+          "the tag rather than the object itself",
+          result["taggedIsInfo"] is True
+          and result["taggedText"] == "This is a 30-second sample...", str(result))
+
 
 # ============================ 15. terminology lifted from the video itself
 def test_terminology():
@@ -3867,7 +3938,8 @@ def test_translate_resume():
             check("only the line that was still missing was ever asked for",
                   requested == [25], str(requested))
             check("the resume was reported",
-                  any("already translated" in n for n in job_b.stats.get("notes", [])),
+                  any("already translated" in note_text(n)
+                      for n in job_b.stats.get("notes", [])),
                   str(job_b.stats.get("notes")))
             check("every line ended up spoken, not just the resumed one",
                   job_b.stats.get("lines_spoken") == N,
@@ -3909,7 +3981,8 @@ def test_translate_resume():
                   "resuming from it — every line is asked for again",
                   sorted(set(requested_c)) == list(range(N)), str(sorted(set(requested_c))))
             check("no resume was reported, since none happened",
-                  not any("already translated" in n for n in job_c2.stats.get("notes", [])),
+                  not any("already translated" in note_text(n)
+                          for n in job_c2.stats.get("notes", [])),
                   str(job_c2.stats.get("notes")))
     finally:
         pipeline.download.probe = real_probe

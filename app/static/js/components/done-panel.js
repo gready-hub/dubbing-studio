@@ -98,10 +98,20 @@ class DonePanel extends BaseElement {
     const sample = !!job.preview;
     const stats = job.stats || {};
     const yn = v => v === true ? "yes" : v === false ? "no" : "—";
-    this.$("#dNotes").innerHTML = (stats.notes || []).length
-      ? `<div class="banner info" style="margin:0 0 12px">`
-        + (stats.notes || []).map(n=>`<div>${escapeHtml(n)}</div>`).join("") + `</div>`
-      : "";
+    // pipeline.py tags a note "info" at the source when it explains something
+    // or reports good news rather than a fault. Anything else — including
+    // every note recorded before this tagging existed, a bare string — is a
+    // warning, exactly as it always has been.
+    const isInfo = n => n && typeof n === "object" && n.kind === "info";
+    const text = n => isInfo(n) ? n.text : n;
+    const notes = stats.notes || [];
+    const warnings = notes.filter(n => !isInfo(n));
+    this.$("#dNotes").innerHTML =
+      notes.filter(isInfo).map(n=>`<p class="hint" style="margin:0 0 12px">${escapeHtml(text(n))}</p>`).join("")
+      + (warnings.length
+        ? `<div class="banner info" style="margin:0 0 12px">`
+          + warnings.map(n=>`<div>${escapeHtml(text(n))}</div>`).join("") + `</div>`
+        : "");
 
     const settings = runRows(job, s);
     this.$("#dSettingsBox").classList.toggle("hidden", !settings.length);

@@ -1,6 +1,7 @@
 import { BaseElement } from "../base-element.js";
 import { store } from "../store.js";
 import { niceDate } from "../format.js";
+import "./info-tip.js";
 
 // One shape either way: a crescent moon, struck through when sleep is being
 // held off. It carries the meaning without colour, which the pill's border
@@ -14,7 +15,8 @@ const SHELL = `
   <header>
     <div><h1>Dubbing Studio</h1></div>
     <div>
-      <button class="toggle hidden" id="aAwake"></button>
+      <button class="toggle hidden" id="aAwake"></button><info-tip
+        id="awakeTip" class="hidden" label="staying awake"></info-tip>
       <button class="icon-btn" id="settingsBtn">Settings</button>
     </div>
   </header>
@@ -48,21 +50,30 @@ class AppHeader extends BaseElement {
 
   update(s){
     // macOS only: caffeinate is its, and the Docker build holds nothing.
-    this.$("#aAwake").classList.toggle("hidden", s.machine?.system !== "Darwin");
+    const here = s.machine?.system === "Darwin";
+    this.$("#aAwake").classList.toggle("hidden", !here);
+    this.$("#awakeTip").classList.toggle("hidden", !here);
     this.renderAwake(!!s.settings.keep_awake);
   }
 
+  // The pill alone read as a status badge rather than a control — a tester
+  // clicked it just to find out what it was, and silently gave up the thing
+  // stopping her Mac napping through a long dub. The info-tip beside it says
+  // so before that click, the same way the tips inside Settings explain a
+  // setting before it's changed.
   renderAwake(on){
     const el = this.$("#aAwake");
     el.setAttribute("aria-pressed", String(on));
     el.innerHTML = MOON.replace("%SLASH%", on ? SLASH : "")
       + (on ? "Won't sleep" : "May sleep");
-    el.title = on
-      ? "While a video is being dubbed, your Mac is kept awake so the job isn't "
-        + "left half-done. The screen can still sleep; closing the lid still "
-        + "sleeps. Click to allow it to sleep."
-      : "Your Mac may sleep part-way through dubbing a video, which pauses the job "
-        + "until you wake it. Click to keep it awake.";
+    this.$("#awakeTip").text = on
+      ? "Your Mac is kept awake for as long as a video is dubbing, so a long "
+        + "job doesn't stall if it sleeps. The screen can still sleep; "
+        + "closing the lid still sleeps. Click the pill to allow sleep during "
+        + "a dub."
+      : "Your Mac may sleep part-way through dubbing a video, which pauses "
+        + "the job until you wake it. Click the pill to keep it awake for the "
+        + "duration of a dub.";
   }
 
   toggleAwake(){

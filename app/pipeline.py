@@ -26,6 +26,8 @@ import soundfile as sf
 
 from . import logs, storage
 from .config import HISTORY_FILE, JOBS, OUTPUT_DIR, VOICES, Settings, detect_machine
+# Aliased: "info" below already names the probed video metadata.
+from .notes import info as note_info
 from .backends import asr as asr_backend
 from .backends import clone as clone_backend
 from .backends import diarize as diarize_backend
@@ -932,8 +934,8 @@ class JobRunner:
                 # Sampling most of a short video means waiting through
                 # substantially the same work twice for no information.
                 job.preview, window = False, 0.0
-                notes.append(f"That video is only {_mins(job.duration)} long, so the "
-                             "whole thing was dubbed rather than a sample of it.")
+                notes.append(note_info(f"That video is only {_mins(job.duration)} long, so "
+                             "the whole thing was dubbed rather than a sample of it."))
                 self._emit(job)
 
             # Unweighted when the site reports no duration — live streams and a
@@ -1133,9 +1135,9 @@ class JobRunner:
                     except Exception:                            # noqa: BLE001
                         resume = {}
                     if resume:
-                        notes.append(f"Picking up where the last attempt left off — "
+                        notes.append(note_info(f"Picking up where the last attempt left off — "
                                      f"{len(resume)} of {len(segments)} lines were "
-                                     "already translated.")
+                                     "already translated."))
 
                 # Written after every batch, not just on failure: a kill -9 or
                 # a power cut runs no exception handler, so only what has
@@ -1442,11 +1444,11 @@ class JobRunner:
                 # Said plainly, because a good sample invites exactly the wrong
                 # conclusion. Timing is the thing that fails across a whole
                 # video and the thing thirty seconds cannot speak to.
-                notes.append(
+                notes.append(note_info(
                     f"This is a {int(window)}-second sample taken from "
                     f"{_clock(job.preview_from)}. It shows the voice, the wording and "
                     "the sound levels. It can't promise the timing holds for the whole "
-                    "video, and a longer video may have more speakers in it.")
+                    "video, and a longer video may have more speakers in it."))
             stats["notes"] = notes
 
             freed = 0

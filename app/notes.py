@@ -25,3 +25,13 @@ def note(progress: Progress, message: str) -> None:
             recorder(message)
         except Exception:                                        # noqa: BLE001
             pass                      # a note is never worth failing a job over
+
+
+def info(message: str) -> dict:
+    """Tag a note as information — an explanation or good news, not a fault.
+
+    Anything else stays a bare string, which is what every note already was
+    before this and what an old run's recorded notes still are; the done
+    panel treats an untagged note as a warning, exactly as it always has.
+    """
+    return {"kind": "info", "text": message}
