@@ -91,9 +91,11 @@ def check_loudness(result: Path, total_duration: float,
     verify() compares frame counts and durations, which catches structural
     mistakes but says nothing about content: a dub that is correctly muxed,
     exactly the right length and completely silent passes every check it makes.
-    Peak and mean level answer "is there anything there at all"; the total time
-    spent in silent runs of at least min_run seconds answers "is there anything
-    there throughout", which is what catches a dub that died half way.
+    Peak and mean level answer "is there anything there at all". The other
+    figure this returns is measured the same way — silencedetect over the
+    assembled dub — but reads as something else: this track holds only the
+    spoken lines placed at their original timestamps, so a silent run in it is
+    the time no line was dubbed there, not a defect in otherwise-present audio.
 
     Measured with ffmpeg's own volumedetect and silencedetect rather than by
     decoding the track here, so it costs one pass and no new dependency.
@@ -124,7 +126,7 @@ def check_loudness(result: Path, total_duration: float,
             except (IndexError, ValueError):
                 pass
 
-    stats: dict = {"peak_db": peak, "mean_db": mean, "silent_seconds": round(silent, 1)}
+    stats: dict = {"peak_db": peak, "mean_db": mean, "no_line_seconds": round(silent, 1)}
     if proc.returncode != 0 or peak is None:
         # The probe itself failed, which says nothing about the audio. Reporting
         # that as silence would put "the finished soundtrack is silent" on a
@@ -136,7 +138,7 @@ def check_loudness(result: Path, total_duration: float,
     # digitally silent track, so it separates "quiet" from "empty".
     stats["audio_present"] = peak > -45.0
     share = silent / total_duration if total_duration > 0 else 0.0
-    stats["silent_share"] = round(share, 3)
+    stats["no_line_share"] = round(share, 3)
 
     if not stats["audio_present"]:
         stats["audio_warning"] = ("The finished soundtrack is silent — nothing was "

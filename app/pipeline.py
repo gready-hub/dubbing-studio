@@ -25,7 +25,7 @@ import numpy as np
 import soundfile as sf
 
 from . import logs, storage
-from .config import HISTORY_FILE, JOBS, OUTPUT_DIR, Settings, detect_machine
+from .config import HISTORY_FILE, JOBS, OUTPUT_DIR, VOICES, Settings, detect_machine
 from .backends import asr as asr_backend
 from .backends import clone as clone_backend
 from .backends import diarize as diarize_backend
@@ -203,6 +203,25 @@ def _voice_map(settings: Settings, segments: list[dict], speaker_ids: list[int],
                 continue                      # unvoiced or too short to judge
             voices[speaker] = settings.voice_for(speaker, male=pitch < FEMALE_ABOVE_HZ)
     return voices
+
+
+_VOICE_NAMES = {v["id"]: v["label"].split(" —")[0] for v in VOICES}
+
+
+def _voice_names(settings: Settings, speaker_ids: list[int], voice_map: dict[int, str]) -> str:
+    """Which built-in voices actually spoke, for the report — not which engine spoke them.
+
+    Mirrors the same lookup the synthesis loop uses per line (voice_map, falling
+    back to settings.voice_for), then folds speakers down to their distinct
+    voices: the pool is small and reused, so several speakers commonly share one.
+    """
+    seen: list[str] = []
+    for speaker in speaker_ids:
+        vid = voice_map.get(speaker) or settings.voice_for(speaker)
+        name = _VOICE_NAMES.get(vid, vid)
+        if name not in seen:
+            seen.append(name)
+    return ", ".join(seen) if seen else _VOICE_NAMES.get(settings.voice, settings.voice)
 
 
 UNREMARKABLE_SPEAKERS = 2   # two people in conversation; past that, ask
@@ -1152,7 +1171,6 @@ class JobRunner:
             report = self._stage(job, plan, "synthesize", notes)
             engine, cloning = self._make_engine(settings, machine, segments,
                                                 speech_wav, audio_dir, speaker_ids, report)
-            stats["voices"] = engine.name
             # Offered for playback while the job runs: a reference with music
             # under it, or of the wrong person, colours every line that follows,
             # and this is the only moment it can still be caught cheaply.
@@ -1175,6 +1193,11 @@ class JobRunner:
                 voice_map = _voice_map(settings, segments, speaker_ids, speech16)
             if voice_map:
                 stats["voice_match"] = "by pitch"
+            # Which voice spoke, not which engine spoke it — the two used to be
+            # conflated here, so a built-in-voice run reported "Apple GPU (MLX)"
+            # under "Voices used" instead of naming a single one of the voices.
+            stats["voices"] = engine.name if cloning else _voice_names(
+                settings, speaker_ids, voice_map)
 
             # One rate for the whole track, fixed before the first line is spoken.
             project_rate = int(getattr(engine, "sample_rate", tts_backend.SAMPLE_RATE))
@@ -1231,7 +1254,11 @@ class JobRunner:
                             try:
                                 engine = tts_backend.OnnxTTS()
                                 degraded = True
-                                stats["voices"] = f"{engine.name} (fell back mid-job)"
+                                notes.append("The voice engine stopped working "
+                                             "partway through, so the rest of the "
+                                             "lines were spoken by the portable "
+                                             "engine instead. The voices themselves "
+                                             "didn't change.")
                                 audio, rate = engine.say(
                                     text,
                                     voice_map.get(speaker) or settings.voice_for(speaker),
@@ -1368,6 +1395,21 @@ class JobRunner:
                 notes.append(stats["audio_warning"])
             elif stats.get("audio_warning") and not everything_spoken:
                 notes.append(stats["audio_warning"])
+            # Separate from that warning, and never suppressed by it: a run can
+            # fail nothing at all — every line found gets translated and spoken —
+            # and still have found almost no lines to dub, e.g. a largely-sung
+            # short with one spoken line in it. That is a real success, not a
+            # half-failed run, so it gets no "might be a failure" hedge; it just
+            # gets said. 90% is well past the natural gaps timing alone produces
+            # (38%, on the talky 98-minute tutorial above) — past it, there is
+            # barely any dubbed video here, whatever the reason.
+            if stats.get("no_line_share", 0) >= 0.9:
+                n = stats["lines_spoken"]
+                notes.append(
+                    f"Only {n} line{'' if n == 1 else 's'} {'was' if n == 1 else 'were'} "
+                    f"dubbed, leaving {int(stats['no_line_share'] * 100)}% of the video "
+                    "with no dubbed line over it. That can be correct for a video with "
+                    "very little speech in it — worth a look before sending it on.")
             if job.preview:
                 stats["preview"] = True
                 stats["preview_from"] = _clock(job.preview_from)

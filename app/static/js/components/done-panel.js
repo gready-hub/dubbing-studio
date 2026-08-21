@@ -121,8 +121,8 @@ class DonePanel extends BaseElement {
       ["Audio vs video length", (stats.drift_seconds ?? 0)+"s apart"],
       ["Dubbed audio level", stats.peak_db == null ? "—"
         : `peak ${stats.peak_db} dB, average ${stats.mean_db} dB`],
-      ["Silent stretches", stats.silent_seconds == null ? "—"
-        : `${stats.silent_seconds}s (${Math.round((stats.silent_share ?? 0)*100)}% of the `
+      ["No line spoken", stats.no_line_seconds == null ? "—"
+        : `${stats.no_line_seconds}s (${Math.round((stats.no_line_share ?? 0)*100)}% of the `
           + `${sample ? "sample" : "video"})`],
       ["Engine", stats.engine ?? "—"],
       ...(sample ? [] : [["Working files freed",

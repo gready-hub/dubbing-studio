@@ -891,6 +891,18 @@ def test_end_to_end():
           f"{s.get('drift_seconds')}s")
     check("lines were spoken", s.get("lines_spoken", 0) > 0, str(s.get("lines_spoken")))
     check("timing drift stayed small", s.get("max_drift", 99) < 2.0, f"{s.get('max_drift')}s")
+    # "Voices used" used to hold the compute engine's name (identical to the
+    # separate "Engine" row below it) rather than which voice actually spoke.
+    check("voices used names the voice, not the compute engine",
+          s.get("voices") == "Emma", str(s.get("voices")))
+    check("the engine is still reported, just under its own row",
+          s.get("engine") in ("Apple GPU (MLX)", "Portable (CPU)"), str(s.get("engine")))
+    # The undubbed-time figure used to be labelled "silent stretches", as if a
+    # gap in an otherwise-present track were the fault, when the raw dub holds
+    # only the spoken lines and everything between them is silence by
+    # construction.
+    check("undubbed time is reported under its new name",
+          "no_line_seconds" in s and "no_line_share" in s, str(sorted(s)))
     # What produced this file, kept with the file. Settings are free to change
     # between one run and the next, so the panel cannot read them off the app.
     used = s.get("settings") or {}
@@ -1215,7 +1227,12 @@ def test_mixed_sample_rates():
               f"{job.status}: {job.error}")
         if job.status != "done":
             return
-        check("the fallback was reported", "fell back" in str(job.stats.get("voices", "")),
+        check("the fallback was reported",
+              any("stopped working" in n and "portable" in n
+                  for n in job.stats.get("notes", [])),
+              str(job.stats.get("notes")))
+        check("the reported voice is unchanged by the engine fallback",
+              "stopped working" not in str(job.stats.get("voices", "")),
               str(job.stats.get("voices")))
         check("the track was assembled at the engine's rate",
               job.stats.get("sample_rate") == 32000, str(job.stats.get("sample_rate")))
@@ -1410,6 +1427,28 @@ def test_segments_and_voices():
         check("many short low-pitched interjections do not outvote one "
               "dominant high-pitched segment",
               not is_male(voices.get(4, "")), voices.get(4))
+
+    # --- naming the voices actually used, for the report
+    #
+    # stats["voices"] used to hold the compute engine's name, which read as
+    # "Voices used: Apple GPU (MLX)" on every built-in-voice run — identical to
+    # the separate "Engine" row and naming no voice at all.
+    from app.pipeline import _voice_names
+
+    s_ = Settings()
+    s_.voice = "bf_emma"
+    check("one speaker is named by their voice, not its raw id",
+          _voice_names(s_, [0], {}) == "Emma", _voice_names(s_, [0], {}))
+    check("several speakers are named in order",
+          _voice_names(s_, [0, 1, 2], {1: "bm_george", 2: "bf_alice"})
+          == "Emma, George, Alice",
+          _voice_names(s_, [0, 1, 2], {1: "bm_george", 2: "bf_alice"}))
+    check("a voice shared by more than one speaker is named once",
+          _voice_names(s_, [0, 1, 2, 3],
+                       {1: "bm_george", 2: "bf_alice", 3: "bm_george"})
+          == "Emma, George, Alice",
+          _voice_names(s_, [0, 1, 2, 3],
+                       {1: "bm_george", 2: "bf_alice", 3: "bm_george"}))
 
     # --- a speaker count that cannot be right
     #
@@ -3538,6 +3577,103 @@ def test_job_record():
             HISTORY_FILE.write_text(backup)
 
 
+# =================================== 17. a run that dubbed almost nothing
+def test_near_empty_dub():
+    """A run can succeed completely and still have found almost nothing to say.
+
+    The app already speaks up, unprompted, about a speaker count that is
+    probably wrong and about a translation model that is probably too weak.
+    A run where the whole file carries one line and no dubbing anywhere else
+    deserves the same rather than a plain "Done" — real audit case: a 1m59s
+    clip came back with one line spoken, 97% of it with no dubbed line over
+    it, and nothing in the report said so.
+    """
+    print("\n[17] A run that dubbed almost nothing")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.config import Settings
+
+    work = WORK / "near-empty"
+    work.mkdir(parents=True, exist_ok=True)
+    clip = work / "clip.mp4"
+    DURATION = 40.0
+    if not clip.exists():
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                        "-map", "0:v", "-map", "1:a", "-t", f"{DURATION:g}",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(clip)], check=True)
+
+    URL = "https://example.com/near-empty"
+    from app.config import JOBS as JOBS_DIR
+    shutil_rmtree(JOBS_DIR / pipeline._job_id(URL))
+
+    class TinyEngine:
+        name = "Test Engine"
+        sample_rate = 24000
+
+        def say(self, text, voice="", speed=1.0, speaker=0):
+            return _tone(300, 1.0, 24000), 24000
+
+    fake_probe, fake_download = stub_download(clip, "Almost Nothing Spoken", DURATION)
+
+    # One short line in the middle of a much longer video — the shape of a
+    # largely-sung short with a single spoken line in it.
+    def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
+        if progress:
+            progress(1.0, "Heard 1 line")
+        return [{"start": 18.0, "end": 19.0, "text": "one line"}]
+
+    def fake_llm(prompt, model=None, host=None, key=None, **_):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        return "\n".join(f"{i}|That is the only line spoken." for i in ids)
+
+    real_probe = pipeline.download.probe
+    real_download = pipeline.download.download
+    real_transcribe = pipeline.asr_backend.transcribe
+    real_make = pipeline.JobRunner._make_engine
+    real_prune = pipeline.prune_workdir
+    pipeline.download.probe = fake_probe
+    pipeline.download.download = fake_download
+    pipeline.asr_backend.transcribe = fake_transcribe
+    pipeline.JobRunner._make_engine = lambda *a, **k: (TinyEngine(), False)
+    pipeline.prune_workdir = lambda workdir: 0
+    T._call_ollama = fake_llm
+
+    try:
+        s = Settings().apply_preset("fast")
+        s.translator = "ollama"
+        job = pipeline.runner.submit(URL, s)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < 300:
+            time.sleep(1)
+
+        check("the job still succeeds — one real line, correctly dubbed, "
+              "is not a failure", job.status == "done", f"{job.status}: {job.error}")
+        if job.status != "done":
+            return
+
+        s_ = job.stats
+        check("only the one line was spoken", s_.get("lines_spoken") == 1,
+              str(s_.get("lines_spoken")))
+        check("almost all of the video carries no dubbed line",
+              s_.get("no_line_share", 0) >= 0.9, str(s_.get("no_line_share")))
+        check("a run that dubbed almost nothing says so, plainly",
+              any("1 line" in n and "dubbed" in n for n in s_.get("notes", [])),
+              str(s_.get("notes")))
+        check("the note does not claim the run failed",
+              not any("fail" in n.lower() for n in s_.get("notes", [])),
+              str(s_.get("notes")))
+    finally:
+        pipeline.download.probe = real_probe
+        pipeline.download.download = real_download
+        pipeline.asr_backend.transcribe = real_transcribe
+        pipeline.JobRunner._make_engine = real_make
+        pipeline.prune_workdir = real_prune
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -3555,6 +3691,7 @@ if __name__ == "__main__":
     test_observability()
     test_terminology()
     test_job_record()
+    test_near_empty_dub()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")
