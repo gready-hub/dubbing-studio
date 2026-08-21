@@ -1272,6 +1272,70 @@ def test_segments_and_voices():
         check(f"pitch of a {hz:.0f} Hz tone is found", abs(got - hz) < 12,
               f"{got:.1f} Hz")
 
+    # --- matching a whole speaker to a voice, not one clip of them
+    #
+    # A speaker's voice must follow the majority of what they said, whether
+    # the minority is one long clip or many short ones.
+    from app.pipeline import _voice_map
+
+    def tone(hz, seconds, sr=16000):
+        t = np.linspace(0, seconds, int(seconds * sr), endpoint=False)
+        return (0.5 * np.sin(2 * np.pi * hz * t)
+                + 0.3 * np.sin(4 * np.pi * hz * t)).astype(np.float32)
+
+    def is_male(name):
+        return name.split("_")[0][-1] == "m"
+
+    with tempfile.TemporaryDirectory() as td:
+        wav_path = Path(td) / "speech16k.wav"
+        # Speaker 1: uniformly low-pitched. Speaker 2: uniformly high-pitched.
+        # Speaker 3: one long low-pitched segment (5s) against six shorter
+        # high-pitched ones (12s total) — a single unrepresentative clip must
+        # not outweigh the rest. Speaker 4: the reverse shape — one dominant
+        # high-pitched segment (25s, 71%) against ten short low-pitched
+        # interjections (10s, 29%) — many short clips must not outvote one
+        # long one either.
+        chunks = [
+            tone(110.0, 4.0), tone(115.0, 4.0),
+            tone(230.0, 4.0), tone(225.0, 4.0),
+            tone(105.0, 5.0), *[tone(220.0, 2.0) for _ in range(6)],
+            tone(230.0, 25.0), *[tone(110.0, 1.0) for _ in range(10)],
+        ]
+        sf.write(wav_path, np.concatenate(chunks), sr)
+
+        segments = [
+            {"start": 0.0, "end": 4.0, "speaker": 1},
+            {"start": 4.0, "end": 8.0, "speaker": 1},
+            {"start": 8.0, "end": 12.0, "speaker": 2},
+            {"start": 12.0, "end": 16.0, "speaker": 2},
+        ]
+        offset = 16.0
+        segments.append({"start": offset, "end": offset + 5.0, "speaker": 3})
+        offset += 5.0
+        for _ in range(6):
+            segments.append({"start": offset, "end": offset + 2.0, "speaker": 3})
+            offset += 2.0
+        segments.append({"start": offset, "end": offset + 25.0, "speaker": 4})
+        offset += 25.0
+        for _ in range(10):
+            segments.append({"start": offset, "end": offset + 1.0, "speaker": 4})
+            offset += 1.0
+
+        s_ = Settings()
+        s_.voice = "bf_emma"
+        voices = _voice_map(s_, segments, [1, 2, 3, 4], wav_path)
+
+        check("a uniformly low-pitched speaker gets a male voice",
+              is_male(voices.get(1, "")), voices.get(1))
+        check("a uniformly high-pitched speaker gets a female voice",
+              not is_male(voices.get(2, "")), voices.get(2))
+        check("one unrepresentative low-pitched segment does not override "
+              "the high-pitched bulk of what a speaker actually said",
+              not is_male(voices.get(3, "")), voices.get(3))
+        check("many short low-pitched interjections do not outvote one "
+              "dominant high-pitched segment",
+              not is_male(voices.get(4, "")), voices.get(4))
+
     # --- a speaker count that cannot be right
     #
     # Asked of the pipeline itself rather than of a copy of the rule kept here: a

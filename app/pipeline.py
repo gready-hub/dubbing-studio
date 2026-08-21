@@ -148,46 +148,60 @@ def _match_rate(audio, src_rate: int, dst_rate: int) -> np.ndarray:
 
 FEMALE_ABOVE_HZ = 165.0     # conventional split; between typical male and female F0
 
+# Total audio read per speaker to estimate their pitch — bounds the cost on a
+# speaker with many segments; no cap on any one segment within it.
+PITCH_SAMPLE_SECONDS = 30.0
+
 
 def _voice_map(settings: Settings, segments: list[dict], speaker_ids: list[int],
                speech_wav: Path) -> dict[int, str]:
-    """Give each speaker a voice roughly matching their own pitch.
+    """Give each speaker a voice matching their own pitch.
 
-    Additional speakers used to be handed voices round-robin from a pool, so a
-    deep-voiced man could be dubbed by a bright female voice — the most obvious
-    way a multi-speaker dub announces that nobody checked. The pitch is right
-    there in the audio, and a median F0 over the voiced frames separates the two
-    groups well enough to pick the right half of the pool.
-
-    Only the longest clip per speaker is read, not the whole soundtrack.
+    A deep voice dubbed by a bright female voice is the clearest sign nobody
+    checked, so this reads up to PITCH_SAMPLE_SECONDS of a speaker's own
+    segments, longest first, and takes one median F0 over the concatenation —
+    so the majority of what they actually said decides the pitch, not
+    whichever single clip was read.
     """
     voices: dict[int, str] = {}
     try:
-        info = sf.info(str(speech_wav))
-        rate = int(info.samplerate)
+        wav = sf.SoundFile(str(speech_wav))
     except Exception:                                            # noqa: BLE001
         return voices
 
-    for speaker in speaker_ids:
-        mine = [s for s in segments if s.get("speaker") == speaker]
-        if not mine:
-            continue
-        longest = max(mine, key=lambda s: s["end"] - s["start"])
-        start = max(0, int(longest["start"] * rate))
-        frames = min(int(6.0 * rate), int((longest["end"] - longest["start"]) * rate))
-        if frames <= 0:
-            continue
-        try:
-            clip, _ = sf.read(str(speech_wav), start=start, frames=frames,
-                              dtype="float32", always_2d=False)
-        except Exception:                                        # noqa: BLE001
-            continue
-        if getattr(clip, "ndim", 1) > 1:
-            clip = clip.mean(axis=1)
-        pitch = diarize_backend.median_pitch(clip, rate)
-        if pitch <= 0:
-            continue                      # unvoiced or too short to judge
-        voices[speaker] = settings.voice_for(speaker, male=pitch < FEMALE_ABOVE_HZ)
+    with wav:
+        rate = wav.samplerate
+        gap = np.zeros(int(0.1 * rate), dtype=np.float32)  # a join is not a voiced frame
+        for speaker in speaker_ids:
+            mine = sorted((s for s in segments if s.get("speaker") == speaker),
+                          key=lambda s: s["end"] - s["start"], reverse=True)
+            if not mine:
+                continue
+            clips: list[np.ndarray] = []
+            budget = PITCH_SAMPLE_SECONDS
+            for seg in mine:
+                if budget <= 0:
+                    break
+                span = min(budget, seg["end"] - seg["start"])
+                frames = int(span * rate)
+                if frames <= 0:
+                    continue
+                try:
+                    wav.seek(max(0, int(seg["start"] * rate)))
+                    clip = wav.read(frames, dtype="float32", always_2d=False)
+                except Exception:                                # noqa: BLE001
+                    continue
+                if getattr(clip, "ndim", 1) > 1:
+                    clip = clip.mean(axis=1)
+                clips.append(clip)
+                clips.append(gap)
+                budget -= span
+            if not clips:
+                continue
+            pitch = diarize_backend.median_pitch(np.concatenate(clips), rate)
+            if pitch <= 0:
+                continue                      # unvoiced or too short to judge
+            voices[speaker] = settings.voice_for(speaker, male=pitch < FEMALE_ABOVE_HZ)
     return voices
 
 
