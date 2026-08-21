@@ -3215,6 +3215,45 @@ console.log(JSON.stringify({
           result["taggedIsInfo"] is True
           and result["taggedText"] == "This is a 30-second sample...", str(result))
 
+    # A finished sample can sit on screen after a reload while its working
+    # files are gone underneath it — Storage -> Clear, or ordinary tidying.
+    # "Dub it" promotes a sample without downloading again only while those
+    # files are still there, so the button must not be offered once the panel
+    # is already telling the user, via SAMPLE_GONE, that they are not — and
+    # it must read that from `here`, the flag the panel computes once for
+    # that message, not from a second check of its own.
+    check("Dub it is gated on the same `here` the panel uses for the "
+          "gone-away message, not on the sample flag alone",
+          'sample\n        ? (here ? `<button class="primary" id="dEscalate">'
+          in done_js)
+
+    start = done_js.index("actions.innerHTML = (sample")
+    end = done_js.index("`;", start) + 2
+    actions_expr = done_js[start:end].replace(
+        "actions.innerHTML = (sample", "const html = (sample")
+    combos = [(True, True), (True, False), (False, True), (False, False)]
+    script = "\n".join(
+        f'{{ const sample={str(s).lower()}, here={str(h).lower()}; {actions_expr} '
+        f'console.log(JSON.stringify({{sample, here, html}})); }}'
+        for s, h in combos
+    )
+    rows = [json.loads(l) for l in subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=True
+    ).stdout.splitlines()]
+    for row in rows:
+        has_escalate = "dEscalate" in row["html"]
+        has_reveal = "dReveal" in row["html"]
+        wants_escalate = row["sample"] and row["here"]
+        wants_reveal = (not row["sample"]) and row["here"]
+        check(f"actions for sample={row['sample']} here={row['here']} offer "
+              "exactly the control that matches, proven against the panel's "
+              "own expression rather than reimplemented here",
+              has_escalate == wants_escalate and has_reveal == wants_reveal,
+              row["html"])
+        check(f"Dub another is offered regardless (sample={row['sample']} "
+              f"here={row['here']}) — resetting never depends on a file",
+              "dReset" in row["html"])
+
 
 # ============================ 15. terminology lifted from the video itself
 def test_terminology():

@@ -70,8 +70,11 @@ class DonePanel extends BaseElement {
     const actions = this.$("#dActions");
     if(actions.dataset.key !== key){
       actions.dataset.key = key;
+      // Dub it promotes the sample without downloading again only while its
+      // working files are still there — once they're gone the message already
+      // says to run it again, so no button should compete with that.
       actions.innerHTML = (sample
-        ? `<button class="primary" id="dEscalate">Dub it</button>`
+        ? (here ? `<button class="primary" id="dEscalate">Dub it</button>` : "")
         : here ? `<button class="primary" id="dReveal">Show in Finder</button>` : "")
         + `<button class="ghost" id="dReset">Dub another</button>`;
       // Two clicks are one job — the id a full run gets is the same either
