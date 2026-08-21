@@ -47,6 +47,30 @@ def _ytdlp_cmd() -> list[str]:
 _CLIENTS = "default,web_safari,tv"
 _CLIENT_ARGS = ["--extractor-args", f"youtube:player_client={_CLIENTS}"]
 
+# yt-dlp reads its own configuration files by default — portable, home, user
+# and system, in that order — and silently merges whatever it finds into every
+# job this app runs. Demonstrated on a real job through the real UI: a
+# --write-thumbnail left in a user's yt-dlp config turned an ordinary download
+# into source.mp4 (633,710 bytes) *and* source.webp (23,038 bytes) sitting in
+# the same working directory _finished_file() scans, which is how a thumbnail
+# nearly got handed to the pipeline as the video. That particular hole is now
+# closed by the media check in _looks_like_media(), but the cause is this: the
+# command built here is not actually the whole command, because anything in
+# that config rides along uninvited and can contradict the flags chosen above
+# it — a different output template, a different format, a post-processor that
+# writes files this app never asked for.
+#
+# The one thing worth weighing against this is that some configs hold a real
+# proxy, rate limit or bound interface that a user would miss. It is not
+# preserved. Settings already has its own route for the setting people
+# actually reach for here — "Sign in as" passes --cookies-from-browser
+# directly, with no config file involved either way — and a lost proxy fails
+# loud: the fetch times out or is refused, which reads as "that address
+# couldn't be reached" in _friendly() below, not as a wrong file quietly
+# written to disk. A loud network error beats a silent extra file every time
+# that trade has to be made.
+_NO_CONFIG_ARGS = ["--ignore-config"]
+
 # Retrying is yt-dlp's job and it does it properly: per-request, with real
 # exponential backoff, without abandoning the bytes already on disk. Ours was a
 # whole-command loop with a fixed 4n sleep that restarted the progress count
@@ -69,7 +93,7 @@ def probe(url: str, cookies_from: str = "") -> dict:
     the download that knows about their cookies was ever reached.
     """
     cmd = (_ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download"]
-           + _CLIENT_ARGS + _RETRY_ARGS)
+           + _CLIENT_ARGS + _RETRY_ARGS + _NO_CONFIG_ARGS)
     if cookies_from:
         cmd += ["--cookies-from-browser", cookies_from]
     out = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=120)
@@ -596,7 +620,7 @@ def download(url: str, workdir: Path, quality: str = "best",
         # that works into a reliable 403. yt-dlp's own default is correct.
         "--newline", "--no-warnings",
         "--progress-template", _PROGRESS_TEMPLATE,
-    ] + _CLIENT_ARGS + _RETRY_ARGS
+    ] + _CLIENT_ARGS + _RETRY_ARGS + _NO_CONFIG_ARGS
     # The fix for the stubborn case: YouTube increasingly wants a session, and a
     # signed-out request for some videos is refused whatever client asks. Off
     # unless the user names a browser, because reading their cookie store is not

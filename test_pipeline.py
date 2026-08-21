@@ -2309,6 +2309,16 @@ def test_translation_qc():
     # available" that used to end the ladder.
     check("the probe and the download ask the same clients",
           src.count("_CLIENT_ARGS") >= 2 and "+ _CLIENT_ARGS" in src)
+    # Demonstrated on a real job through the real UI: a --write-thumbnail left
+    # in a user's yt-dlp config turned an ordinary download into source.mp4
+    # *and* source.webp sitting in the same working directory _finished_file()
+    # scans. Checked on both commands built here, not just the download, since
+    # a probe that reads the same config could just as easily have its listing
+    # reshaped by a format or extractor option it was never asked for.
+    from app.steps.download import _NO_CONFIG_ARGS
+    check("neither yt-dlp invocation reads the user's own configuration",
+          "--ignore-config" in _NO_CONFIG_ARGS
+          and src.count("_NO_CONFIG_ARGS") >= 2 and "+ _NO_CONFIG_ARGS" in src)
     check("and nothing decides what to retry by reading yt-dlp's error text",
           "_looks_transient" not in src and "_TRANSIENT" not in src
           and "_looks_terminal" not in src)
