@@ -123,24 +123,10 @@ _ECHOED = re.compile(
     r")\s*", re.IGNORECASE)
 
 
-# The reply format spelled back at us rather than filled in. A local model under
-# pressure copies the nearest text it can see, and that used to be the format
-# rule itself, which was written with angle-bracket placeholders — so the reply
-# came back as "327|<id>|<translation>": a correct line number, then the
-# instruction pasted in place of the answer. Measured on a 98-minute video
-# translated by qwen3:8b: 72 of 448 lines, 16% of the dub, and nothing caught
-# them — the parser only knew the "id: 63" shape, and a line of pure template
-# resembles neither its Portuguese source nor an empty string.
-#
-# Rule 6 now shows a filled-in example instead, which is the fix rather than the
-# net; a model that copies "12|Now chain three and turn your work." at least
-# produces a sentence, and models imitate a concrete example far more reliably
-# than they fill in a placeholder. This stays because the next model will find
-# some other way to hand back the shape of an answer instead of one.
-# Every bracket family, and spaces allowed inside: the first version of this
-# demanded angle brackets with no internal space, so "<line id>|<the
-# translation>" — one word wider than the case it was written for — walked
-# straight through it, and "{id}|{translation}" never stood a chance.
+# The reply format spelled back instead of filled in — a local model under
+# pressure copies the format rule's own placeholder syntax rather than
+# answering it. Rule 6's filled-in example is the actual fix; this stays to
+# catch whatever shape a model hands back before it gets there.
 _BRACKETED = r"[<\[{(][^>\]})]{0,40}[>\]})]"
 _SCAFFOLD_PREFIX = re.compile(rf"^\s*{_BRACKETED}\s*\|\s*")
 _ALL_SCAFFOLD = re.compile(rf"^(?:\s*{_BRACKETED}\s*[|:.\-]?\s*)+$")
@@ -383,30 +369,12 @@ def _provider_message(body: bytes) -> str:
 
 
 def _redact(text: str, key: str) -> str:
-    """Strip the literal key out of anything about to be shown or logged.
+    """Strip the literal key out of anything about to be shown or logged —
+    OpenAI's own 401 body echoes it back, so a provider's message isn't safe
+    to relay unexamined.
 
-    OpenAI's own 401 body echoes the key back — "Incorrect API key provided:
-    sk-proj-...cdef" — so a provider's message is not safe to relay unexamined.
-    Matched against the real key rather than a pattern, because the one string
-    that must never reach a message, a detail or a log is the one already
-    sitting in Settings.
-
-    Guarded on the *stripped* key, not the key itself: backend_for()'s "if not
-    settings.anthropic_key" check does not catch a key that is just whitespace
-    — a stray leading or trailing space is an easy slip, and a whitespace-only
-    string is still truthy — and replacing every run of spaces in a message
-    with "[key redacted]" is worse than the empty problem it was guarding
-    against. A key of only whitespace was never a real key, so there is
-    nothing here to redact.
-
-    This is an exact, case-sensitive match against the literal key — no
-    tolerance for whitespace variation, case folding, or a provider's own
-    partial masking. That is deliberately narrow rather than a gap: checked
-    directly against both providers, Anthropic's 401 body never echoes the key
-    at all, and OpenAI's masks all but about eleven characters of it, so a
-    full-string match catches both as they behave today. This is belt and
-    braces over that checked behaviour, not a guarantee that no provider could
-    ever leak a key some other way.
+    Matched as an exact, case-sensitive substring against the real key rather
+    than a pattern; a whitespace-only key is treated as no key at all.
     """
     return text.replace(key, "[key redacted]") if key.strip() and key in text else text
 

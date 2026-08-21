@@ -478,25 +478,14 @@ def _load_history() -> list[dict]:
 
 
 def _record_history(job: Job) -> None:
-    """Keep a run once its in-memory record has been replaced or lost.
+    """Keep a run once its in-memory record has been replaced or lost — self.jobs
+    is rebuilt empty on every launch, so this is the only durable record of
+    what happened, on either success or failure.
 
-    A job id is a stable hash of the link, so re-running a link built a fresh
-    Job over the top of the old one and the previous run vanished from the
-    history panel — and the whole panel emptied on restart regardless, since it
-    was only ever an in-memory dict. self.jobs is rebuilt empty on every launch,
-    so a closed and reopened app has no memory of a job either way, whatever it
-    ended in; this is where both kinds are read back from.
-
-    A success is told apart from an earlier one of the same link by its output:
-    one entry per file produced, which is the distinction the -2 suffix on the
-    output name already makes, so two successful runs of one link both keep
-    their row. A failure is a different kind of claim — "this is what happened,
-    last time this link was tried" — and only one of those can be true for a
-    given link at once: superseded by job_id rather than by output, and by a
-    later success just as much as by a later failure, since either one means
-    the earlier claim is no longer the last word on that link. Left un-superseded,
-    a link that failed and then succeeded ended up with a "didn't finish" row
-    sitting right beside a "dubbed video" row for the very same run.
+    A success is superseded only by another success with the same output file,
+    since two runs of one link can both produce a kept video; a failure is
+    superseded by job_id alone, by a later success as much as a later failure,
+    since either means it is no longer the last word on that link.
     """
     entry = job.public()
     # Derived at read time by public_jobs(); anything stored here would be
@@ -726,22 +715,13 @@ class JobRunner:
     def public_jobs(self) -> list[dict]:
         """Live jobs plus previously finished or failed ones, newest first.
 
-        Every entry carries output_exists, worked out here rather than read from
-        the history: a finished video can be moved or deleted while the app is
-        not running. A run whose file has gone is still listed — it is a thing
-        that happened — but it must not be offered as something to open, which
-        is what the flag is for. Capped by HISTORY_LIMIT, so this is a bounded
-        handful of stat calls.
+        output_exists is worked out here rather than trusted from history, since
+        a finished video can be moved or deleted while the app isn't running.
 
-        A failed run has no output to check for existence or to dedupe against a
-        live copy by, so it is kept out of this instead by job_id — but only
-        while the live job at that id is *itself* in the same error state. A
-        retry that is running, or one that got cancelled, or one that has since
-        finished, is a different event from the one the record describes, and
-        none of those make the recorded failure untrue: cancelling a retry used
-        to hide a genuine earlier failure the instant it was cancelled, as if
-        the link had never failed at all, and it should not reappear only after
-        the next restart puts it back.
+        A recorded failure is hidden only while the live job at that id is
+        itself still in the error state — a retry that is running, cancelled,
+        or since finished is a different event and doesn't make the earlier
+        failure untrue.
         """
         live = [j.public() for j in self.jobs.values()]
         seen_outputs = {j["output"] for j in live if j.get("output")}
@@ -1536,11 +1516,8 @@ class JobRunner:
             except OSError:
                 pass          # raising here would kill the worker mid-queue
         self._emit(job)
-        # self.jobs is rebuilt empty every time this app starts, so without this
-        # a failure was reachable for exactly as long as the process that hit it
-        # kept running — closing the window, or the app crashing outright, left
-        # nothing to reload back to but a blank landing screen, with the only
-        # surviving trace being error.log on disk and nothing pointing at it.
+        # self.jobs is rebuilt empty on every launch, so without this a failure
+        # would be reachable only for as long as this process keeps running.
         _record_history(job)
 
 
