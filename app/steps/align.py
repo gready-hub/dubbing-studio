@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -109,6 +110,40 @@ def assemble(lines: list[dict], total_duration: float, sample_rate: int,
     return track, stats
 
 
+LINE_CHARS = 42                # broadcast convention: characters per subtitle line
+MAX_LINES = 2                   # ... and lines per cue
+
+
+def _wrap_into_cues(text: str, width: int = LINE_CHARS, max_lines: int = MAX_LINES) -> list[str]:
+    """Wrap once to `width`, then group the wrapped lines two at a time into cues.
+
+    Wrapping first and pairing second makes "at most two lines" true by
+    construction: textwrap already breaks an unbreakable run — a CJK stretch,
+    a bare URL — down to the width, so pairing the results can never grow a
+    cue past two lines.
+    """
+    lines = textwrap.wrap(text, width) or [text]
+    return ["\n".join(lines[i:i + max_lines]) for i in range(0, len(lines), max_lines)]
+
+
+def _split_timing(chunks: list[str], start: float, end: float) -> list[tuple[float, float, str]]:
+    """Divide the segment's own [start, end] across its chunks by character share.
+
+    No new timing is invented — the original span is the only fact known this
+    late, so each piece gets the fraction of it its own length implies.
+    """
+    total_chars = sum(len(c) for c in chunks) or 1
+    span = end - start
+    out = []
+    cursor = start
+    for n, chunk in enumerate(chunks):
+        is_last = n == len(chunks) - 1
+        chunk_end = end if is_last else cursor + span * (len(chunk) / total_chars)
+        out.append((cursor, chunk_end, chunk))
+        cursor = chunk_end
+    return out
+
+
 def write_srt(segments: list[dict], dst: Path) -> Path:
     def stamp(t: float) -> str:
         ms = int(round(t * 1000))
@@ -118,10 +153,16 @@ def write_srt(segments: list[dict], dst: Path) -> Path:
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
     out = []
-    for n, seg in enumerate(segments, 1):
+    n = 0
+    for seg in segments:
         text = seg.get("translation") or seg.get("text", "")
         if not text:
             continue
-        out.append(f"{n}\n{stamp(seg['start'])} --> {stamp(seg['end'])}\n{text}\n")
+        # Nothing upstream promises start <= end; guarded here, once, at the
+        # one place a malformed range would otherwise reach the file.
+        start, end = seg["start"], max(seg["end"], seg["start"])
+        for c_start, c_end, cue in _split_timing(_wrap_into_cues(text), start, end):
+            n += 1
+            out.append(f"{n}\n{stamp(c_start)} --> {stamp(c_end)}\n{cue}\n")
     dst.write_text("\n".join(out), encoding="utf-8")
     return dst

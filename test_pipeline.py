@@ -189,6 +189,81 @@ def test_align():
     check("SRT timestamps are formatted correctly", "00:00:01,500 --> 00:00:03,250" in body,
           body.splitlines()[1] if body else "empty")
 
+    # A cue too long to read at a glance: one run-on merge span, ~220 characters
+    # over 11 seconds, no punctuation to hint at a break.
+    long_text = " ".join(f"word{n}" for n in range(40))  # 40 short words, ~220 chars
+    long_segs = [{"start": 0.0, "end": 11.0, "translation": long_text}]
+    out2 = WORK / "test_long.srt"
+    align.write_srt(long_segs, out2)
+    cues = out2.read_text().strip().split("\n\n")
+    lines_per_cue = [c.split("\n")[2:] for c in cues]
+    check("an over-long cue is split into more than one",
+          len(cues) > 1, str(len(cues)))
+    check("every line respects the character limit",
+          all(len(line) <= align.LINE_CHARS for lines in lines_per_cue for line in lines))
+    check("every cue keeps to two lines or fewer",
+          all(len(lines) <= 2 for lines in lines_per_cue))
+    check("the words survive the split, in order",
+          " ".join(" ".join(lines).replace("\n", " ") for lines in lines_per_cue) == long_text)
+
+    # A single token with no space in it anywhere near the line width — the
+    # case _chunk_text used to wave through untouched, for textwrap to then
+    # hard-break into as many lines as it took, inside one cue.
+    blob = "a" * 300
+    blob_segs = [{"start": 0.0, "end": 20.0, "translation": blob}]
+    out_blob = WORK / "test_blob.srt"
+    align.write_srt(blob_segs, out_blob)
+    blob_cues = out_blob.read_text().strip().split("\n\n")
+    blob_lines = [c.split("\n")[2:] for c in blob_cues]
+    check("an unbreakable 300-char token still keeps every cue to two lines",
+          all(len(lines) <= 2 for lines in blob_lines), str([len(l) for l in blob_lines]))
+    check("and every line of it still respects the width",
+          all(len(line) <= align.LINE_CHARS for lines in blob_lines for line in lines))
+
+    # A CJK run has no spaces at all, so a naive word-splitter cannot touch it
+    # either — same failure mode as the blob above, different alphabet.
+    cjk = "这是一个很长的中文句子用来测试断行逻辑是否能够正确地把长文本切成不超过四十二个字符的行" * 3
+    cjk_segs = [{"start": 0.0, "end": 15.0, "translation": cjk}]
+    out_cjk = WORK / "test_cjk.srt"
+    align.write_srt(cjk_segs, out_cjk)
+    cjk_cues = out_cjk.read_text().strip().split("\n\n")
+    cjk_lines = [c.split("\n")[2:] for c in cjk_cues]
+    check("a CJK run with no spaces still keeps every cue to two lines",
+          all(len(lines) <= 2 for lines in cjk_lines), str([len(l) for l in cjk_lines]))
+    check("and every line of it still respects the width",
+          all(len(line) <= align.LINE_CHARS for lines in cjk_lines for line in lines))
+
+    # A short cue is left exactly as it was: no gratuitous split or wrap.
+    short_segs = [{"start": 0.0, "end": 2.0, "translation": "Hello there"}]
+    out3 = WORK / "test_short.srt"
+    align.write_srt(short_segs, out3)
+    check("a cue that already fits is not split or rewrapped",
+          out3.read_text().strip().split("\n")[2:] == ["Hello there"])
+
+    # A cue is left to run long when the speech genuinely is slow — no cap
+    # invents a gap where the dub audio is still talking.
+    slow_segs = [{"start": 0.0, "end": 23.6, "translation": "Just a few words, spoken slowly."}]
+    out_slow = WORK / "test_slow.srt"
+    align.write_srt(slow_segs, out_slow)
+    check("a short cue over a long span is not artificially cut short",
+          "00:00:23,600" in out_slow.read_text())
+
+    # Timings a real pipeline should not produce, but nothing upstream is
+    # guarded against it: write_srt is the one place left to catch it.
+    zero_segs = [{"start": 5.0, "end": 5.0, "translation": "Frozen frame"}]
+    out_zero = WORK / "test_zero.srt"
+    align.write_srt(zero_segs, out_zero)
+    check("a zero-duration segment still produces a valid, non-negative cue",
+          "00:00:05,000 --> 00:00:05,000" in out_zero.read_text())
+
+    backwards_segs = [{"start": 5.0, "end": 2.0, "translation": "Time ran backwards"}]
+    out_back = WORK / "test_backwards.srt"
+    align.write_srt(backwards_segs, out_back)
+    back_stamps = out_back.read_text().splitlines()[1]
+    back_start, back_end = (s.strip() for s in back_stamps.split("-->"))
+    check("a segment with end before start is clamped, not passed through",
+          back_start <= back_end, back_stamps)
+
 
 # ==================================================== 2. translation parsing
 def test_translate():

@@ -223,7 +223,7 @@ const SHELL = `
           <div>
             <div class="field-head"><label for="merge_lines">Run-on lines</label><info-tip
               label="run-on lines"
-              text="Fast dialogue arrives as many very short lines with no gap between them, and each has to be squeezed to fit. Joining them gives the translation room. Material with real pauses is unaffected."></info-tip></div>
+              text="Fast dialogue arrives as many very short lines with no gap between them, and each has to be squeezed to fit. Joining them gives the translation room. Material with real pauses is unaffected. It also sets where the .srt breaks between cues, if you are saving one."></info-tip></div>
             <select id="merge_lines">
               <option value="true">Join lines that run together</option>
               <option value="false">Keep them exactly as heard</option>
