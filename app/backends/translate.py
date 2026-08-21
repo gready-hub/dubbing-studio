@@ -764,12 +764,19 @@ def backend_for(settings, ram_gb: int, progress: Progress = None):
 
 
 def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = None,
-              extra_glossary: str = "") -> list[dict]:
+              extra_glossary: str = "", resume: dict[int, str] | None = None,
+              on_batch: Callable[[dict[int, str]], None] | None = None) -> list[dict]:
     """Returns segments with a "translation" key added to each.
 
     extra_glossary is terminology lifted from this video's own transcript. It
     goes in behind the built-in and custom terms, which are known-good and win
     any collision.
+
+    resume seeds already-translated lines from an attempt that failed part
+    way, so a batch that was fully finished before is never re-asked for.
+    on_batch, when given, is handed the accumulated results after every batch
+    that actually made a request — the caller's chance to persist them before
+    a later batch's failure (or the process dying outright) takes the rest.
     """
     glossary = _merge_glossaries(settings.glossary_text(), extra_glossary)
     target = settings.target_language
@@ -778,13 +785,17 @@ def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = 
     for n, seg in enumerate(segments):
         seg["i"] = n
 
-    done: dict[int, str] = {}
+    done: dict[int, str] = dict(resume or {})
     batches = _batches(segments)
 
     for bn, batch in enumerate(batches):
         start = batch[0]["i"]
         context = [s["text"] for s in segments[max(0, start - CONTEXT):start]]
-        done.update(_translate_chunk(batch, context, target, glossary, call))
+        todo = [s for s in batch if s["i"] not in done]
+        if todo:
+            done.update(_translate_chunk(todo, context, target, glossary, call))
+            if on_batch:
+                on_batch(dict(done))
         if progress:
             progress((bn + 1) / len(batches),
                      f"Translating with {label} — {min(len(done), len(segments))} of {len(segments)} lines")

@@ -346,6 +346,46 @@ def test_translate():
           all(s.get("translation") for s in out), f"{sum(1 for s in out if s.get('translation'))}/60")
     check("retry recovered the dropped lines", out[len(out) - 1]["translation"].startswith("English"))
 
+    # resume/on_batch: what lets a caller (pipeline.py) survive a translation
+    # that dies part way through, without redoing the batches that landed.
+    saved_states: list[dict] = []
+    calls2 = {"n": 0}
+
+    def dies_second_batch(prompt, model, host="x", **_):
+        calls2["n"] += 1
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        if calls2["n"] == 2:
+            raise T.TranslationError("simulated failure")
+        return "\n".join(f"{i}|English line {i}" for i in ids)
+
+    T._call_ollama = dies_second_batch
+    try:
+        T.translate([dict(s) for s in segs], settings, 16,
+                    on_batch=lambda d: saved_states.append(dict(d)))
+        check("a mid-run failure raises rather than returning a truncated result", False)
+    except T.TranslationError:
+        check("a mid-run failure raises rather than returning a truncated result", True)
+    check("on_batch captured the finished batch before the one that failed",
+          bool(saved_states) and sorted(saved_states[-1]) == list(range(25)),
+          str(sorted(saved_states[-1])) if saved_states else "nothing saved")
+
+    # A retry seeded with that partial must not re-ask for lines it already has.
+    requested: list[int] = []
+
+    def strict(prompt, model, host="x", **_):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        requested.extend(ids)
+        return "\n".join(f"{i}|English line {i}" for i in ids)
+
+    T._call_ollama = strict
+    resumed = T.translate([dict(s) for s in segs], settings, 16, resume=saved_states[-1])
+    check("resuming only asks for the lines that weren't already done",
+          sorted(requested) == list(range(25, 60)), str(sorted(requested)[:3]) + "…")
+    check("a resumed translation still fills in every line",
+          all(s.get("translation") for s in resumed))
+
     # A backend that returns nothing must raise, not ship a silent empty dub.
     T._call_ollama = lambda p, m, host="x", **_: ""
     try:
@@ -3701,6 +3741,185 @@ def test_near_empty_dub():
         pipeline.prune_workdir = real_prune
 
 
+# ================== 18. a translation failure leaves finished lines behind
+def test_translate_resume():
+    """A translation that dies part way must not throw the finished lines away.
+
+    Before this, translate() built its results in an in-memory dict that was
+    only ever handed to the caller on a clean return — so a TranslationError
+    three quarters of the way through a long video (a rate limit, a key that
+    got revoked mid-run, a provider outage) discarded every line already
+    translated, and pressing "try again" paid for the whole stage twice.
+    """
+    print("\n[18] Resuming a translation that failed part way")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.config import Settings, JOBS as JOBS_DIR
+
+    class TinyEngine:
+        name = "Test Engine"
+        sample_rate = 24000
+
+        def say(self, text, voice="", speed=1.0, speaker=0):
+            return _tone(300, 0.3, 24000), 24000
+
+    # Spaced well past merge_adjacent's gap threshold, so a change to
+    # merge_lines (used below to invalidate the cache) changes the fingerprint
+    # without changing which lines it applies to — the two settings this test
+    # cares about are kept independent of each other.
+    N = 26
+    DURATION = 42.0
+
+    def make_segments():
+        return [{"start": n * 1.5, "end": n * 1.5 + 1.0, "text": f"linea {n}"}
+                for n in range(N)]
+
+    work = WORK / "translate-resume"
+    work.mkdir(parents=True, exist_ok=True)
+    clip = work / "clip.mp4"
+    if not clip.exists():
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                        "-map", "0:v", "-map", "1:a", "-t", f"{DURATION:g}",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(clip)], check=True)
+
+    def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
+        if progress:
+            progress(1.0, "Heard the lines")
+        return make_segments()
+
+    real_probe = pipeline.download.probe
+    real_download = pipeline.download.download
+    real_transcribe = pipeline.asr_backend.transcribe
+    real_make = pipeline.JobRunner._make_engine
+    real_prune = pipeline.prune_workdir
+    real_ollama = T._call_ollama
+    pipeline.asr_backend.transcribe = fake_transcribe
+    pipeline.JobRunner._make_engine = lambda *a, **k: (TinyEngine(), False)
+    pipeline.prune_workdir = lambda workdir: 0
+
+    def run(url, settings, call, timeout=300):
+        fake_probe, fake_download = stub_download(clip, "Translate Resume", DURATION)
+        pipeline.download.probe = fake_probe
+        pipeline.download.download = fake_download
+        T._call_ollama = call
+        job = pipeline.runner.submit(url, settings)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < timeout:
+            time.sleep(0.5)
+        return job
+
+    def ids_in(prompt):
+        return [int(l.split("|")[0]) for l in prompt.splitlines()
+                if l and l[0].isdigit() and "|" in l]
+
+    try:
+        # --- A. fails after the first batch (25 of 26 lines) -----------
+        URL_A = "https://example.com/translate-resume-a"
+        shutil_rmtree(JOBS_DIR / pipeline._job_id(URL_A))
+
+        calls = {"n": 0}
+
+        def dies_after_first_batch(prompt, model, host="x", **_):
+            calls["n"] += 1
+            ids = ids_in(prompt)
+            if calls["n"] > 1:
+                raise T.TranslationError("simulated outage partway through")
+            return "\n".join(f"{i}|English line {i}" for i in ids)
+
+        settings_a = Settings().apply_preset("fast")
+        settings_a.translator = "ollama"
+        job_a = run(URL_A, settings_a, dies_after_first_batch)
+
+        check("the job fails rather than silently losing the batch",
+              job_a.status == "error", f"{job_a.status}: {job_a.error}")
+        check("the failure itself is the one that was raised",
+              "simulated outage" in job_a.error, job_a.error)
+
+        pcache = JOBS_DIR / job_a.id / "translated.partial.json"
+        tcache = JOBS_DIR / job_a.id / "translated.json"
+        check("the completed batch was written to disk before the failure",
+              pcache.exists())
+        partial = json.loads(pcache.read_text()) if pcache.exists() else {}
+        check("exactly the finished lines are recoverable, no more and no fewer",
+              sorted(int(k) for k in partial) == list(range(25)),
+              str(sorted(int(k) for k in partial)))
+        check("no completed translation exists to be mistaken for the real thing",
+              not tcache.exists())
+
+        # --- B. retrying with the same settings resumes, not restarts ---
+        requested: list[int] = []
+
+        def records_and_answers(prompt, model, host="x", **_):
+            ids = ids_in(prompt)
+            requested.extend(ids)
+            return "\n".join(f"{i}|English line {i}" for i in ids)
+
+        settings_b = Settings().apply_preset("fast")
+        settings_b.translator = "ollama"
+        job_b = run(URL_A, settings_b, records_and_answers)
+
+        check("the retry completes", job_b.status == "done",
+              f"{job_b.status}: {job_b.error}")
+        if job_b.status == "done":
+            check("only the line that was still missing was ever asked for",
+                  requested == [25], str(requested))
+            check("the resume was reported",
+                  any("already translated" in n for n in job_b.stats.get("notes", [])),
+                  str(job_b.stats.get("notes")))
+            check("every line ended up spoken, not just the resumed one",
+                  job_b.stats.get("lines_spoken") == N,
+                  str(job_b.stats.get("lines_spoken")))
+        check("the partial file is cleared once the translation is complete",
+              not pcache.exists())
+
+        # --- C. a setting that changes the fingerprint gets no head start ---
+        URL_C = "https://example.com/translate-resume-c"
+        shutil_rmtree(JOBS_DIR / pipeline._job_id(URL_C))
+
+        calls["n"] = 0     # dies_after_first_batch is reused; give it a clean count
+        settings_c1 = Settings().apply_preset("fast")
+        settings_c1.translator = "ollama"
+        settings_c1.merge_lines = True
+        job_c1 = run(URL_C, settings_c1, dies_after_first_batch)
+        check("the first attempt on link C fails, leaving a partial behind",
+              job_c1.status == "error", f"{job_c1.status}: {job_c1.error}")
+
+        requested_c: list[int] = []
+
+        def records_all(prompt, model, host="x", **_):
+            ids = ids_in(prompt)
+            requested_c.extend(ids)
+            return "\n".join(f"{i}|English line {i}" for i in ids)
+
+        # merge_lines is folded into the same fingerprint as everything else
+        # translation depends on; the segments themselves are unaffected,
+        # since they're spaced well past merge_adjacent's gap threshold.
+        settings_c2 = Settings().apply_preset("fast")
+        settings_c2.translator = "ollama"
+        settings_c2.merge_lines = False
+        job_c2 = run(URL_C, settings_c2, records_all)
+
+        check("the retry under different settings still completes",
+              job_c2.status == "done", f"{job_c2.status}: {job_c2.error}")
+        if job_c2.status == "done":
+            check("a settings change discards the stale partial instead of "
+                  "resuming from it — every line is asked for again",
+                  sorted(set(requested_c)) == list(range(N)), str(sorted(set(requested_c))))
+            check("no resume was reported, since none happened",
+                  not any("already translated" in n for n in job_c2.stats.get("notes", [])),
+                  str(job_c2.stats.get("notes")))
+    finally:
+        pipeline.download.probe = real_probe
+        pipeline.download.download = real_download
+        pipeline.asr_backend.transcribe = real_transcribe
+        pipeline.JobRunner._make_engine = real_make
+        pipeline.prune_workdir = real_prune
+        T._call_ollama = real_ollama
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -3719,6 +3938,7 @@ if __name__ == "__main__":
     test_terminology()
     test_job_record()
     test_near_empty_dub()
+    test_translate_resume()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

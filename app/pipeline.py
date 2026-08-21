@@ -1091,6 +1091,7 @@ class JobRunner:
             # --------------------------------------------------- translate
             report = self._stage(job, plan, "translate", notes)
             tcache = workdir / "translated.json"
+            pcache = workdir / "translated.partial.json"
 
             # Asked of this video before any of it is translated. The built-in
             # glossary only chooses between UK and US stitch names, and its
@@ -1121,10 +1122,35 @@ class JobRunner:
                 segments = json.loads(tcache.read_text())
                 report(1.0, "Reusing the translation from last time")
             else:
+                # A prior attempt at these exact settings may have died part
+                # way through translating. Guarded by the same fingerprint as
+                # the finished cache, so a partial from before a settings
+                # change is never mistaken for a head start on this one.
+                resume: dict[int, str] = {}
+                if pcache.exists() and _cache_valid(workdir, "translated_partial", trans_print):
+                    try:
+                        resume = {int(i): t for i, t in json.loads(pcache.read_text()).items()}
+                    except Exception:                            # noqa: BLE001
+                        resume = {}
+                    if resume:
+                        notes.append(f"Picking up where the last attempt left off — "
+                                     f"{len(resume)} of {len(segments)} lines were "
+                                     "already translated.")
+
+                # Written after every batch, not just on failure: a kill -9 or
+                # a power cut runs no exception handler, so only what has
+                # already reached disk survives it. The cost is one small
+                # write per batch against one network round trip.
+                def _save_partial(done: dict[int, str]) -> None:
+                    pcache.write_text(json.dumps(done, ensure_ascii=False, indent=1))
+                    _cache_stamp(workdir, "translated_partial", trans_print)
+
                 segments = run_translate(segments, settings, machine.ram_gb, report,
-                                         extra_glossary=found)
+                                         extra_glossary=found, resume=resume,
+                                         on_batch=_save_partial)
                 tcache.write_text(json.dumps(segments, ensure_ascii=False, indent=1))
                 _cache_stamp(workdir, "translated", trans_print)
+                pcache.unlink(missing_ok=True)
 
             # Checked whether it was just produced or restored from cache. The
             # cache is the reason this cannot live in the parser: a translation
