@@ -61,6 +61,19 @@ async function refreshStorage(){
   }
 }
 
+// A finished sample lives only in the view — it has no list of its own the
+// way a dubbed video or a failure does — so it is shown again only while it
+// is the most recent thing that happened, of any kind: another sample, a
+// full run, even one that failed. Anything newer means the user has moved
+// on to that instead.
+function latestSample(jobs){
+  const all = Object.values(jobs);
+  if(!all.length) return null;
+  const activity = j => j.finished || j.started || 0;
+  const newest = all.reduce((a, b) => activity(b) > activity(a) ? b : a);
+  return (newest.status === "done" && newest.preview) ? newest.id : null;
+}
+
 function listen(){
   const es = api.events();
   // /api/events replays every known job on connect, and reconnects every few
@@ -120,6 +133,10 @@ async function boot(){
   store.set({jobs});
   const live = initial.jobs.find(j => j.status === "running" || j.status === "queued");
   if(live) store.setCurrent(live.id);
+  else {
+    const sample = latestSample(jobs);
+    if(sample) store.setCurrent(sample);
+  }
 
   await refreshDoctor();
   await refreshStorage();

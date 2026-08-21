@@ -3077,6 +3077,33 @@ def test_observability():
     check("a job failing never drives the auto-picked tab",
           "s.jobs" not in update_block, update_block.strip()[:200])
 
+    # A finished sample has no list of its own the way a dubbed video or a
+    # failure does, so reloading used to lose it outright: /api/events replays
+    # every known job, but main.js only ever took the view for one that was
+    # running, already current, or queued with nothing else current — a
+    # finished sample matched none of those and sat in the store unseen, the
+    # player, the report and "Dub it" gone.
+    check("a finished sample can reclaim the view on reload, not just a job "
+          "that is running or already queued",
+          "function latestSample(jobs)" in main_js
+          and "latestSample(jobs)" in main_js.split("async function boot", 1)[1])
+    # A finished sample lives only in the view, so it is shown again only
+    # while it is the most recent thing that happened, of any kind — anything
+    # newer means the user has moved on to that instead.
+    check("relevance is decided across every job, not just other samples, so "
+          "a full run or a failure since outranks an old one",
+          "activity(b) > activity(a)" in main_js)
+    check("and only a finished sample ever reclaims the view this way — a "
+          "finished full run already has its own card in the dubbed-videos "
+          "list, and showing it here too would be two things claiming the "
+          "same run",
+          'newest.status === "done" && newest.preview' in main_js)
+    boot_block = main_js.split("async function boot", 1)[1].split("\ndocument.addEventListener", 1)[0]
+    check("the sample fallback only runs once nothing is actually live to "
+          "steal the view",
+          "if(live) store.setCurrent(live.id);\n  else {" in boot_block
+          and "latestSample(jobs)" in boot_block)
+
 
 # ============================ 15. terminology lifted from the video itself
 def test_terminology():
