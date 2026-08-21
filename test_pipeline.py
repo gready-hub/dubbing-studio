@@ -7,6 +7,7 @@ real jobs under Application Support. Set DUBBING_TEST_SOURCE to a video with
 speech in it to exercise transcription against real recorded audio; without one
 the suite synthesises its own speech and is fully self-contained.
 """
+import atexit
 import json
 import os
 import shutil
@@ -20,9 +21,16 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 # Must be set before app.config is imported anywhere — it reads these at import
-# time to decide where the job and output folders live.
-SCRATCH = Path(os.environ.setdefault(
-    "DUBBING_STUDIO_HOME", str(Path(tempfile.gettempdir()) / "dubbing-studio-test")))
+# time to decide where the job and output folders live. A fixed shared path let
+# concurrent runs corrupt each other's job state, so each run now gets its own
+# directory (removed on exit) unless the caller names one explicitly.
+_explicit_home = os.environ.get("DUBBING_STUDIO_HOME")
+if _explicit_home:
+    SCRATCH = Path(_explicit_home)
+else:
+    SCRATCH = Path(tempfile.mkdtemp(prefix="dubbing-studio-test-"))
+    os.environ["DUBBING_STUDIO_HOME"] = str(SCRATCH)
+    atexit.register(shutil.rmtree, SCRATCH, ignore_errors=True)
 os.environ.setdefault("DUBBING_STUDIO_OUTPUT", str(SCRATCH / "output"))
 WORK = SCRATCH / "work"
 WORK.mkdir(parents=True, exist_ok=True)
