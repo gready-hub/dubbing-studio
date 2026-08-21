@@ -1,6 +1,8 @@
 """Tests for the multi-speaker / music-preservation upgrade."""
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,9 +12,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# Set before app.config is imported — see the note in test_pipeline.py.
-SCRATCH = Path(os.environ.setdefault(
-    "DUBBING_STUDIO_HOME", str(Path(tempfile.gettempdir()) / "dubbing-studio-test")))
+# Set before app.config is imported — see the note in test_pipeline.py: each
+# run gets its own directory, removed on exit, unless one is named explicitly.
+_explicit_home = os.environ.get("DUBBING_STUDIO_HOME")
+if _explicit_home:
+    SCRATCH = Path(_explicit_home)
+else:
+    SCRATCH = Path(tempfile.mkdtemp(prefix="dubbing-studio-test-"))
+    os.environ["DUBBING_STUDIO_HOME"] = str(SCRATCH)
+    atexit.register(shutil.rmtree, SCRATCH, ignore_errors=True)
 os.environ.setdefault("DUBBING_STUDIO_OUTPUT", str(SCRATCH / "output"))
 WORK = SCRATCH / "work"
 WORK.mkdir(parents=True, exist_ok=True)
