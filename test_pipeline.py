@@ -601,6 +601,28 @@ def test_server():
     finally:
         _srv.subprocess.run = real_run
 
+    # Open folder sends the path the panel is holding, and until the first state
+    # arrives that is the empty string the store starts with. An empty string is
+    # a key that exists, so a get() default never fired and Path("") is ".",
+    # which opened whatever folder the app was running from.
+    opened = []
+    _srv.subprocess.run = lambda cmd, **k: opened.append([str(c) for c in cmd])
+    try:
+        from app.config import OUTPUT_DIR as _OUT
+        for body in ({}, {"path": ""}, {"path": None}):
+            opened.clear()
+            client.post("/api/reveal", json=body)
+            check(f"reveal falls back to the output folder for {body}",
+                  opened and str(_OUT) in opened[-1], str(opened))
+            check(f"and never opens the working directory for {body}",
+                  opened and "." not in opened[-1], str(opened))
+        opened.clear()
+        client.post("/api/reveal", json={"path": str(_OUT)})
+        check("a path the panel does send is the one opened",
+              opened and str(_OUT) in opened[-1], str(opened))
+    finally:
+        _srv.subprocess.run = real_run
+
     # What a failed download actually says to the person reading it. The failed
     # panel shows this verbatim, so anything yt-dlp phrases for itself ends up
     # in front of someone who cannot act on it.

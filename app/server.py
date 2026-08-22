@@ -533,7 +533,11 @@ def open_uninstaller(request: Request) -> dict:
 
 @app.post("/api/reveal")
 def reveal(body: dict) -> dict:
-    path = Path(body.get("path", str(OUTPUT_DIR)))
+    # `or`, not a get() default: the panel sends its own path, and until the
+    # first state arrives that path is the empty string it starts out as. An
+    # empty string is a key that exists, so the default never fired and Path("")
+    # is ".", which opened whichever folder the app happened to be running from.
+    path = Path(body.get("path") or OUTPUT_DIR)
     try:
         if platform.system() == "Darwin":
             # An empty argument is not the same as no argument: `open "" <path>`
