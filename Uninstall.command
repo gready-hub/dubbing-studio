@@ -31,12 +31,26 @@ warn() { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
 # that will not go is left exactly where it is and named at the end — an
 # uninstall that misses a folder is a nuisance, one that erases the wrong folder
 # is not.
+HAVE_TRASH=""
+[[ -x /usr/bin/trash ]] && HAVE_TRASH="yes"
+
 STRANDED=()
 bin_it() {
-  local failed=0 path dest base n
-  for path in "$@"; do
+  local failed=0 path dest base n existing=()
+  for path in "$@"; do [[ -e "$path" ]] && existing+=("$path"); done
+  (( ${#existing[@]} )) || return 0
+
+  # One call for everything that still exists, rather than one process per
+  # path — trash(1) moves what it can even when the batch as a whole reports
+  # failure, so a non-zero exit here just means the loop below has fewer
+  # paths left to pick up than it started with.
+  if [[ -n "$HAVE_TRASH" ]] && /usr/bin/trash "${existing[@]}" 2>/dev/null; then
+    return 0
+  fi
+
+  for path in "${existing[@]}"; do
     [[ -e "$path" ]] || continue
-    if [[ -x /usr/bin/trash ]] && /usr/bin/trash "$path" 2>/dev/null; then
+    if [[ -n "$HAVE_TRASH" ]] && /usr/bin/trash "$path" 2>/dev/null; then
       continue
     fi
     base="$(basename "$path")"; dest="$HOME/.Trash/$base"; n=1
@@ -148,7 +162,7 @@ if command -v ollama >/dev/null 2>&1; then
   # trash(1) is only guaranteed from macOS 14; typed advice gets no fallback
   # of its own the way bin_it does, so it has to pick a command that will
   # actually run on whatever's in front of it.
-  if [[ -x /usr/bin/trash ]]; then
+  if [[ -n "$HAVE_TRASH" ]]; then
     say "      ${DIM}brew uninstall --cask ollama && trash ~/.ollama${RESET}"
   else
     say "      ${DIM}brew uninstall --cask ollama && mv ~/.ollama ~/.Trash/${RESET}"

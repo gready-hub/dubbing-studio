@@ -2904,11 +2904,28 @@ def test_observability():
     check("an unexpected death is caught too, not just the checked failures",
           "trap 'code=$?" in inst and "finish_badly" in inst)
     check("and the ending cannot fire twice", "HANDLED" in inst)
+    inst_sh = (ROOT / "install.sh").read_text()
     check("the installer will not replace a folder that is not an install",
-          "is_install" in (ROOT / "install.sh").read_text())
+          "is_install" in inst_sh)
     unin = (ROOT / "Uninstall.command").read_text()
     check("removal goes to the Bin rather than straight off the disk",
           "bin_it" in unin and "rm -rf" not in unin)
+
+    # install.sh has no app to ask, and Uninstall.command's own question to it
+    # can fail, so both carry a literal copy of the rule config.py computes via
+    # platformdirs. Checked against platformdirs directly rather than against
+    # app.config, since this process's DUBBING_STUDIO_HOME is the scratch
+    # override above, not the real default the literals are meant to match.
+    from platformdirs import user_cache_dir, user_data_dir
+    _home = str(Path.home())
+    _real_base = user_data_dir("DubbingStudio", appauthor=False).replace(_home, "$HOME")
+    _real_cache = user_cache_dir("DubbingStudio", appauthor=False).replace(_home, "$HOME")
+    check("install.sh's default install path still matches what platformdirs resolves",
+          f"{_real_base}/program" in inst_sh)
+    check("Uninstall.command's fallback data root still matches what platformdirs resolves",
+          _real_base in unin)
+    check("Uninstall.command's fallback cache root still matches what platformdirs resolves",
+          _real_cache in unin)
     for script in ("Install.command", "install.sh", "Update.command",
                    "Uninstall.command"):
         ok = subprocess.run(["bash", "-n", str(ROOT / script)],

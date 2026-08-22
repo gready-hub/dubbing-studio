@@ -25,6 +25,7 @@ import platform
 import sys
 import warnings
 from contextvars import ContextVar
+from datetime import datetime
 from pathlib import Path
 
 # The job this thread is working on, set once when a job starts. Jobs run one at
@@ -57,15 +58,25 @@ _NOISY = ("huggingface_hub", "httpx", "httpcore", "urllib3", "requests",
 
 _ready = False
 
-# Things worth a log entry that happen before there is a file to put one in —
-# config.py resolves paths and migrates old ones at import time, which is
-# earlier than anything here can run. Queued, then drained once setup() has
-# somewhere to send them.
-_EARLY: list[str] = []
 
+def log_before_ready(message: str) -> None:
+    """For the handful of things that can go wrong before setup() has run —
+    config.py resolves paths and migrates old ones at import time, which is
+    earlier than anything here can run.
 
-def queue_early(message: str) -> None:
-    _EARLY.append(message)
+    Written straight to the file rather than queued for setup() to drain,
+    because the process that hits this is often a short-lived one — a
+    subprocess, a test run — that never calls setup() at all, and a queue
+    only that process ever reads is no better than the silence it replaces.
+    """
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        record = {"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                  "level": "WARNING", "name": "app", "event": message}
+        with LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
 
 
 def setup(level: int = logging.INFO) -> Path:
@@ -127,11 +138,6 @@ def setup(level: int = logging.INFO) -> Path:
 
     sys.excepthook = crashed
     _ready = True
-
-    for _msg in _EARLY:
-        logging.getLogger("app").warning(_msg)
-    _EARLY.clear()
-
     return LOG_FILE
 
 

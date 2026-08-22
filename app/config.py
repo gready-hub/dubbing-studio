@@ -30,7 +30,7 @@ def _base_dir() -> Path:
     return Path(user_data_dir("DubbingStudio", appauthor=False))
 
 
-def _cache_dir() -> Path:
+def _cache_dir(base: Path) -> Path:
     env = os.environ.get("DUBBING_STUDIO_CACHE")
     if env:
         return Path(env)
@@ -39,12 +39,12 @@ def _cache_dir() -> Path:
     # under either would put the working files somewhere neither expects, so the
     # split only applies when the location was left to us.
     if os.environ.get("DUBBING_STUDIO_HOME"):
-        return _base_dir() / "cache"
+        return base / "cache"
     return Path(user_cache_dir("DubbingStudio", appauthor=False))
 
 
 BASE = _base_dir()
-CACHE = _cache_dir()
+CACHE = _cache_dir(BASE)
 JOBS = CACHE / "jobs"
 MODELS = CACHE / "models"
 PREVIEWS = CACHE / "previews"
@@ -75,7 +75,7 @@ for _name in ("jobs", "models", "previews"):
             _now.parent.mkdir(parents=True, exist_ok=True)
             _was.rename(_now)
         except OSError as _exc:
-            logs.queue_early(f"could not move {_was} to {_now}: {_exc}")
+            logs.log_before_ready(f"could not move {_was} to {_now}: {_exc}")
 
 for _p in (BASE, CACHE, JOBS, MODELS, OUTPUT_DIR):
     _p.mkdir(parents=True, exist_ok=True)
