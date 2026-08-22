@@ -230,7 +230,7 @@ def _ladder(use_mlx: bool, model: str) -> list[tuple[str, Callable, Callable]]:
     return ladder
 
 
-def prefetch(use_mlx: bool, model: str = "parakeet", progress: Progress = None) -> None:
+def prefetch(use_mlx: bool, model: str = "whisper", progress: Progress = None) -> None:
     """Fetch every engine transcribe() might reach, including its fallbacks.
 
     Each one is attempted independently. Letting the first failure abort the
@@ -252,7 +252,7 @@ def prefetch(use_mlx: bool, model: str = "parakeet", progress: Progress = None) 
         raise last_error
 
 
-def transcribe(audio_wav: Path, use_mlx: bool, model: str = "parakeet",
+def transcribe(audio_wav: Path, use_mlx: bool, model: str = "whisper",
                progress: Progress = None) -> list[dict]:
     """model: "parakeet" (fast) or "whisper" (more accurate, slower)."""
     ladder = _ladder(use_mlx, model)

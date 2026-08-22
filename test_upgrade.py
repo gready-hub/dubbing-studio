@@ -82,15 +82,19 @@ def test_plan():
     check("cloning gets a bigger share of the bar",
           best["synthesize"][1] > balanced["synthesize"][1],
           f"{best['synthesize'][1]:.3f} vs {balanced['synthesize'][1]:.3f}")
+    # Every preset uses whisper now, so isolate the one variable this checks
+    # rather than comparing two presets that no longer differ on it.
+    as_parakeet = Settings().apply_preset("balanced")
+    as_parakeet.asr_model = "parakeet"
     check("whisper gets a bigger share than parakeet",
-          best["transcribe"][1] > balanced["transcribe"][1])
+          balanced["transcribe"][1] > r._plan(as_parakeet)["transcribe"][1])
 
     s = Settings().apply_preset("best")
     check("best preset turns cloning on", s.voice_mode == "clone")
     check("best preset selects whisper", s.asr_model == "whisper")
     s.apply_preset("fast")
     check("switching preset resets the switches",
-          s.voice_mode == "fixed" and s.asr_model == "parakeet" and not s.separate_audio)
+          s.voice_mode == "fixed" and s.asr_model == "whisper" and not s.separate_audio)
 
 
 # ====================================================== 2. per-speaker voices

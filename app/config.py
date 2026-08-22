@@ -320,13 +320,13 @@ PRESETS = {
         "label": "Fast",
         "blurb": "Quickest. Good when there is no music or effects worth keeping.",
         "separate_audio": False,
-        "asr_model": "parakeet", "voice_mode": "fixed",
+        "asr_model": "whisper", "voice_mode": "fixed",
     },
     "balanced": {
         "label": "Balanced",
         "blurb": "Keeps the music and effects underneath the new voice.",
         "separate_audio": True,
-        "asr_model": "parakeet", "voice_mode": "fixed",
+        "asr_model": "whisper", "voice_mode": "fixed",
     },
     "best": {
         "label": "Best quality",
@@ -381,7 +381,7 @@ class Settings:
     # people sharing one. Asked plainly on the front panel instead.
     diarize: bool = False                # detect multiple speakers
     merge_lines: bool = True             # join lines that run straight together
-    asr_model: str = "parakeet"          # parakeet | whisper
+    asr_model: str = "whisper"           # parakeet | whisper
     voice_mode: str = "fixed"            # fixed | clone
 
     # The switches a preset is a name for. Deliberately not "diarize": how many

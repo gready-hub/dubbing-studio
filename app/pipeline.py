@@ -840,7 +840,9 @@ class JobRunner:
             if key == "synthesize" and settings.voice_mode == "clone":
                 cost = int(cost * 2.2)           # cloning is markedly slower
             if key == "transcribe" and settings.asr_model == "whisper":
-                cost = int(cost * 2.0)
+                # Measured back to back against Parakeet on real clips: ~9x,
+                # not the ~2x this used to assume.
+                cost = int(cost * 9.0)
             if key == "download":
                 cost = cost * download_weight
             active.append((key, label, cost))

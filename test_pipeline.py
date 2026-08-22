@@ -722,7 +722,7 @@ def test_server():
           off.matching_preset() == "fast", off.matching_preset())
     # A combination no preset describes.
     mixed = Settings().apply_preset("balanced")
-    mixed.asr_model = "whisper"
+    mixed.asr_model = "parakeet"
     check("a mix no preset describes reads as custom",
           mixed.matching_preset() == "custom", mixed.matching_preset())
 
@@ -737,10 +737,10 @@ def test_server():
 
     r = client.post("/api/settings", json={"data": {"preset": "balanced"}})
     check("picking a preset saves it", r.json()["preset"] == "balanced")
-    r = client.post("/api/settings", json={"data": {"asr_model": "whisper"}})
+    r = client.post("/api/settings", json={"data": {"asr_model": "parakeet"}})
     check("an off-preset switch flips the saved preset to custom",
           r.json()["preset"] == "custom", r.json()["preset"])
-    r = client.post("/api/settings", json={"data": {"asr_model": "parakeet"}})
+    r = client.post("/api/settings", json={"data": {"asr_model": "whisper"}})
     check("and putting it back returns to the named preset",
           r.json()["preset"] == "balanced", r.json()["preset"])
     r = client.post("/api/settings", json={"data": {"diarize": True}})
@@ -792,7 +792,7 @@ def test_server():
 
     client.post("/api/settings", json={"data": {
         "voice": "bf_lily", "speed": 1.4, "keep_video_quality": "720",
-        "anthropic_key": "sk-ant-RESET-CANARY", "asr_model": "whisper"}})
+        "anthropic_key": "sk-ant-RESET-CANARY", "asr_model": "parakeet"}})
 
     # The panel resets one tab at a time, so a subset has to be resettable
     # without disturbing the rest.
@@ -803,7 +803,7 @@ def test_server():
           f'{got["voice"]} {got["speed"]}')
     check("and leaves everything else exactly where it was",
           got["keep_video_quality"] == "720", got["keep_video_quality"])
-    # Whisper is still on, so the preset is still not one of the named ones.
+    # Parakeet is still on, so the preset is still not one of the named ones.
     check("a partial reset still reads the preset back off the switches",
           got["preset"] == "custom", got["preset"])
 
@@ -843,7 +843,7 @@ def test_server():
     # seconds". Checked as the rule: everything moved off its default, then a
     # blanket reset, and exactly the spared fields are the ones still moved.
     moved = {"voice": "bf_lily", "speed": 1.4, "keep_video_quality": "720",
-             "asr_model": "whisper", "write_srt": True, "diarize": True,
+             "asr_model": "parakeet", "write_srt": True, "diarize": True,
              "translator": "openai", "keep_awake": False,
              "anthropic_key": "sk-ant-SPARE-CANARY", "openai_key": "sk-oai-SPARE-CANARY",
              "custom_glossary": "punto raso -> slip stitch"}
@@ -2057,8 +2057,12 @@ def test_translation_qc():
     SRC = "Blusa de verano facil en todas las tallas paso a paso"
 
     # Scaffolding the model echoes back into its own answer.
+    # The slot marker goes out as "[2.0s]" but comes back with the opening
+    # bracket dropped often enough to matter: 25 of 83 lines in a real run, each
+    # one spoken aloud as "two point oh ess" in front of its sentence.
     for raw, want in [("id: 63 Now we chain three.", "Now we chain three."),
                       ("[2.0s] Now we chain three.", "Now we chain three."),
+                      ("2.0s] Now we chain three.", "Now we chain three."),
                       ("[2.0s] id 63. Now we chain three.", "Now we chain three."),
                       ("#63 Now we chain three.", "Now we chain three."),
                       ("<id>|Now we chain three.", "Now we chain three."),
@@ -2085,6 +2089,48 @@ def test_translation_qc():
                  "Row 12) turn your work.", "Work 2 together, <that> is the trick."):
         check(f"and a real line is not: {real[:28]!r}",
               not _is_scaffolding(real) and _parse(f"1|{real}", one)[0] == {1: real})
+
+    # With the batch in hand the slot marker does not have to be guessed at: the
+    # value that went out is known, so every mangling of it comes back off, and
+    # a sentence that merely opens on the same number does not.
+    for raw, slot in [("[5.1s] Why do we do this?", 5.1),
+                      ("5.1s] Why do we do this?", 5.1),
+                      ("5.1s Why do we do this?", 5.1),
+                      ("(5.1 s) Why do we do this?", 5.1),
+                      ("2s] Why do we do this?", 2.0)]:
+        got = _strip_echo(raw, slot)
+        check(f"slot echo removed: {raw[:24]!r}", got == "Why do we do this?", got)
+    for keep, slot in [("5 stitches in the round.", 5.0),
+                       ("60s is a long time.", 60.0),
+                       ("5.1 seconds is the limit.", 5.1),
+                       ("2 seconds later, turn.", 2.0)]:
+        check(f"slot in hand, sentence intact: {keep[:24]!r}",
+              _strip_echo(keep, slot) == keep, _strip_echo(keep, slot))
+    spoken = [{"i": 49, "start": 325.3, "end": 330.4, "text": "¿Para qué hacemos esto?"}]
+    check("and the parser takes the slot off before anything is spoken",
+          _parse("49|5.1s] Why do we do this?", spoken)[0] == {49: "Why do we do this?"},
+          _parse("49|5.1s] Why do we do this?", spoken)[0])
+
+    # Only the punctuation that closes the marker is the marker's. What opens a
+    # sentence is the sentence's, whatever alphabet it is written in.
+    for keep, slot in [("¿Por qué no?", 5.1), ("¡Vamos!", 2.0), ("— then turn.", 5.1)]:
+        got = _strip_echo(f"{slot:.1f}s] {keep}", slot)
+        check(f"opening punctuation survives the strip: {keep[:18]!r}", got == keep, got)
+
+    # Slots this app really produces, from a clipped syllable to a long run-on.
+    for slot in (0.0, 0.1, 2.0, 12.5, 100.0):
+        got = _strip_echo(f"[{slot:.1f}s] Chain three.", slot)
+        check(f"slot {slot} marker removed", got == "Chain three.", got)
+    # Layered, and the shape that leaves nothing behind: an answer that was only
+    # ever scaffolding has to read as a miss so the retry asks again.
+    check("a doubled marker comes off in one pass",
+          _strip_echo("[2.0s] [2.0s] Chain three.", 2.0) == "Chain three.")
+    check("a reply that is only the marker empties out",
+          _strip_echo("[2.0s]", 2.0) == "")
+    check("and the parser counts that as a miss rather than speaking it",
+          _parse("1|[2.0s]", [{"i": 1, "start": 0.0, "end": 2.0, "text": "hola"}])[0] == {})
+    check("a batch carrying no timings still parses",
+          _parse("1|Chain three.", [{"i": 1, "text": "hola"}])[0] == {1: "Chain three."})
 
     # Numbers that belong to the sentence must survive. These are the shapes a
     # crochet or cookery tutorial actually produces, and eating the front of one
