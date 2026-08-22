@@ -8,7 +8,10 @@ const HALTED = {
   cancelled: {cls: "stopped", label: "Stopped"},
 };
 
-const SHELL = `<div class="stages" id="steps"></div>`;
+// .stages carries its own top margin and nothing below, which is right for the
+// copy of it inside the active panel and leaves this one — a row of its own,
+// above a panel — sitting on the panel's edge.
+const SHELL = `<div class="stages" id="steps" style="margin-bottom:14px"></div>`;
 
 class StepIndicator extends BaseElement {
   connectedCallback(){
