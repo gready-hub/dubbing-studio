@@ -5,6 +5,7 @@ import { escapeHtml } from "../format.js";
 const SHELL = `
   <div class="panel quiet">
     <h2 class="job-title">Setup check</h2>
+    <p id="verdict" style="margin:2px 0 14px;font-weight:600"></p>
     <p class="hint hidden" id="machine" style="margin-bottom:0"></p>
     <div id="doctor" style="margin-top:10px"></div>
   </div>
@@ -23,12 +24,22 @@ class DoctorPanel extends BaseElement {
   update(s){
     this.renderIfChanged([s.machine, s.doctor], () => {
       this.paintMachine(s.machine);
+      const verdict = this.$("#verdict");
+      verdict.classList.toggle("hidden", !s.doctor);
       if(!s.doctor) return;
+      // Nine rows of technical names never answered the one question this
+      // panel exists to answer. `ready` was already computed for the tab
+      // picker; this is the same value, said in words.
+      verdict.textContent = s.doctor.ready
+        ? "Good to go — this machine has everything it needs to dub a video."
+        : "Not ready yet — one of the checks below needs fixing; it says what to do.";
+      verdict.style.color = s.doctor.ready ? "var(--ok)" : "var(--bad)";
       this.$("#doctor").innerHTML = s.doctor.checks.map(c=>`
         <div class="check">
           <span class="dot ${c.ok?"ok":(c.optional?"opt":"bad")}"></span>
           <div><b>${escapeHtml(c.name)}</b>${c.optional&&!c.ok?'<span class="tag">optional</span>':""}
-            ${c.ok?"":`<br><code>${escapeHtml(c.hint)}</code>`}</div>
+            ${c.ok?"":`<br><code>${escapeHtml(c.hint)}</code>`}
+            ${c.note?`<br><code>${escapeHtml(c.note)}</code>`:""}</div>
         </div>`).join("");
     });
   }

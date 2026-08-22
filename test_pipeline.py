@@ -646,6 +646,48 @@ def test_server():
     finally:
         T.installed_models = real_installed
 
+    # A substituted model used to warn on the finished run's own report and say
+    # nothing at all on the Setup check's green dot for the same fact — a
+    # creator read the warning as useful, a non-technical tester read amber as
+    # broken. The run succeeded, so the note is information now, not a
+    # warning; and Setup check says what happened instead of just going green.
+    from app.config import Settings as _Settings, Machine as _Machine
+    T.installed_models = lambda host="": [{"name": "qwen3:8b", "size": 5_000_000_000}]
+    try:
+        settings6 = _Settings()
+        settings6.ollama_model = "qwen3:32b"
+        recorded = []
+        progress = type("P", (), {})()
+        progress.note = recorded.append
+        T.backend_for(settings6, 16, progress)
+        check("a substituted model's note is tagged information, not a warning",
+              len(recorded) == 1 and isinstance(recorded[0], dict)
+              and recorded[0].get("kind") == "info", recorded)
+        check("but the cause and the fix command still reach the reader",
+              "qwen3:32b" in note_text(recorded[0])
+              and "ollama pull qwen3:32b" in note_text(recorded[0]), note_text(recorded[0]))
+
+        real_load, real_detect = _srv.Settings.load, _srv.detect_machine
+        _srv.Settings.load = staticmethod(lambda: settings6)
+        _srv.detect_machine = lambda: _Machine(
+            system="Darwin", arch="arm64", apple_silicon=False, ram_gb=16,
+            has_mlx=False, has_ffmpeg=True, has_ytdlp=True, has_ollama=True,
+            in_docker=False, av1_ok=True)
+        try:
+            report = _srv.doctor()
+        finally:
+            _srv.Settings.load, _srv.detect_machine = real_load, real_detect
+        model_check = next(c for c in report["checks"]
+                           if c["name"].startswith("Translation model"))
+        check("Setup check still shows a green dot for a working substitute",
+              model_check["ok"] is True, model_check)
+        check("but names the substitution instead of just going green",
+              "qwen3:32b" in model_check.get("note", ""), model_check)
+        check("without also putting it in the fix-it hint a green row hides",
+              model_check["hint"] == "", model_check)
+    finally:
+        T.installed_models = real_installed
+
     check("an offline machine is told so",
           "internet connection" in _friendly("ERROR: unable to open: "
                                              "nodename nor servname provided"))
@@ -3099,6 +3141,20 @@ def test_observability():
     check("the engine is stated where the machine is described, not in the header",
           "engine" in doctor_js and "ram_gb" in doctor_js
           and 'class="engine"' not in header_js, "setup check")
+    # Nine green-or-not rows never answered "is my machine the problem?" in
+    # words. /api/doctor already computed the answer; the panel just had
+    # nowhere to say it.
+    check("Setup check states the verdict `ready` already computed, not just "
+          "nine dots",
+          "s.doctor.ready" in doctor_js, "doctor-panel.js")
+    check("the not-ready wording still points at what to do, not just that "
+          "something's wrong",
+          "needs fixing" in doctor_js, "doctor-panel.js")
+    # A green row and the finished run's own report used to disagree about the
+    # same substituted model; the row can now say what happened without
+    # turning the dot itself amber or red.
+    check("a substituted model's explanation is shown even on an ok row",
+          "c.note" in doctor_js, "doctor-panel.js")
     check("the text is shown before it is sent, not just copied",
           'id="diagText"' in diag_js)
     check("a refused clipboard tells the user what to do instead",
@@ -3137,6 +3193,13 @@ def test_observability():
     # the dubbed-videos list already does not.
     manage_js = (ROOT / "app" / "static" / "js" / "components" / "manage-panel.js").read_text()
     failed_list_js = (ROOT / "app" / "static" / "js" / "components" / "failed-list.js").read_text()
+    # A past bug force-selected a tab from doctor data and walked over a
+    # hand-picked one; the verdict line lives inside doctor-panel and must not
+    # bring that back.
+    check("the readiness verdict still leaves tab selection to manage-panel's "
+          "own guard",
+          "_userPicked" in manage_js and "revealDoctor" not in manage_js
+          and "revealDoctor" not in doctor_js)
     check("a failed run is read straight from the job store, not from whichever "
           "job happens to be current",
           "s.current" not in failed_list_js)
@@ -3886,10 +3949,11 @@ def test_near_empty_dub():
         check("almost all of the video carries no dubbed line",
               s_.get("no_line_share", 0) >= 0.9, str(s_.get("no_line_share")))
         check("a run that dubbed almost nothing says so, plainly",
-              any("1 line" in n and "dubbed" in n for n in s_.get("notes", [])),
+              any("1 line" in note_text(n) and "dubbed" in note_text(n)
+                  for n in s_.get("notes", [])),
               str(s_.get("notes")))
         check("the note does not claim the run failed",
-              not any("fail" in n.lower() for n in s_.get("notes", [])),
+              not any("fail" in note_text(n).lower() for n in s_.get("notes", [])),
               str(s_.get("notes")))
     finally:
         pipeline.download.probe = real_probe

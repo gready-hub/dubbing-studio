@@ -17,7 +17,7 @@ import urllib.request
 from typing import Callable, Optional
 
 from .. import logs
-from ..notes import note
+from ..notes import info as note_info, note
 
 Progress = Optional[Callable[[float, str], None]]
 
@@ -743,9 +743,10 @@ def backend_for(settings, ram_gb: int, progress: Progress = None):
     if backend == "ollama":
         model, swapped = usable_model(settings.resolved_ollama_model(ram_gb))
         if swapped:
-            # Reported the same way any other result-changing fallback is, so it
-            # survives into the finished report rather than scrolling past.
-            note(progress, swapped)
+            # The run still succeeded with a model that works, so this is
+            # explanation, not a fault — tagged the same way as other good news,
+            # not boxed like the warnings beside it.
+            note(progress, note_info(swapped))
         return ((lambda p, system=SYSTEM: _call_ollama(p, model, system=system)),
                 f"local model {model}")
     if backend == "anthropic":

@@ -202,8 +202,12 @@ def doctor() -> dict:
             checks.append({
                 "name": f"Translation model — {picked}" if have else "Translation model",
                 "ok": have,
-                "hint": (f"None installed. Run:  ollama pull {wanted}" if not have
-                         else swapped),
+                "hint": (f"None installed. Run:  ollama pull {wanted}" if not have else ""),
+                # A substitution is explained even on a green row — the two
+                # screens used to disagree about the same run: this one said
+                # "fine", the finished job's own report named the swap and gave
+                # the command to undo it.
+                **({"note": swapped} if swapped else {}),
             })
     elif settings.translator == "anthropic":
         checks.append({"name": "Anthropic API key", "ok": bool(settings.anthropic_key),
