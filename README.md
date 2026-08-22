@@ -55,10 +55,9 @@ are tagged by macOS as coming from an unidentified developer; files fetched by
 > Liking it? One button turns it into the full dub, and the download isn't
 > repeated.
 
-Finished videos are saved to **Movies → Dubbed**. The **Your dubbed videos**
-panel lists the recent ones and has an **Open folder** button, so nothing has to
-be hunted for. Samples are not saved there — they play in the app and nowhere
-else.
+Finished videos land in **Movies → Dubbed**. The **Your dubbed videos** panel
+lists recent ones with an **Open folder** button. Samples aren't saved —
+they only play in the app.
 
 ### The two choices on the front panel
 
@@ -78,7 +77,7 @@ next.
 flowchart TD
     URL([Paste a link]) --> DL["<b>Download</b><br/>yt-dlp"]
     DL --> SEP["<b>Separate speech from music</b><br/>Demucs"]
-    SEP -->|speech| ASR["<b>Transcribe</b><br/>Parakeet, or Whisper"]
+    SEP -->|speech| ASR["<b>Transcribe</b><br/>Whisper, or Parakeet for speed"]
     SEP -->|speech| DIA["<b>Tell speakers apart</b><br/>pyannote + 3D-Speaker"]
     SEP -.->|music and effects| MIX
     ASR --> TRA["<b>Translate</b><br/>Ollama, Claude or OpenAI"]
@@ -130,63 +129,45 @@ because that is when you re-run the link.
 ## Quality presets
 
 > [!NOTE]
-> **The finished file plays anywhere.** The format is chosen from the list the
-> site publishes, not guessed: H.264 video and AAC audio in an MP4, which every
-> Mac, phone, browser and TV of the last decade can open. The picture is copied
-> straight through rather than re-encoded, so nothing is lost.
->
-> This is preferred over a smaller or sharper file on purpose, because the file
-> outlives the machine that made it. On a 4K video YouTube offers H.264 only up
-> to 1080p, so 1080p H.264 is taken over 2160p AV1 — AV1 needs an M3 or newer,
-> and QuickTime on anything older opens it with sound and no picture. On the rare
-> video offered in no H.264 at all, the picture is converted after dubbing and the
-> report says so.
+> **The finished file plays anywhere** — standard H.264 video and AAC audio in
+> an MP4, the format every Mac, phone, browser and TV already opens.
 
 | Preset | What it does | Speed |
 |---|---|---|
 | **Fast** | One voice, no separation | Quickest — it skips the longest stage |
 | **Balanced** *(default)* | Splits speech from music so the soundtrack survives | Roughly 0.3–5× the video's length, depending on how much talking there is |
-| **Best quality** | Also Whisper, and each speaker's voice cloned | Considerably slower |
+| **Best quality** | Each speaker's own voice cloned | Considerably slower |
 
-Treat the multiplier as a rough shape, not a promise — it swings hard with how
-much speech a video contains, because most of the work is per line rather than
-per minute. A dense ten-minute talk took 48 minutes on an M1 (≈5×); a 98-minute
-instructional video took about 90 minutes on the same machine (≈0.9×) and 33
-minutes on an M4 Pro (≈0.34×).
+All three presets, run back to back on the same real 9m25s video (Spanish,
+with background music), on an M4 Pro:
 
-Where that 33 minutes actually went, measured on the Balanced preset:
+| Stage | Fast | Balanced | Best |
+|---|---|---|---|
+| Download | 2.6s | 2.5s | 2.6s |
+| Separate | – | 1m26s | 1m26s |
+| Transcribe | 1m02s | 1m15s | 41s |
+| Translate | 1m04s | 58s | 1m03s |
+| Synthesize | 19s | 17s | 16m02s |
+| Fit | 9s | 17s | 18s |
+| Finish | 29s | 29s | 31s |
+| **Total** | **3m09s** | **4m49s** | **20m06s** |
 
-| Stage | Time | Share |
-|---|---|---|
-| Separating speech from music | 20m 46s | 62% |
-| Translating (local model) | 6m 21s | 19% |
-| Fitting to the picture | 3m 16s | 10% |
-| Speaking | 1m 45s | 5% |
-| Transcribing | 1m 02s | 3% |
+Every job's own quality report shows this same breakdown for the video you
+just ran — that number is always the one to trust, not this table.
 
-Separation costs more than everything else combined, and it is the one stage
-**Fast** skips — which is why that preset is roughly a third of the time rather
-than a little less. Every job now shows this breakdown in its own quality report.
-
-Switching **Translated by** to an API key removes the second-largest chunk. The
-first video is slower than any of this — it fetches about 700 MB of speech
-models, one time only.
-
-Start anything long and leave it. The Mac is held awake while there is work
-queued, so a job doesn't stall at 40% because nobody touched the trackpad — the
-screen may still sleep, only the machine is kept up. The **Won't sleep** pill
-at the top says so, and switches it off.
+Long jobs are safe to leave running — the Mac stays awake until the queue is
+empty. The **Won't sleep** pill at the top turns that off if you'd rather it
+didn't.
 
 > [!NOTE]
-> Closing the lid sleeps regardless, whatever an app asks for. Leave it open, or
-> plugged into an external display.
+> Closing the lid still sleeps the Mac either way. Leave it open, or plugged
+> into an external display.
 
 > [!NOTE]
-> **On cloning.** It carries the speaker's accent across languages, which is
-> usually what you want. For instructional content — where someone is following
-> numbers or steps — a neutral built-in voice is often easier to understand.
-> Cloning a real person's voice is also not the same act as picking a stock one.
-> Fine privately; think about it before publishing.
+> **On cloning.** It carries the speaker's accent across languages — usually a
+> plus, though a neutral built-in voice can be easier to follow for
+> step-by-step instruction. Cloning a real person's voice is a different act
+> from picking a stock one; worth a thought before publishing.
 
 ---
 
@@ -209,10 +190,8 @@ at the top says so, and switches it off.
 
 > [!WARNING]
 > An API key is stored in plain text at
-> `~/Library/Application Support/DubbingStudio/settings.json`, readable only by
-> your user account and never committed. It is not encrypted — anyone who can
-> log in as you can read it. If that isn't an acceptable trade, leave the key
-> blank and use the local model.
+> `~/Library/Application Support/DubbingStudio/settings.json`. Anyone who can
+> log into this Mac as you can read it.
 
 **Crochet stitch names**
 
@@ -262,9 +241,9 @@ Your dubbed videos are never touched.
 | **Kept** | Your dubbed videos in Movies → Dubbed |
 | **Listed, not removed** | Homebrew, ffmpeg, yt-dlp, Ollama and its models |
 
-That last row is the point: those are installed system-wide and other software
-on your Mac may be using them. The uninstaller prints their sizes and the exact
-command for each, and leaves the decision to you.
+Those are shared system-wide, so other software may depend on them — the
+uninstaller lists their sizes and the exact command to remove each, and
+leaves the choice to you.
 
 ---
 
@@ -316,15 +295,11 @@ goes stale, and an out-of-date yt-dlp is the single commonest cause.
 
 ### Sending someone the details
 
-Press **Copy details** in **Settings** — or on a failed job, next to **Try again**.
-It gathers your Mac, the versions, the setup check and what the app has recently
-been doing into one block of text, shows it to you, and copies it. Paste that
-into a message to whoever helps you with this.
+**Copy details** in **Settings** (or next to **Try again** on a failed job)
+copies your Mac, versions, setup check and recent activity as one block of
+text — paste it to whoever's helping you. No passwords or API keys are in it.
 
-It contains no passwords and no API keys.
-
-If setup itself fails, the installer does the same thing without being asked: the
-details are on your clipboard when the window closes.
+If setup itself fails, the installer copies the same thing automatically.
 
 <details>
 <summary>Where that comes from, for anyone who prefers files</summary>
@@ -337,12 +312,10 @@ details are on your clipboard when the window closes.
 | The app itself | `~/Library/Application Support/DubbingStudio/program/` |
 | Working files, models, voice samples | `~/Library/Caches/DubbingStudio/` |
 
-Two roots on purpose. The first holds the only things here nobody can
-regenerate, so backups keep them. The second is re-downloadable by definition,
-which is why it lives where Time Machine skips it and macOS can reclaim it.
-
-The app log rotates at 5 MB and keeps three, so a whole job always fits in one
-file and it can never grow without limit.
+The first pair can't be regenerated, so it's what a backup should keep. The
+second is just re-downloadable cache — that's why Time Machine skips it and
+macOS is free to reclaim it. The app log rotates at 5 MB and keeps three
+files, so it never grows without limit.
 </details>
 
 ---
@@ -354,7 +327,7 @@ file and it can never grow without limit.
 | Download | yt-dlp |
 | Separation | Demucs (htdemucs_ft) |
 | Speaker detection | pyannote segmentation 3.0 + 3D-Speaker embeddings |
-| Transcription | Parakeet TDT 0.6b v3 (25 languages), or Whisper large-v3 |
+| Transcription | Whisper large-v3, or Parakeet TDT 0.6b v3 for speed |
 | Translation | a local Ollama model, or Claude / OpenAI |
 | Synthesis | Kokoro-82M, or Chatterbox for cloned voices |
 | Audio and video | ffmpeg |
