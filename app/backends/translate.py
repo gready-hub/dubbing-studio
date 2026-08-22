@@ -29,18 +29,17 @@ SYSTEM = """You translate speech for an AI-dubbed video soundtrack.
 
 Rules you must follow every time:
 
-1. TIMING. Each line is spoken into a fixed time slot given in seconds. Keep the
-   translation short enough to fit: at most 2.6 words per second of the slot. Trim
-   filler and hesitation rather than padding. Being slightly short is good; running
-   long is a defect.
+1. TIMING. Each line is spoken over the moment the line it translates was spoken
+   in, so it has to take about as long to say. Keep it no longer than its own
+   source line: trim filler and hesitation rather than padding. Being slightly
+   short is good; running long is a defect.
 2. SPOKEN REGISTER. This is talking, not writing. Use contractions and natural
    phrasing. Keep the speaker's warmth, but do not invent content.
 3. READ ALOUD BY A MACHINE. Write numbers, units and symbols as words: "2,5 mm"
    becomes "two point five millimetres", "5%" becomes "five percent". No digits, no
    symbols, no parentheses, no bullets.
-4. NEVER COPY. Returning a line unchanged, or repeating its id or its slot
-   marker back, is a defect — every line must come back in the target language
-   and nothing else.
+4. NEVER COPY. Returning a line unchanged, or repeating its id back, is a defect
+   — every line must come back in the target language and nothing else.
 5. IMPERFECT INPUT. The source came from speech recognition and contains
    mis-hearings and run-on sentences. Infer the intent from context and translate
    that. Never return an empty line.
@@ -101,9 +100,16 @@ def _build_prompt(batch: list[dict], context: list[str], target: str, glossary: 
     # this one moved the hazard closer to the generation point rather than away.
     parts.append("\nTranslate these lines. Reply with one line for each: its "
                  "number, a vertical bar, then the translation.\n")
+    # Nothing but the id and the line itself. The slot used to ride along here as
+    # "[5.1s] ", to hold the translation to the time it has to fit — and came
+    # back spoken aloud on 89 of every 100 Japanese lines, because rule 3 turns
+    # numbers into words and "four point zero seconds" is indistinguishable from
+    # a translation to every check downstream. The timings never needed to cross
+    # this boundary: assemble() reads them from the segments, not from the model.
+    # Rule 1 anchors length to the source line, which is already here and cannot
+    # be pasted back as content.
     for seg in batch:
-        slot = seg["end"] - seg["start"]
-        parts.append(f'{seg["i"]}|[{slot:.1f}s] {seg["text"]}')
+        parts.append(f'{seg["i"]}|{seg["text"]}')
     return "\n".join(parts)
 
 

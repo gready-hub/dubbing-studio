@@ -326,7 +326,14 @@ def test_translate():
           == {0: "Hello", 1: "Goodbye"})
 
     prompt = T._build_prompt(batch, ["contexto"], "English", "hola -> hi")
-    check("prompt carries the slot length", "[2.0s]" in prompt)
+    # Nothing but the id and the line. A slot marker riding along here came back
+    # spoken aloud on 89 of every 100 Japanese lines: rule 3 renders numbers as
+    # words, and "four point zero seconds" is a translation as far as every
+    # check downstream can tell. What is never sent cannot be echoed.
+    check("prompt carries no slot marker", "s]" not in prompt and "2.0" not in prompt,
+          prompt[-80:])
+    check("prompt still carries the line and its id",
+          all(f'{s["i"]}|{s["text"]}' in prompt for s in batch))
     check("prompt carries the glossary", "hola -> hi" in prompt)
     check("prompt marks context as not-for-translation", "do NOT translate" in prompt)
 
