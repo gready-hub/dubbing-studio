@@ -68,9 +68,18 @@ def ollama_host() -> str:
 # Existing jobs, models or previews under the data folder are moved into the
 # cache rather than left behind: the models alone run to several gigabytes,
 # and leaving them behind would mean downloading all of them again.
+#
+# "Not already there" means empty, not merely present: the loop below creates
+# JOBS and MODELS unconditionally so the app always has somewhere to write, and
+# an empty folder created that way is indistinguishable from a fresh install
+# unless a failed rename here is allowed to try again next launch. Without
+# that, one EXDEV on a bad day seals the folder from ever being checked again,
+# and the gigabytes sitting at the old path stay orphaned and invisible for
+# good rather than for one run.
 for _name in ("jobs", "models", "previews"):
     _was, _now = BASE / _name, CACHE / _name
-    if _was.is_dir() and not _was.is_symlink() and not _now.exists():
+    _now_in_use = _now.is_dir() and any(_now.iterdir())
+    if _was.is_dir() and not _was.is_symlink() and not _now_in_use:
         try:
             _now.parent.mkdir(parents=True, exist_ok=True)
             _was.rename(_now)

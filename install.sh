@@ -31,7 +31,13 @@ BRANCH="${DUBBING_STUDIO_BRANCH:-main}"
 # An empty folder passes because someone making it first is a reasonable way to
 # choose where this goes.
 is_install() { [[ -f "$1/Install.command" && -f "$1/app/pipeline.py" ]]; }
-is_empty()   { [[ -d "$1" && -z "$(ls -A "$1" 2>/dev/null)" ]]; }
+# .DS_Store is not a reason to call a folder occupied: Finder writes one the
+# moment someone so much as looks at a folder they just made, before they've
+# put anything in it themselves.
+is_empty() {
+  [[ -d "$1" ]] || return 1
+  [[ -z "$(ls -A "$1" 2>/dev/null | grep -v '^\.DS_Store$')" ]]
+}
 
 # Where to install. Piped from curl there is no script on disk, so this is the
 # default location; run from inside an install — which is what the app's own

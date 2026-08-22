@@ -2907,6 +2907,8 @@ def test_observability():
     inst_sh = (ROOT / "install.sh").read_text()
     check("the installer will not replace a folder that is not an install",
           "is_install" in inst_sh)
+    check("an empty destination is not mistaken for occupied over a lone .DS_Store",
+          ".DS_Store" in inst_sh)
     unin = (ROOT / "Uninstall.command").read_text()
     check("removal goes to the Bin rather than straight off the disk",
           "bin_it" in unin and "rm -rf" not in unin)
