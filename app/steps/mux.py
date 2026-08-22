@@ -78,7 +78,11 @@ def mux(video: Path, dubbed: Path, dst: Path, mode: str = "replace",
                 "-metadata:s:a:0", "language=eng"]
 
     if sub_index is not None:
-        cmd += ["-map", f"{sub_index}:s:0", "-c:s", "mov_text"]
+        # Tagged like the audio beside it. Without a language the track lands as
+        # "und", which players list as Unknown or Track 1 — the one thing the
+        # menu is there to tell you.
+        cmd += ["-map", f"{sub_index}:s:0", "-c:s", "mov_text",
+                "-metadata:s:s:0", "language=eng"]
 
     # No -shortest here. It ends the output when the shortest *stream* ends, and
     # a subtitle track stops at its last cue — so a video whose final line of

@@ -270,6 +270,33 @@ def test_align():
     check("a segment with end before start is clamped, not passed through",
           back_start <= back_end, back_stamps)
 
+    # Subtitles have to arrive as a track a player will offer, which means the
+    # codec MP4 carries and a language on it. Untagged, the track lands as "und"
+    # and the menu calls it Unknown — the one thing the menu is there to say.
+    from app.steps import mux as _mux
+    sub_dir = WORK / "subtitle-track"
+    sub_dir.mkdir(parents=True, exist_ok=True)
+    vid_in, dub_in = sub_dir / "v.mp4", sub_dir / "d.m4a"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                    "-i", "color=c=navy:s=160x120:d=4", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(vid_in)], check=True)
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                    "-i", "sine=frequency=440:duration=4", "-c:a", "aac",
+                    str(dub_in)], check=True)
+    cue_srt = sub_dir / "cues.srt"
+    align.write_srt([{"start": 0.5, "end": 2.0, "translation": "A spoken line."}], cue_srt)
+    subbed = sub_dir / "out.mp4"
+    _mux.mux(vid_in, dub_in, subbed, "replace", -18.0, cue_srt)
+    sub_streams = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "s",
+         "-show_entries", "stream=codec_name:stream_tags=language",
+         "-of", "default=nw=1", str(subbed)],
+        capture_output=True, text=True).stdout
+    check("subtitles are muxed as the codec an MP4 can carry",
+          "mov_text" in sub_streams, sub_streams.replace("\n", " "))
+    check("and the track says which language it is",
+          "language=eng" in sub_streams, sub_streams.replace("\n", " "))
+
 
 # ==================================================== 2. translation parsing
 def test_translate():
