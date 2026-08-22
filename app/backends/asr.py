@@ -4,8 +4,8 @@ Two interchangeable backends behind one function:
 
   * MLX      - parakeet-mlx on Apple Silicon, runs on the GPU. Gives sentence
                timestamps directly, so no separate VAD pass is needed.
-  * ONNX     - sherpa-onnx (Silero VAD + the same Parakeet model) on CPU.
-               Works on any machine, including inside Docker.
+  * ONNX     - sherpa-onnx (Silero VAD + the same Parakeet model) on CPU. What
+               a Mac without the GPU packages falls back to.
 
 Both return the same thing: a list of {"start", "end", "text"} in seconds.
 """

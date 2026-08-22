@@ -88,8 +88,7 @@ cat <<'BANNER'
 BANNER
 
 if [[ "$(uname)" != "Darwin" ]]; then
-  bad "This installer is for macOS. On Windows or Linux, use the Docker version"
-  say "    in the docker/ folder instead."
+  bad "This app is for macOS only."
   # Handled here, so the exit trap does not add a second prompt and a clipboard
   # summary to a message that is already the complete answer.
   HANDLED=1

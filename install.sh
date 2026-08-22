@@ -68,7 +68,7 @@ bad()  { printf "  ${RED}✗${RESET} %s\n" "$*"; }
 printf "\n${BOLD}Dubbing Studio${RESET}\n\n"
 
 if [[ "$(uname)" != "Darwin" ]]; then
-  bad "This is for macOS. On Windows or Linux use the Docker version instead."
+  bad "This is for macOS only."
   exit 1
 fi
 

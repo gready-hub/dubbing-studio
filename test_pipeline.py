@@ -840,7 +840,7 @@ def test_server():
         _srv.detect_machine = lambda: _Machine(
             system="Darwin", arch="arm64", apple_silicon=False, ram_gb=16,
             has_mlx=False, has_ffmpeg=True, has_ytdlp=True, has_ollama=True,
-            in_docker=False, av1_ok=True)
+            av1_ok=True)
         try:
             report = _srv.doctor()
         finally:

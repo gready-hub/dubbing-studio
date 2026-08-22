@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from .config import (BUILTIN_GLOSSARIES, JOBS, OUTPUT_DIR, PRESETS, PREVIEWS,
                      SETTINGS_FILE, Settings, VOICES, detect_machine,
-                     in_container, suggest_ollama_model)
+                     suggest_ollama_model)
 from . import diagnostics, logs
 from . import storage as store
 from .pipeline import runner
@@ -598,22 +598,14 @@ def main() -> None:
         "port": port, "arch": machine.arch, "ram_gb": machine.ram_gb,
         "engine": "mlx" if machine.fast_path else "cpu"})
 
-    # Inside a container, 127.0.0.1 is the container's own loopback. Docker
-    # publishes a port by forwarding to the container's external interface, so
-    # binding to loopback left the containerised app listening where nothing
-    # could reach it — the README's localhost:8765 answered nothing at all.
-    # Everywhere else, stay on loopback: this is a personal app with no
-    # authentication, and it has no business being reachable from the network.
-    # Deliberately not in_docker(): that is satisfied by DUBBING_STUDIO_DOCKER=1
-    # alone, which is a reasonable thing to set on a workstation while testing
-    # the portable path — and it would have published an unauthenticated API,
-    # settings included, on every interface. Only an actual container qualifies.
-    docker = in_container()
-    host, shown = ("0.0.0.0", "localhost") if docker else ("127.0.0.1", "127.0.0.1")  # noqa: S104
-    url = f"http://{shown}:{port}"
+    # Loopback, and only ever loopback. This is a personal app with no
+    # authentication in front of it, so the API — settings and keys included —
+    # has no business being reachable from the network.
+    host = "127.0.0.1"
+    url = f"http://{host}:{port}"
 
     print(f"\n  Dubbing Studio is running.\n  Open this in your browser:  {url}\n")
-    if "--no-browser" not in sys.argv and not docker:
+    if "--no-browser" not in sys.argv:
         try:
             webbrowser.open(url)
         except Exception:                                        # noqa: BLE001

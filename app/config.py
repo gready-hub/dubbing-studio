@@ -34,10 +34,10 @@ def _cache_dir(base: Path) -> Path:
     env = os.environ.get("DUBBING_STUDIO_CACHE")
     if env:
         return Path(env)
-    # DUBBING_STUDIO_HOME means "keep it all here": Docker mounts one volume and
-    # the test suite points at one scratch folder. Splitting the cache out from
-    # under either would put the working files somewhere neither expects, so the
-    # split only applies when the location was left to us.
+    # DUBBING_STUDIO_HOME means "keep it all here": the test suite points at one
+    # scratch folder and expects everything under it. Splitting the cache out
+    # from under that would put the working files somewhere it never looks, so
+    # the split only applies when the location was left to us.
     if os.environ.get("DUBBING_STUDIO_HOME"):
         return base / "cache"
     return Path(user_cache_dir("DubbingStudio", appauthor=False))
@@ -56,9 +56,8 @@ OUTPUT_DIR = Path(os.environ.get("DUBBING_STUDIO_OUTPUT", str(Path.home() / "Mov
 def ollama_host() -> str:
     """Where to reach Ollama.
 
-    The Docker build points this at the host machine, since the container has no
-    Ollama of its own. Accepts a bare host:port as well as a full URL, because
-    that is the form the OLLAMA_HOST variable normally takes.
+    Accepts a bare host:port as well as a full URL, because that is the form the
+    OLLAMA_HOST variable normally takes.
     """
     host = os.environ.get("OLLAMA_HOST", "").strip() or "http://localhost:11434"
     if not host.startswith(("http://", "https://")):
@@ -102,13 +101,12 @@ class Machine:
     has_ffmpeg: bool
     has_ytdlp: bool
     has_ollama: bool
-    in_docker: bool
     av1_ok: bool
 
     @property
     def fast_path(self) -> bool:
         """True when we can use Apple's GPU via MLX."""
-        return self.apple_silicon and self.has_mlx and not self.in_docker
+        return self.apple_silicon and self.has_mlx
 
 
 def mac_generation() -> int:
@@ -164,31 +162,10 @@ def _ollama_up() -> bool:
         return False
 
 
-def in_container() -> bool:
-    """A real container, evidenced by the runtime rather than by a variable.
-
-    Used for the one decision where being wrong is a security problem: which
-    interface the server binds to.
-    """
-    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
-
-
-def in_docker() -> bool:
-    """Separate from detect_machine() because startup needs only this.
-
-    The full detection forks sysctl, scans PATH twice and makes an HTTP request
-    to Ollama with a 1.5s timeout — and in a container OLLAMA_HOST points at the
-    host, so an unreachable one delayed the server binding by that much before
-    it had answered a single question.
-    """
-    return Path("/.dockerenv").exists() or os.environ.get("DUBBING_STUDIO_DOCKER") == "1"
-
-
 def detect_machine() -> Machine:
     system = platform.system()
     arch = platform.machine()
-    docker = in_docker()
-    apple_silicon = system == "Darwin" and arch == "arm64" and not docker
+    apple_silicon = system == "Darwin" and arch == "arm64"
     return Machine(
         system=system,
         arch=arch,
@@ -198,7 +175,6 @@ def detect_machine() -> Machine:
         has_ffmpeg=shutil.which("ffmpeg") is not None,
         has_ytdlp=shutil.which("yt-dlp") is not None or _module_available("yt_dlp"),
         has_ollama=_ollama_up(),
-        in_docker=docker,
         av1_ok=can_decode_av1(),
     )
 

@@ -49,7 +49,7 @@ class AppHeader extends BaseElement {
   }
 
   update(s){
-    // macOS only: caffeinate is its, and the Docker build holds nothing.
+    // macOS only: caffeinate is what holds the machine awake, and it is Apple's.
     const here = s.machine?.system === "Darwin";
     this.$("#aAwake").classList.toggle("hidden", !here);
     this.$("#awakeTip").classList.toggle("hidden", !here);

@@ -48,7 +48,6 @@ class DoctorPanel extends BaseElement {
     const bits = [];
     if(m?.engine) bits.push(m.engine);
     if(m?.ram_gb) bits.push(`${m.ram_gb} GB memory`);
-    if(m?.in_docker) bits.push("in Docker");
     this.$("#machine").textContent = bits.join(" · ");
     this.$("#machine").classList.toggle("hidden", !bits.length);
   }

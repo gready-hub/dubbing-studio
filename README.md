@@ -247,24 +247,6 @@ leaves the choice to you.
 
 ---
 
-## Docker
-
-For Windows, Linux, or handing to someone else:
-
-```bash
-cd docker
-docker compose up --build
-```
-
-Then open <http://localhost:8765>. Finished videos land in `docker/output`.
-
-> [!IMPORTANT]
-> Docker cannot reach the Mac's GPU, so the container runs on CPU only and is
-> roughly five times slower. Use an API key in Settings for the Docker version —
-> a local translation model is impractical at that speed.
-
----
-
 ## When something goes wrong
 
 Open **Setup check** in the app. It lists what's missing and the command to fix
@@ -332,9 +314,9 @@ files, so it never grows without limit.
 | Synthesis | Kokoro-82M, or Chatterbox for cloned voices |
 | Audio and video | ffmpeg |
 
-On Apple Silicon the AI models run through **MLX**, Apple's GPU framework.
-Everywhere else the same models run on CPU via **ONNX Runtime**, which is what
-makes the Docker build possible.
+On Apple Silicon the AI models run through **MLX**, Apple's GPU framework. Each
+one also has a CPU version behind it, via **ONNX Runtime**, so a missing GPU
+package costs speed rather than the job.
 
 The window is macOS's built-in WebView rather than a bundled browser, which is
 why the app is a few megabytes rather than a few hundred.
