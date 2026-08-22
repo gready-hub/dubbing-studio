@@ -1,3 +1,5 @@
+import { flash } from "./format.js";
+
 const SHARED_STYLESHEET = `<link rel="stylesheet" href="/static/css/shared.css">`;
 
 export class BaseElement extends HTMLElement {
@@ -36,6 +38,25 @@ export class BaseElement extends HTMLElement {
     this._sig = key;
     fn();
     return true;
+  }
+
+  // Marks whichever button in a group is the current choice — the shape a
+  // segmented control or a tab strip always wants, whatever decides which one
+  // that is.
+  markOn(selector, test){
+    this.$$(selector).forEach(b => {
+      const on = test(b);
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
+  }
+
+  // A status line that flags itself as bad and then fades on its own — the
+  // shape "saved"/"saving"/"save failed" always take, whichever line it is.
+  flashNote(selector, text, ms, bad){
+    const el = this.$(selector);
+    el.classList.toggle("bad", !!bad);
+    flash(el, text, ms);
   }
 
   // `target` says which buttons this is about: an element or list of them for

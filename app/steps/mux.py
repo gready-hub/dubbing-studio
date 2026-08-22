@@ -4,6 +4,13 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+OUTPUT_SAMPLE_RATE = 48000        # delivery audio rate used throughout this module
+AAC_BITRATE = "160k"
+
+
+def _ffmpeg_in(src: Path) -> list[str]:
+    return ["ffmpeg", "-y", "-v", "error", "-i", str(src)]
+
 
 def mix_with_background(dub: Path, background: Path, dst: Path,
                         bed_gain_db: float = -6.0) -> Path:
@@ -12,11 +19,11 @@ def mix_with_background(dub: Path, background: Path, dst: Path,
     The bed is pulled down a little because the original speech that used to sit
     on top of it is gone, so what remains reads louder than it did in the mix.
     """
-    subprocess.run([
-        "ffmpeg", "-y", "-v", "error", "-i", str(dub), "-i", str(background),
+    subprocess.run(_ffmpeg_in(dub) + [
+        "-i", str(background),
         "-filter_complex",
-        f"[0:a]aformat=channel_layouts=stereo:sample_rates=48000[speech];"
-        f"[1:a]aformat=channel_layouts=stereo:sample_rates=48000,"
+        f"[0:a]aformat=channel_layouts=stereo:sample_rates={OUTPUT_SAMPLE_RATE}[speech];"
+        f"[1:a]aformat=channel_layouts=stereo:sample_rates={OUTPUT_SAMPLE_RATE},"
         f"volume={bed_gain_db}dB[bed];"
         f"[speech][bed]amix=inputs=2:duration=longest:normalize=0[out]",
         "-map", "[out]", str(dst),
@@ -26,11 +33,10 @@ def mix_with_background(dub: Path, background: Path, dst: Path,
 
 def encode_track(wav: Path, dst: Path, duration: float) -> Path:
     """Normalise to broadcast-ish speech loudness and encode to AAC."""
-    subprocess.run([
-        "ffmpeg", "-y", "-v", "error", "-i", str(wav),
+    subprocess.run(_ffmpeg_in(wav) + [
         "-t", f"{duration:.6f}",
         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-        "-ar", "48000", "-c:a", "aac", "-b:a", "160k", str(dst),
+        "-ar", str(OUTPUT_SAMPLE_RATE), "-c:a", "aac", "-b:a", AAC_BITRATE, str(dst),
     ], check=True)
     return dst
 
@@ -40,7 +46,7 @@ def mux(video: Path, dubbed: Path, dst: Path, mode: str = "replace",
     """mode: replace (dub only) | duck (dub over quiet original) | dual (both tracks)."""
     # Input order matters: every -map below refers to these by position, so the
     # subtitle file has to be appended after the two media inputs, never before.
-    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(dubbed)]
+    cmd = _ffmpeg_in(video) + ["-i", str(dubbed)]
     sub_index = None
     if srt and srt.exists():
         sub_index = 2
@@ -52,7 +58,7 @@ def mux(video: Path, dubbed: Path, dst: Path, mode: str = "replace",
             f"[0:a]volume={duck_db}dB[bed];[bed][1:a]amix=inputs=2:duration=first:"
             f"dropout_transition=0:normalize=0[out]",
             "-map", "0:v:0", "-map", "[out]",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", AAC_BITRATE,
         ]
     elif mode == "dual":
         cmd += [
@@ -62,7 +68,7 @@ def mux(video: Path, dubbed: Path, dst: Path, mode: str = "replace",
             # Opus, which in an MP4 will not play on most Android players or in
             # QuickTime. Copying it produced a file that was universal in every
             # respect except its second audio track.
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", AAC_BITRATE,
             "-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=English (dubbed)",
             "-metadata:s:a:1", "title=Original",
             "-disposition:a:0", "default", "-disposition:a:1", "0",
@@ -181,10 +187,9 @@ def transcode_h264(src: Path, dst: Path) -> str:
     """
     for encoder, quality in _H264_ENCODERS:
         done = subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(src),
-             "-map", "0", "-c", "copy", "-c:v", encoder, *quality,
-             "-profile:v", "high", "-pix_fmt", "yuv420p",
-             "-movflags", "+faststart", str(dst)],
+            _ffmpeg_in(src) + ["-map", "0", "-c", "copy", "-c:v", encoder, *quality,
+                              "-profile:v", "high", "-pix_fmt", "yuv420p",
+                              "-movflags", "+faststart", str(dst)],
             capture_output=True, text=True)
         if done.returncode == 0 and dst.exists() and dst.stat().st_size > 0:
             return encoder

@@ -147,8 +147,9 @@ def _strip_echo(text: str) -> str:
     for _ in range(3):
         stripped = _ECHOED_ID_BAR.sub("", _SCAFFOLD_PREFIX.sub("", text, count=1),
                                       count=1)
-        if stripped != text:
-            text = stripped
+        if stripped == text:
+            break
+        text = stripped
     for _ in range(3):                     # "63| id: 63 ..." has two layers
         stripped = _ECHOED.sub("", text, count=1)
         if stripped == text:
@@ -204,22 +205,14 @@ def _parse(reply: str, batch: list[dict]) -> tuple[dict[int, str], bool]:
         if not line:
             continue
         if "|" not in line:
-            # A translation the model wrapped onto a second physical line. This
-            # used to be skipped, which silently deleted the rest of the
-            # sentence: the id was already answered, so it was not a miss, not a
-            # retry, and not counted — the dub simply spoke half the line, and
-            # the half it spoke was a grammatical fragment of about the right
-            # length. Most likely on the long run-on lines speech recognition
-            # produces, which is where a model is likeliest to wrap.
-            #
+            # A translation the model wrapped onto a second physical line.
             # Only a genuine wrap is rejoined, and the test is the first
             # character: a sentence continued onto a second line carries on in
             # lower case, while anything the model adds of its own — "Let me
             # know if you want any adjustments!", a closing code fence, a note
-            # about the audio — starts with a capital or a symbol. Without that
-            # test the trailing pleasantry was glued onto the last translation
-            # and spoken aloud, and a continuation after a *rejected* line
-            # attached itself to an earlier, unrelated slot.
+            # about the audio — starts with a capital or a symbol. `last in out`
+            # also refuses a continuation after a *rejected* line, so it cannot
+            # attach itself to an earlier, unrelated slot.
             if (last is not None and last in out and line[:1].islower()
                     and any(c.isalpha() for c in line)):
                 out[last] = f"{out[last]} {line}".strip()

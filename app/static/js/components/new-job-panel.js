@@ -134,14 +134,6 @@ function customBlurb(presets, settings){
     + "above to go back to it, or change it in Settings.";
 }
 
-function select(container, attr, value){
-  container.querySelectorAll("button").forEach(b => {
-    const on = b.dataset[attr] === String(value);
-    b.classList.toggle("on", on);
-    b.setAttribute("aria-pressed", String(on));
-  });
-}
-
 class NewJobPanel extends BaseElement {
   connectedCallback(){
     this.html(STYLE + SHELL);
@@ -251,7 +243,7 @@ class NewJobPanel extends BaseElement {
       + `${escapeHtml(why)}</span>`).join(". ");
     this.$("#presetBlocked").classList.toggle("hidden", !notes.length);
 
-    select(this.$("#presets"), "preset", settings.preset);
+    this.markOn("#presets button", b => b.dataset.preset === String(settings.preset));
     this.$$("#presets button").forEach(b => {
       const k = b.dataset.preset;
       if(blocked[k]){
@@ -269,30 +261,24 @@ class NewJobPanel extends BaseElement {
   }
 
   paintSpeakers(diarize){
-    select(this.$("#speakers"), "diarize", diarize);
+    this.markOn("#speakers button", b => b.dataset.diarize === String(diarize));
     this.$("#speakersBlurb").textContent = SPEAKERS_BLURB[String(diarize)];
   }
 
   // These controls write straight through — there is no Save button here — so
   // the only thing that can say a change landed is the panel itself.
-  status(text, ms, bad){
-    const msg = this.$("#saveMsg");
-    msg.classList.toggle("bad", !!bad);
-    flash(msg, text, ms);
-  }
-
   showSaving(){
-    this.status("Saving…", 0);
+    this.flashNote("#saveMsg", "Saving…", 0);
   }
 
   showSaved(){
-    this.status("Saved");
+    this.flashNote("#saveMsg", "Saved");
   }
 
   // Left up until something replaces it: a save that did not happen is not news
   // to be missed while looking elsewhere.
   showSaveError(message){
-    this.status(`Not saved — ${message}`, 0, true);
+    this.flashNote("#saveMsg", `Not saved — ${message}`, 0, true);
   }
 }
 

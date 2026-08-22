@@ -1250,9 +1250,7 @@ class JobRunner:
                 voice_map = _voice_map(settings, segments, speaker_ids, speech16)
             if voice_map:
                 stats["voice_match"] = "by pitch"
-            # Which voice spoke, not which engine spoke it — the two used to be
-            # conflated here, so a built-in-voice run reported "Apple GPU (MLX)"
-            # under "Voices used" instead of naming a single one of the voices.
+            # Which voice spoke, not which engine spoke it.
             stats["voices"] = engine.name if cloning else _voice_names(
                 settings, speaker_ids, voice_map)
 
@@ -1337,9 +1335,10 @@ class JobRunner:
                                    "samples": audio, "rate": project_rate})
                 if n % 5 == 0 or n == total - 1:
                     done = n + 1
-                    rate = done / max(0.1, time.time() - t0)
+                    lines_per_sec = done / max(0.1, time.time() - t0)
                     report(done / total,
-                           f"Speaking line {done} of {total} — about {_mins((total-done)/rate)} left")
+                           f"Speaking line {done} of {total} — about "
+                           f"{_mins((total-done)/lines_per_sec)} left")
 
             if not spoken:
                 raise RuntimeError("Nothing was synthesised — the translation came back empty.")

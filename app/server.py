@@ -17,10 +17,11 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .config import (BUILTIN_GLOSSARIES, OUTPUT_DIR, PRESETS, SETTINGS_FILE,
-                     Settings, VOICES, detect_machine, in_container,
-                     suggest_ollama_model)
+from .config import (BUILTIN_GLOSSARIES, JOBS, OUTPUT_DIR, PRESETS, PREVIEWS,
+                     SETTINGS_FILE, Settings, VOICES, detect_machine,
+                     in_container, suggest_ollama_model)
 from . import diagnostics, logs
+from . import storage as store
 from .pipeline import runner
 
 STATIC = Path(__file__).parent / "static"
@@ -173,7 +174,6 @@ def doctor() -> dict:
     # and a boot disk that fills takes the whole machine down with it — so this
     # belongs beside ffmpeg and yt-dlp as something to know before starting,
     # not something to discover at 80%.
-    from . import storage as store
     free = store.free_bytes()
     checks.append({
         "name": f"Disk space — {round(free / 1024 ** 3, 1)} GB free",
@@ -333,7 +333,6 @@ def voice_preview(voice: str, speed: float = 1.0):
     instant and flicking between voices is quick enough to actually compare
     them.
     """
-    from .config import PREVIEWS, VOICES
     if not any(v["id"] == voice for v in VOICES):
         raise HTTPException(404, "No such voice.")
 
@@ -373,7 +372,6 @@ def job_reference(job_id: str, index: int):
     Hearing it is the quickest way to catch a bad reference — one with music
     under it, or the wrong person — before it colours every line of the dub.
     """
-    from .config import JOBS
     job = runner.jobs.get(job_id)
     if not job or index < 0 or index >= len(job.references):
         raise HTTPException(404, "No such reference.")
@@ -392,7 +390,6 @@ def _folder_title(name: str) -> str:
     its id — so a live job matches outright, and a finished one is found in the
     history, whose ids are that name plus a timestamp.
     """
-    from .config import JOBS
     from .pipeline import _load_history
     job = runner.jobs.get(name)
     if job and job.title:
@@ -418,7 +415,6 @@ def storage_summary() -> dict:
     the model Ollama holds on its behalf, the working files and the finished
     videos, the only visible figure was the smallest one.
     """
-    from . import storage as store
     return store.summary(_folder_title)
 
 
@@ -433,8 +429,6 @@ def clear_storage(req: ClearRequest, request: Request) -> dict:
     Refused while something is running, since the job being cleared out from
     under itself would fail in a way that looks like a bug in the pipeline.
     """
-    from . import storage as store
-
     _local_only(request)
     if runner.busy():
         raise HTTPException(409, "Something is still running — wait for it to finish.")
@@ -474,7 +468,6 @@ def version() -> dict:
     some other way all mean the same thing, which is that no update is offered.
     """
     import urllib.request
-    from . import storage as store
 
     stamp = store.APP_DIR / ".version"
     try:
@@ -510,7 +503,6 @@ def run_update(request: Request) -> dict:
     an update was available.
     """
     _local_only(request)
-    from . import storage as store
     script = store.APP_DIR / "Update.command"
     if not script.is_file():
         raise HTTPException(404, "The updater isn't in the app folder. Re-install "
@@ -531,7 +523,6 @@ def open_uninstaller(request: Request) -> dict:
     what belongs to this app from what the rest of the Mac shares, and asks.
     """
     _local_only(request)
-    from . import storage as store
     script = store.APP_DIR / "Uninstall.command"
     if not script.is_file():
         raise HTTPException(404, "The uninstaller isn't in the app folder.")

@@ -102,6 +102,8 @@ def diarize(audio_wav: Path, threshold: float = 0.5,
     try:
         result = sd.process(data, callback=cb).sort_by_start_time()
     except Exception:                                            # noqa: BLE001
+        if progress:
+            progress(1.0, "Couldn't tell speakers apart; treating it as one speaker")
         return []
 
     turns = [{"start": float(s.start), "end": float(s.end), "speaker": int(s.speaker)}

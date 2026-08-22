@@ -7,7 +7,6 @@ Both expose the same object:
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np

@@ -25,6 +25,7 @@ Progress = Optional[Callable[[float, str], None]]
 FADE_S = 0.015          # de-click ramp on each line
 BREATH_S = 0.06         # gap left before the next line starts
 MIN_SLOT_S = 0.35
+PEAK_TARGET = 0.89      # normalised peak level, leaving headroom below full scale
 
 
 def _atempo_chain(factor: float) -> str:
@@ -104,7 +105,7 @@ def assemble(lines: list[dict], total_duration: float, sample_rate: int,
 
     peak = float(np.max(np.abs(track))) if track.size else 0.0
     if peak > 0:
-        track = track / peak * 0.89
+        track = track / peak * PEAK_TARGET
     stats["max_factor"] = round(stats["max_factor"], 3)
     stats["max_drift"] = round(stats["max_drift"], 3)
     return track, stats

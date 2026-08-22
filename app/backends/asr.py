@@ -239,14 +239,16 @@ def prefetch(use_mlx: bool, model: str = "parakeet", progress: Progress = None) 
     failed too.
     """
     last_error: Exception | None = None
+    fetched_any = False
     for label, _, fetch in _ladder(use_mlx, model):
         if progress:
             progress(0.0, f"Fetching {label}")
         try:
             fetch()
+            fetched_any = True
         except Exception as exc:                                 # noqa: BLE001
             last_error = exc
-    if last_error is not None:
+    if not fetched_any and last_error is not None:
         raise last_error
 
 

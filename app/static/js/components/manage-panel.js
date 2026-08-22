@@ -55,11 +55,7 @@ class ManagePanel extends BaseElement {
 
   selectTab(key, manual){
     if(manual) this._userPicked = true;
-    this.$$("#tabs button").forEach(b => {
-      const on = b.dataset.tab === key;
-      b.classList.toggle("on", on);
-      b.setAttribute("aria-pressed", String(on));
-    });
+    this.markOn("#tabs button", b => b.dataset.tab === key);
     // A failed run sits alongside the dubbed-videos list rather than behind a
     // tab of its own, so it shares the same visibility switch: whichever run
     // just broke, a worried person reloading or reopening the app lands on

@@ -1,7 +1,7 @@
 import { BaseElement } from "../base-element.js";
 import { store } from "../store.js";
 import { api } from "../api.js";
-import { escapeAttr, escapeHtml, flash } from "../format.js";
+import { escapeAttr, escapeHtml } from "../format.js";
 import "./info-tip.js";
 
 const BOOL_SETTINGS = ["write_srt","separate_audio","diarize","keep_music","merge_lines"];
@@ -430,7 +430,7 @@ class SettingsPanel extends BaseElement {
   }
 
   open(){
-    this.note("", 0);
+    this.flashNote("#savedMsg", "", 0);
     this.$("#dlg").showModal();
     // Chrome will focus the scrolling body otherwise, and ring the whole of it.
     this.$("#settingsTabs button.on")?.focus();
@@ -442,11 +442,7 @@ class SettingsPanel extends BaseElement {
 
   selectTab(key){
     this._tab = key;
-    this.$$("#settingsTabs button").forEach(b => {
-      const on = b.dataset.tab === key;
-      b.classList.toggle("on", on);
-      b.setAttribute("aria-pressed", String(on));
-    });
+    this.markOn("#settingsTabs button", b => b.dataset.tab === key);
     this.$$("[data-pane]").forEach(p => p.classList.toggle("hidden", p.dataset.pane !== key));
     this.$("#resetTabBtn").textContent = `Reset ${this.tab().label}`;
   }
@@ -768,21 +764,15 @@ class SettingsPanel extends BaseElement {
     const unsaved = this._dirty.size;
     this._dirty.clear();
     if(unsaved && this._state) this.repaint(this._state);
-    this.note("Saved");
+    this.flashNote("#savedMsg", "Saved");
   }
 
-  showReset(){ this.note("Back to defaults"); }
+  showReset(){ this.flashNote("#savedMsg", "Back to defaults"); }
 
   // Left up until something replaces it: a save that did not happen is not news
   // to be missed while looking elsewhere.
   showSaveError(message){
-    this.note(message, 0, true);
-  }
-
-  note(text, ms, bad){
-    const el = this.$("#savedMsg");
-    el.classList.toggle("bad", !!bad);
-    flash(el, text, ms);
+    this.flashNote("#savedMsg", message, 0, true);
   }
 
   async audition(){

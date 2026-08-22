@@ -537,8 +537,9 @@ class Settings:
                 raw = json.loads(SETTINGS_FILE.read_text())
                 known = {f for f in cls.__dataclass_fields__}
                 return cls(**{k: v for k, v in raw.items() if k in known})
-            except Exception:
-                pass
+            except Exception as exc:                                # noqa: BLE001
+                logs.get().warning("settings file unreadable, using defaults",
+                                   extra={"error": str(exc)[:200]})
         s = cls()
         s.save()
         return s

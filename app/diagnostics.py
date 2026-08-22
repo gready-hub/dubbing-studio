@@ -30,11 +30,6 @@ from .config import OUTPUT_DIR, Settings, detect_machine, mac_generation
 # anybody diagnose anything.
 SECRETS = ("anthropic_key", "openai_key")
 
-# Everything except the secrets, rather than a list of the interesting ones.
-# An allowlist drifts: a setting added later is simply missing from every report
-# and nobody notices until it is the one that explains a failure. That is the
-# same shape of bug as the download's format list, which was fetched and then
-# dropped on the way out of the function that fetched it.
 LONG_VALUE = 120
 
 
@@ -48,6 +43,9 @@ def _tool_version(*cmd: str) -> str:
 
 def _settings_lines(settings) -> list[str]:
     rows = []
+    # Everything except the secrets, rather than a list of the interesting ones.
+    # An allowlist drifts: a setting added later is simply missing from every
+    # report and nobody notices until it is the one that explains a failure.
     for key, value in sorted(asdict(settings).items()):
         if key in SECRETS:
             rows.append(f"  {key}: {'set' if value else 'not set'}")
