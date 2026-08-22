@@ -116,7 +116,7 @@ def _build_prompt(batch: list[dict], context: list[str], target: str, glossary: 
 # material this app is pointed at. Corrupting a good translation is worse than
 # leaving a rare piece of scaffolding, which the check downstream counts anyway.
 _ECHOED = re.compile(
-    r"^\s*(?:\[[\d.]+s\]"                     # an echoed slot marker
+    r"^\s*(?:\[?[\d.]+\s*s\]"                 # an echoed slot marker, opening bracket optional
     r"|(?:id|line)\s*[:.]\s*\d+\s*[-:.|)]*"   # "id: 63"
     r"|(?:id|line)\s+\d+\s*[-:.|)]+"           # "id 63." — punctuation required
     r"|#\s*\d+\s*[-:.|)]*"                     # "#63"
@@ -142,8 +142,33 @@ def _is_scaffolding(text: str) -> bool:
     return bool(_ALL_SCAFFOLD.match(text))
 
 
-def _strip_echo(text: str) -> str:
+def _slot_echo(slot: float) -> re.Pattern:
+    """The marker this very line was sent, whatever the model did to its brackets.
+
+    Matching the value we know we sent beats guessing at the shape it comes back
+    in: "[2.0s]", "2.0s]", "2s" and "(2.0 s)" are all the same echo, and none of
+    them can be confused with a sentence that merely opens on a number. The word
+    boundary after the s is what keeps "5 stitches" — the reason the general
+    pattern below has to stay narrow — out of reach.
+    """
+    exact = f"{slot:.1f}"
+    whole = exact[:-2] if exact.endswith(".0") else exact
+    # The decimal is the form the prompt actually sent, so it stands on its own.
+    # A model that dropped the ".0" leaves a bare number, which a sentence can
+    # open with too — "60s is a long time" against a 60 second slot — so that
+    # form is only an echo when a bracket closes it.
+    # What may follow the marker is closing punctuation and separators only.
+    # Anything that opens a sentence — an inverted ¿ or ¡, a quote — belongs to
+    # the translation, and a greedier tail ate it.
+    after = r"[\s\]\)}>|:.,\-]*"
+    return re.compile(rf"^\W*(?:{re.escape(exact)}\s*s\b{after}"
+                      rf"|{re.escape(whole)}\s*s\s*[\]\)}}>]{after})")
+
+
+def _strip_echo(text: str, slot: float | None = None) -> str:
     """Remove any scaffolding the model repeated back into its translation."""
+    if slot is not None:
+        text = _slot_echo(slot).sub("", text, count=1)
     for _ in range(3):
         stripped = _ECHOED_ID_BAR.sub("", _SCAFFOLD_PREFIX.sub("", text, count=1),
                                       count=1)
@@ -193,6 +218,7 @@ def _parse(reply: str, batch: list[dict]) -> tuple[dict[int, str], bool]:
     translation against the slot it landed in, so nothing could have seen it.
     """
     wanted = {s["i"]: s.get("text", "") for s in batch}
+    slots = {s["i"]: s["end"] - s["start"] for s in batch if "end" in s and "start" in s}
     out: dict[int, str] = {}
     seen: set[int] = set()
     trustworthy = True
@@ -229,7 +255,7 @@ def _parse(reply: str, batch: list[dict]) -> tuple[dict[int, str], bool]:
             trustworthy = False
         seen.add(idx)
         if idx in wanted:
-            text = _strip_echo(tail.strip())
+            text = _strip_echo(tail.strip(), slots.get(idx))
             # Treated as a miss rather than a result, so the retry above gets a
             # go at it and it is counted if it never lands. A line of pure
             # template counts as a miss for the same reason: asking again is the
