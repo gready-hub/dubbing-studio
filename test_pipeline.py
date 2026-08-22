@@ -631,6 +631,118 @@ def test_server():
                      "404: File not found (caused by <HTTPError 404: File not found>)")
     check("a dead link is explained in plain English",
           "typed correctly" in dead and "ERROR" not in dead, dead)
+
+    # A pinned format that cannot be fetched must not end the run. The ids come
+    # from probe(), which is its own negotiation, so YouTube can list a stream to
+    # the lookup and refuse it to the fetch — seen three different ways on one
+    # video inside six minutes: a 403, the ids missing from the second list, and
+    # the tv client refusing outright.
+    import app.steps.download as _dl
+    for label, failure in (
+            ("a 403 on the pinned stream",
+             "ERROR: unable to download video data: HTTP Error 403: Forbidden"),
+            ("the ids not being offered the second time",
+             "ERROR: [youtube] x: Requested format is not available."),
+            ("the pinned stream not being offered at all",
+             "ERROR: unable to download video data: HTTP Error 403: Forbidden")):
+        seen = []
+        real_stream, real_probe = _dl.stream, _dl.probe
+        real_media = _dl._looks_like_media
+        box = SCRATCH / f"reselect-{abs(hash(label))}"
+        box.mkdir(parents=True, exist_ok=True)
+        for leftover in box.glob("source.*"):
+            leftover.unlink()
+
+        def fake_stream(cmd, on_line=None, tail_lines=30, _seen=seen, _box=box):
+            _seen.append(cmd[cmd.index("-f") + 1])
+            if len(_seen) == 1:
+                return 1, failure
+            (_box / "source.mp4").write_bytes(b"\x00" * 2048)
+            return 0, ""
+
+        _dl.stream = fake_stream
+        _dl.probe = lambda url, cookies_from="": {
+            "title": "t", "duration": 1.0, "uploader": "", "thumbnail": "",
+            "formats": [
+                {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none",
+                 "height": 1080, "ext": "mp4", "filesize": 1024},
+                {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2",
+                 "ext": "m4a", "filesize": 256}],
+            "is_live": False}
+        _dl._looks_like_media = lambda p: True
+        try:
+            got, _ = _dl.download("https://example.test/v", box, "best")
+            check(f"a second format is asked for after {label}", len(seen) == 2, str(seen))
+            check(f"and the retry drops the pinned ids after {label}",
+                  len(seen) == 2 and seen[1] == _dl.format_selector("best"), str(seen[-1:]))
+            check(f"and the video is returned rather than the run failing"
+                  f" after {label}", got.name == "source.mp4", str(got))
+        except Exception as exc:                                 # noqa: BLE001
+            check(f"a refused format does not end the run after {label}", False, repr(exc))
+        finally:
+            _dl.stream, _dl.probe = real_stream, real_probe
+            _dl._looks_like_media = real_media
+
+    # A declined exchange is not a format problem. Asking again immediately asks
+    # a rate-limited host to serve twice as fast, so this one fails on the spot,
+    # and what it says has to be something a person can act on — yt-dlp's own
+    # words tell them to reload a page that does not exist.
+    reload_said = _friendly("ERROR: [youtube] x: The page needs to be reloaded.")
+    check("a declined exchange is explained as a wait, not a reload",
+          "reload" not in reload_said.lower() and "Try again" in reload_said,
+          reload_said)
+    check("and it says that repeating it straight away is worse",
+          "longer" in reload_said, reload_said)
+    seen3, real_stream = [], _dl.stream
+    def once(cmd, on_line=None, tail_lines=30):
+        seen3.append(cmd[cmd.index("-f") + 1])
+        return 1, "ERROR: [youtube] x: The page needs to be reloaded."
+    _dl.stream = once
+    real_probe = _dl.probe
+    _dl.probe = lambda url, cookies_from="": {
+        "title": "t", "duration": 1.0, "uploader": "", "thumbnail": "",
+        "formats": [
+            {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none",
+             "height": 1080, "ext": "mp4", "filesize": 1024},
+            {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2",
+             "ext": "m4a", "filesize": 256}],
+        "is_live": False}
+    try:
+        box = SCRATCH / "reselect-declined"; box.mkdir(parents=True, exist_ok=True)
+        try:
+            _dl.download("https://example.test/v", box, "best")
+            check("a declined exchange still fails", False, "no error raised")
+        except _dl.DownloadError as exc:
+            check("a declined exchange still fails", "Try again" in str(exc), str(exc)[:60])
+        check("and is asked exactly once, not twice", len(seen3) == 1, str(seen3))
+    finally:
+        _dl.stream, _dl.probe = real_stream, real_probe
+
+    # A failure a different format cannot fix must still fail, and at once.
+    seen2, real_stream = [], _dl.stream
+    def one_shot(cmd, on_line=None, tail_lines=30):
+        seen2.append(cmd[cmd.index("-f") + 1])
+        return 1, "ERROR: [youtube] x: Private video. Sign in if you've been granted access."
+    _dl.stream = one_shot
+    real_probe = _dl.probe
+    _dl.probe = lambda url, cookies_from="": {
+        "title": "t", "duration": 1.0, "uploader": "", "thumbnail": "",
+            "formats": [
+                {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none",
+                 "height": 1080, "ext": "mp4", "filesize": 1024},
+                {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2",
+                 "ext": "m4a", "filesize": 256}],
+        "is_live": False}
+    try:
+        box = SCRATCH / "reselect-private"; box.mkdir(parents=True, exist_ok=True)
+        try:
+            _dl.download("https://example.test/v", box, "best")
+            check("a private video still fails", False, "no error raised")
+        except _dl.DownloadError as exc:
+            check("a private video still fails", "private" in str(exc).lower(), str(exc))
+        check("and is not retried with another format", len(seen2) == 1, str(seen2))
+    finally:
+        _dl.stream, _dl.probe = real_stream, real_probe
     # Two files have to agree about which model a given Mac gets: config.py
     # suggests it and the setup check reports it, while Install.command is what
     # actually downloads it. A comment asks them to be kept in step; this is what
@@ -2311,7 +2423,11 @@ def test_translation_qc():
     # probe() built a fresh dict and dropped the format list on the way out. It
     # is checked here rather than only through a synthetic listing, since a
     # synthetic listing is exactly what hid it.
-    probe_out = src[src.index("def probe("):src.index("def probe(") + 1600]
+    # Bounded by the next definition rather than by a character count, which a
+    # comment or a guard added inside probe() silently pushes the return past.
+    _p = src.index("def probe(")
+    _end = src.index("\ndef ", _p + 1)
+    probe_out = src[_p:_end]
     kept = probe_out[probe_out.index("return {"):]
     check("probe returns the format list, rather than only fetching it",
           '"formats"' in kept, kept[:60].replace("\n", " "))

@@ -73,12 +73,27 @@ def probe(url: str, cookies_from: str = "") -> dict:
     members-only video refuses at the *lookup*, so a user who followed the 403
     advice and named their browser in Settings would still be turned away before
     the download that knows about their cookies was ever reached.
+
+    --ignore-no-formats-error because this asks what exists, not for a stream.
+    Without it yt-dlp resolves its default selector even under -J and fails the
+    whole lookup when nothing satisfies it, which YouTube does intermittently to
+    videos it will serve happily a minute later — a job dead before the download
+    that would have coped was ever reached. The errors worth keeping still land:
+    a private or age-restricted video fails to extract at all, which is a
+    different error and still raises here with its own advice.
     """
-    cmd = (_ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download"]
+    cmd = (_ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download",
+                           "--ignore-no-formats-error"]
            + _CLIENT_ARGS + _RETRY_ARGS + _NO_CONFIG_ARGS)
     if cookies_from:
         cmd += ["--cookies-from-browser", cookies_from]
     out = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=120)
+    if out.returncode != 0 and _format_was_refused(out.stderr):
+        # The same refusals the download stage sees, and for the same reason: the
+        # site answers one negotiation differently from the next. Two of the three
+        # failures in a real session died here, before the download that would
+        # have coped was reached. Asked once more, which re-negotiates.
+        out = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=120)
     if out.returncode != 0:
         raise DownloadError(_friendly(out.stderr), out.stderr)
     data = json.loads(out.stdout)
@@ -132,6 +147,16 @@ def _friendly(stderr: str) -> str:
         return "That link isn't one yt-dlp recognises."
     if "http error 429" in s or "too many requests" in s:
         return "The site is rate-limiting downloads. Wait a few minutes and try again."
+    # yt-dlp passes this one through from YouTube, and its own words are advice
+    # that cannot work: there is no page here to reload. It means the exchange
+    # was declined — the player challenge failed, or enough requests have gone
+    # out recently that the next one is refused on sight. Both clear on their
+    # own, and both come back faster for being left alone.
+    if "page needs to be reloaded" in s:
+        return ("YouTube turned the app away rather than the video down — it does "
+                "this after a burst of downloads, and to the same link it will "
+                "serve a few minutes later. Wait a little and press Try again. "
+                "Repeating it straight away makes the wait longer, not shorter.")
     # yt-dlp's own words here are "Requested format is not available. Use
     # --list-formats for a list of available formats", which tells somebody who
     # has never opened a terminal to pass a command-line flag. It also sounds
@@ -156,6 +181,27 @@ def _friendly(stderr: str) -> str:
         return "That address couldn't be reached — check your internet connection."
     tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
     return _tidy(tail[-1]) if tail else "The download failed."
+
+
+def _format_was_refused(detail: str) -> bool:
+    """Whether the *pinned formats* were the problem, so a fresh pick may not be.
+
+    choose_format() reads its ids from probe(), a separate yt-dlp run and so a
+    separate negotiation. The site answers the lookup and the fetch from
+    different format lists often enough that a pinned id is a guess by the time
+    it is used, and it comes back either as a 403 on a stream the listing had
+    just offered or as the ids simply not being in the second list. Choosing
+    again, in the same exchange that fetches, is the answer to both.
+
+    Deliberately not every refusal. "The page needs to be reloaded" is the site
+    declining the exchange itself — asking again straight away is asking a
+    rate-limited host to serve twice as fast, which earns a longer refusal, not
+    a video. That one is left to fail with advice to wait.
+    """
+    s = detail.lower()
+    return ("requested format is not available" in s
+            or ("403" in s and "forbidden" in s)
+            or "unable to download video data" in s)
 
 
 def _tidy(line: str) -> str:
@@ -561,10 +607,32 @@ def download(url: str, workdir: Path, quality: str = "best",
                  f"Downloading — {share * 100:.0f}% of {human_size(whole)}")
 
     code, problem = stream(cmd, show, tail_lines=25)
-    if code != 0:
-        # stream()'s own tail stays as the fallback, for a failure that produced
-        # nothing but progress lines before dying.
+    # stream()'s own tail stays as the fallback, for a failure that produced
+    # nothing but progress lines before dying.
+    detail = "".join(said).strip() or problem
+    if code != 0 and _format_was_refused(detail):
+        # Every one of these is a refusal of the exchange rather than of the
+        # video: the same argv, run again by hand a minute later, fetches it.
+        # YouTube rate-limits and answers each negotiation differently, and
+        # yt-dlp's own --extractor-retries does not count these as retryable, so
+        # one refusal ended a job that a second ask would have got through.
+        #
+        # Asked again from scratch, which re-negotiates. When ids were pinned the
+        # chain replaces them too: those came from probe(), a negotiation that
+        # has already ended, and yt-dlp only walks the chain while it is
+        # choosing — a format it chose and then could not fetch is the end of the
+        # run rather than a reason to try the next rung.
+        if progress:
+            progress(0.02, "The site refused that; asking again")
+        said.clear()
+        done["before"] = done["last"] = 0
+        expected = 0                     # possibly a different format, so a different size
+        retry = list(cmd)
+        if picked:
+            retry[retry.index("-f") + 1] = format_selector(quality)
+        code, problem = stream(retry, show, tail_lines=25)
         detail = "".join(said).strip() or problem
+    if code != 0:
         raise DownloadError(_friendly(detail), detail)
 
     video = _finished_file(workdir)
