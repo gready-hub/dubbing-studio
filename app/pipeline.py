@@ -104,6 +104,19 @@ def _cache_stamp(workdir: Path, key: str, fingerprint: str) -> None:
     path.write_text(json.dumps(meta, indent=1))
 
 
+def _cache_clear(workdir: Path, key: str) -> None:
+    """Drop a stamp whose artefact is gone, so cache-meta.json never claims a
+    file that isn't there — harmless, since every read is guarded by an
+    existence check, but confusing to whoever next reads the file."""
+    path = workdir / "cache-meta.json"
+    try:
+        meta = json.loads(path.read_text())
+    except Exception:                                            # noqa: BLE001
+        return
+    if meta.pop(key, None) is not None:
+        path.write_text(json.dumps(meta, indent=1))
+
+
 def _derived_dir(workdir: Path, *parts) -> Path:
     """A folder named after the fingerprint of everything that determines it.
 
@@ -1141,11 +1154,13 @@ class JobRunner:
 
                 # Written after every batch, not just on failure: a kill -9 or
                 # a power cut runs no exception handler, so only what has
-                # already reached disk survives it. The cost is one small
-                # write per batch against one network round trip.
+                # already reached disk survives it. The fingerprint is the
+                # same on every batch, so it is stamped once, up front, rather
+                # than repeated on each write.
+                _cache_stamp(workdir, "translated_partial", trans_print)
+
                 def _save_partial(done: dict[int, str]) -> None:
                     pcache.write_text(json.dumps(done, ensure_ascii=False, indent=1))
-                    _cache_stamp(workdir, "translated_partial", trans_print)
 
                 segments = run_translate(segments, settings, machine.ram_gb, report,
                                          extra_glossary=found, resume=resume,
@@ -1153,6 +1168,7 @@ class JobRunner:
                 tcache.write_text(json.dumps(segments, ensure_ascii=False, indent=1))
                 _cache_stamp(workdir, "translated", trans_print)
                 pcache.unlink(missing_ok=True)
+                _cache_clear(workdir, "translated_partial")
 
             # Checked whether it was just produced or restored from cache. The
             # cache is the reason this cannot live in the parser: a translation

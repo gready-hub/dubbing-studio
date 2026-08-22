@@ -419,46 +419,30 @@ def _finished_file(workdir: Path) -> Path | None:
     return max(merged or media, key=lambda p: p.stat().st_size)
 
 
-def _safe_is_file(p: Path) -> bool:
-    try:
-        return p.is_file()
-    except OSError:
-        return False
-
-
 def _explain_missing_video(workdir: Path) -> str:
     """What download() puts in a DownloadError's detail when _finished_file()
     comes back empty, so "yt-dlp wrote nothing" can be told apart from
     "yt-dlp wrote something and it was turned away" — the difference between
     a bug here and a bug in whatever the user linked to.
 
-    Every filesystem access below is guarded: this only runs after download()
-    has already decided to fail, and raising here would replace the friendly
-    error with a raw traceback instead of just leaving the detail vague.
+    This only runs after download() has already decided to fail, and its own
+    contract is best-effort: one guard round the whole body means a vanished
+    file or an unreadable directory falls back to a vaguer detail instead of
+    replacing the friendly error with a raw traceback.
     """
     try:
-        is_dir = workdir.is_dir()
-    except OSError:
-        is_dir = False
-    if not is_dir:
-        return f"{workdir} is not a directory that exists."
-    try:
+        if not workdir.is_dir():
+            return f"{workdir} is not a directory that exists."
         everything = sorted(p.name for p in workdir.iterdir())
-    except OSError as exc:
-        return f"{workdir} exists but could not be listed ({exc})."
-    if not everything:
-        return f"{workdir} is empty — yt-dlp wrote nothing here."
-    try:
-        sourced = sorted((p for p in workdir.glob("source.*") if _safe_is_file(p)),
+        if not everything:
+            return f"{workdir} is empty — yt-dlp wrote nothing here."
+        sourced = sorted((p for p in workdir.glob("source.*") if p.is_file()),
                           key=lambda p: p.name)
-    except OSError:
-        sourced = []
-    if not sourced:
-        return (f"nothing named source.* turned up. Everything actually in "
-                f"{workdir}: {', '.join(everything)}")
-    notes = []
-    for p in sourced:
-        try:
+        if not sourced:
+            return (f"nothing named source.* turned up. Everything actually in "
+                    f"{workdir}: {', '.join(everything)}")
+        notes = []
+        for p in sourced:
             if _is_scratch(p.name):
                 notes.append(f"{p.name} (yt-dlp scratch state, not a finished file)")
             elif not _looks_like_media(p):
@@ -466,9 +450,9 @@ def _explain_missing_video(workdir: Path) -> str:
             else:
                 notes.append(f"{p.name} (looked like a finished video — this is a bug "
                               f"in _finished_file(), not in the download)")
-        except OSError:
-            notes.append(f"{p.name} (vanished or became unreadable while being checked)")
-    return f"considered and rejected: {'; '.join(notes)}"
+        return f"considered and rejected: {'; '.join(notes)}"
+    except OSError:
+        return f"{workdir} couldn't be explained further."
 
 
 def download(url: str, workdir: Path, quality: str = "best",

@@ -42,6 +42,35 @@ export function friendlyFolder(path){
   return parts.slice(-2).join(" → ") || "your Movies folder";
 }
 
+// An epoch-seconds stamp -> the local day and clock, kept apart so a caller
+// can lay them out however it needs. Built from local date parts rather than
+// read off the UTC day, or an evening job would land on the day after; null
+// when there is no stamp to show.
+export function dayAndClock(epochSeconds){
+  const at = new Date((epochSeconds || 0) * 1000);
+  if(!epochSeconds || isNaN(at)) return null;
+  const pad = n => String(n).padStart(2, "0");
+  const day = niceDate(`${at.getFullYear()}-${pad(at.getMonth()+1)}-${pad(at.getDate())}`);
+  const year = at.getFullYear() === new Date().getFullYear() ? "" : ` ${at.getFullYear()}`;
+  return {day: `${day}${year}`,
+          clock: at.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"})};
+}
+
+export const dayAndClockText = epochSeconds => {
+  const at = dayAndClock(epochSeconds);
+  return at ? `${at.day} at ${at.clock}` : "";
+};
+
+// A URL as a clickable link with the scheme and "www." trimmed off what's
+// shown, or as plain escaped text when it isn't actually a link.
+export function link(url){
+  const shown = escapeHtml(String(url).replace(/^https?:\/\/(www\.)?/i, ""));
+  return /^https?:\/\//i.test(url)
+    ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"
+         style="color:var(--accent)">${shown}</a>`
+    : shown;
+}
+
 export function errorDetailHtml(message, detail){
   const trimmed = (detail || "").trim();
   if(!trimmed || trimmed === message) return escapeHtml(message);

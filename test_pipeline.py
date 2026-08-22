@@ -2997,6 +2997,35 @@ def test_observability():
           "not a second copy of keep_music_applies()'s own condition",
           "data-override=" in settings_js
           and "overridden(key){" in settings_js)
+
+    # That mirror is close to structurally necessary — the panel has to react
+    # to unsaved changes without a server round trip — but nothing checked the
+    # two conditions actually agree, so a third condition added to one side
+    # could silently desync from the other. Extracted verbatim from the
+    # component rather than reimplemented, and run against the real
+    # keep_music_applies() across every meaningful combination.
+    mirror = "\n".join(l.strip() for l in settings_js.splitlines()
+                       if l.strip().startswith(("const replacing", "const separating",
+                                                 "const overridden")))
+    combos = [(sep, mode) for sep in (True, False)
+              for mode in ("replace", "duck:-12", "dual")]
+    script = "\n".join(
+        f'{{ const $ = sel => ({{value: sel === "#audio_mode" ? "{mode}" : '
+        f'"{str(sep).lower()}"}}); {mirror.replace("this.$", "$")} '
+        f'console.log(JSON.stringify({{sep: {str(sep).lower()}, mode: "{mode}", '
+        f'overridden}})); }}'
+        for sep, mode in combos
+    )
+    rows = [json.loads(l) for l in subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=True
+    ).stdout.splitlines()]
+    for row in rows:
+        applies = Settings(separate_audio=row["sep"],
+                           audio_mode=row["mode"].split(":")[0]).keep_music_applies()
+        check(f"the JS mirror agrees with the real keep_music_applies() for "
+              f"separate_audio={row['sep']} audio_mode={row['mode']}",
+              (row["sep"] and not row["overridden"]) == applies, row)
+
     # The truncation fix was giving the control room, not shorter words — this
     # is the property that actually did that, and until now nothing asserted
     # it, so the rejected "shorten the labels" fix could have silently come

@@ -1,9 +1,8 @@
-import { BaseElement } from "../base-element.js";
+import { CappedList } from "./capped-list.js";
 import { store } from "../store.js";
-import { fmt, friendlyFolder, escapeHtml, escapeAttr, niceDate } from "../format.js";
+import { fmt, friendlyFolder, escapeHtml, dayAndClock, link } from "../format.js";
 import { OUTPUT_GONE, knownGone, outputGone, runRows, statRows, stages }
   from "../run-report.js";
-import "./list-row.js";
 
 const SHOWN = 6;
 
@@ -12,13 +11,12 @@ const SHELL = `
     .head{display:flex;align-items:flex-start;justify-content:space-between;
           gap:14px;flex-wrap:wrap;margin-bottom:16px}
     .head > div{flex:1;min-width:200px}
-    .head h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.01em}
     .head p{margin:5px 0 0}
   </style>
   <div class="panel quiet">
     <div class="head">
       <div>
-        <h2>Your dubbed videos</h2>
+        <h2 class="job-title">Your dubbed videos</h2>
         <p class="hint" id="outputWhere">Saved to your Movies folder.</p>
       </div>
       <button class="ghost" id="openFolder">Open folder</button>
@@ -27,30 +25,9 @@ const SHELL = `
   </div>
 `;
 
-// The stamp is epoch seconds and niceDate takes a date string, so the day is
-// assembled from local parts: a UTC one is the day after for anything finished
-// in the evening. A run from another year says which one.
-function finishedOn(job){
-  const when = new Date((job.finished || 0) * 1000);
-  if(!job.finished || isNaN(when)) return null;
-  const pad = n => String(n).padStart(2, "0");
-  const day = niceDate(`${when.getFullYear()}-${pad(when.getMonth()+1)}-${pad(when.getDate())}`);
-  const year = when.getFullYear() === new Date().getFullYear() ? "" : ` ${when.getFullYear()}`;
-  return {day: `${day}${year}`,
-          clock: when.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"})};
-}
-
-function link(url){
-  const shown = escapeHtml(String(url).replace(/^https?:\/\/(www\.)?/i, ""));
-  return /^https?:\/\//i.test(url)
-    ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"
-         style="color:var(--accent)">${shown}</a>`
-    : shown;
-}
-
 function detail(job, state, gone){
   const folder = job.output ? job.output.split("/").slice(0, -1).join("/") : "";
-  const when = finishedOn(job);
+  const when = dayAndClock(job.finished);
   const used = runRows(job, state, {outcomes: true});
   return `
     <p style="margin:0 0 7px;font-weight:600">${escapeHtml(job.title || "")}</p>
@@ -68,19 +45,15 @@ function detail(job, state, gone){
   `;
 }
 
-class HistoryList extends BaseElement {
+class HistoryList extends CappedList {
   connectedCallback(){
+    super.connectedCallback();
     this.html(SHELL);
     // Always here, and answering the question before it is asked: when empty it
     // says where finished videos will go, and when not it is where they are.
     this.$("#openFolder").onclick = () =>
       this.emit("reveal", {path: store.state.output_dir || ""});
-    this._rows = new Map();
     this._unsub = store.subscribe(s => this.update(s));
-  }
-
-  disconnectedCallback(){
-    this._unsub?.();
   }
 
   update(s){
@@ -118,57 +91,30 @@ class HistoryList extends BaseElement {
       : `Nothing dubbed yet. Finished videos are saved to `
         + `${friendlyFolder(s.output_dir)}.`;
 
-    const box = this.$("#history");
-    const kept = new Map();
     // Capped, because this is a shortcut to the recent ones, not a file
     // manager — Open folder is the answer for the rest.
-    past.slice(0, SHOWN).forEach(j => {
-      const gone = j.output_exists === false || knownGone(j.output);
-      const data = {
-        title: j.title,
-        // Bare beside a title, a duration reads as the video's own length —
-        // it is how long the dub took. "Took", the same word the detail rows
-        // below and the sample report use for the same number, says so.
-        subtitle: [(finishedOn(j) || {}).day, `Took ${fmt(j.elapsed)}`,
-                   ...(gone ? ["file no longer there"] : [])].filter(Boolean).join(" · "),
-        detail: detail(j, s, gone),
-        // Nothing to show: the file has been moved or deleted, and offering to
-        // reveal it would open the folder on nothing.
-        actions: gone ? [] : [{label: "Show", onClick: () => this.reveal(j)}],
-      };
-      const sig = JSON.stringify([j.id, j.output, data.title, data.subtitle, data.detail]);
-      const had = this._rows.get(j.id);
-      const row = had ? had.row : document.createElement("list-row");
-      // A row is left alone when what it would say is what it already says.
-      // Handing it the same content again would take the focus off its
-      // disclosure button and drop any selection made in an open one.
-      if(!had || had.sig !== sig){
-        row.data = {...data, open: j.id === this._openId,
-                    onToggle: open => this.opened(open ? j.id : null)};
-      }
-      kept.set(j.id, {row, sig});
-    });
-    // Gone first, then placed: a row put in position ahead of a row that is
-    // about to be removed would be moved twice, and moving one is what takes
-    // the focus out of it.
-    this._rows.forEach(({row}, id) => { if(!kept.has(id)) row.remove(); });
-    this._rows = kept;
-    [...kept.values()].forEach(({row}, at) => {
-      const there = box.children[at];
-      if(there !== row) box.insertBefore(row, there || null);
-    });
-    if(!this._rows.has(this._openId)) this._openId = null;
-
-    const rest = past.length - SHOWN;
-    let note = this.$("#more");
-    if(rest > 0 && !note){
-      note = document.createElement("p");
-      note.id = "more";
-      note.className = "hint";
-      box.appendChild(note);
-    }
-    if(rest > 0) note.textContent = `…and ${rest} more in the folder.`;
-    else if(note) note.remove();
+    this.paintRows(past, SHOWN, this.$("#history"), "more",
+      rest => `…and ${rest} more in the folder.`,
+      j => {
+        const gone = j.output_exists === false || knownGone(j.output);
+        const data = {
+          title: j.title,
+          // Bare beside a title, a duration reads as the video's own length —
+          // it is how long the dub took. "Took", the same word the detail rows
+          // below and the sample report use for the same number, says so.
+          subtitle: [(dayAndClock(j.finished) || {}).day, `Took ${fmt(j.elapsed)}`,
+                     ...(gone ? ["file no longer there"] : [])].filter(Boolean).join(" · "),
+          detail: detail(j, s, gone),
+          // Nothing to show: the file has been moved or deleted, and offering to
+          // reveal it would open the folder on nothing.
+          actions: gone ? [] : [{label: "Show", onClick: () => this.reveal(j)}],
+        };
+        return {
+          id: j.id,
+          sig: JSON.stringify([j.id, j.output, data.title, data.subtitle, data.detail]),
+          data,
+        };
+      });
   }
 
   // Asked again at the click, because whether the file is still there was
@@ -180,13 +126,6 @@ class HistoryList extends BaseElement {
       return;
     }
     this.emit("reveal", {path: j.output});
-  }
-
-  // One at a time: several open at once turns a list of six into a page of
-  // detail with no list left in it.
-  opened(id){
-    this._openId = id;
-    this._rows.forEach(({row}, key) => { if(key !== id) row.setOpen(false); });
   }
 }
 

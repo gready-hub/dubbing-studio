@@ -49,6 +49,14 @@ function people(n){
   return Number(n) === 1 ? "1 person" : `${n} people`;
 }
 
+// A preset name, in the same words the quality picker uses — falling back to
+// a capitalised raw value for a preset the shipped list has since dropped.
+export function presetLabel(preset, presets){
+  const found = (presets || {})[preset];
+  return found ? found.label
+    : String(preset).charAt(0).toUpperCase() + String(preset).slice(1);
+}
+
 // A finished run described as a list of [label, value] pairs. With `outcomes`,
 // what the run made of those choices is appended as well — for a caller with
 // nowhere else to put the results. A panel that reports them separately asks for
@@ -68,10 +76,7 @@ export function runRows(job, state, {outcomes = false} = {}){
   // one of its values and is on no list of presets, so an unrecognised name is
   // shown rather than dropped.
   const preset = snap.preset !== undefined ? snap.preset : stats.preset;
-  if(preset){
-    rows.push(["Quality preset", ((state.presets || {})[preset] || {}).label
-      || String(preset).charAt(0).toUpperCase() + String(preset).slice(1)]);
-  }
+  if(preset) rows.push(["Quality preset", presetLabel(preset, state.presets)]);
   add("voice_mode", "Cloning", from(VOICE_MODES));
   // The chosen built-in voice had no part in a run that cloned the original
   // speakers; what did the speaking is a result rather than a choice.
