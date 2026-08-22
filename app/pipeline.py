@@ -1142,25 +1142,38 @@ class JobRunner:
                 # the finished cache, so a partial from before a settings
                 # change is never mistaken for a head start on this one.
                 resume: dict[int, str] = {}
-                if pcache.exists() and _cache_valid(workdir, "translated_partial", trans_print):
-                    try:
-                        resume = {int(i): t for i, t in json.loads(pcache.read_text()).items()}
-                    except Exception:                            # noqa: BLE001
-                        resume = {}
-                    if resume:
-                        notes.append(note_info(f"Picking up where the last attempt left off — "
-                                     f"{len(resume)} of {len(segments)} lines were "
-                                     "already translated."))
+                if pcache.exists():
+                    if _cache_valid(workdir, "translated_partial", trans_print):
+                        try:
+                            resume = {int(i): t for i, t in json.loads(pcache.read_text()).items()}
+                        except Exception:                        # noqa: BLE001
+                            resume = {}
+                        if resume:
+                            notes.append(note_info(f"Picking up where the last attempt left off — "
+                                         f"{len(resume)} of {len(segments)} lines were "
+                                         "already translated."))
+                    else:
+                        # Left by a run under different settings; if it sat here
+                        # unlinked, some later run under those same old settings
+                        # could be re-stamped as current and resumed from it.
+                        pcache.unlink(missing_ok=True)
+                        _cache_clear(workdir, "translated_partial")
 
-                # Written after every batch, not just on failure: a kill -9 or
-                # a power cut runs no exception handler, so only what has
-                # already reached disk survives it. The fingerprint is the
-                # same on every batch, so it is stamped once, up front, rather
-                # than repeated on each write.
-                _cache_stamp(workdir, "translated_partial", trans_print)
+                # Written after every batch, not just on failure: a kill -9 or a
+                # power cut runs no exception handler, so only what has already
+                # reached disk survives it. The stamp has to be the write's own
+                # doing, though — it is an assertion about what is on disk right
+                # now, not a fact about this run — so it happens with the write,
+                # guarded to fire only once since the fingerprint never changes
+                # batch to batch.
+                stamped = False
 
                 def _save_partial(done: dict[int, str]) -> None:
+                    nonlocal stamped
                     pcache.write_text(json.dumps(done, ensure_ascii=False, indent=1))
+                    if not stamped:
+                        _cache_stamp(workdir, "translated_partial", trans_print)
+                        stamped = True
 
                 segments = run_translate(segments, settings, machine.ram_gb, report,
                                          extra_glossary=found, resume=resume,
@@ -1602,9 +1615,13 @@ class JobRunner:
             except OSError:
                 pass          # raising here would kill the worker mid-queue
         self._emit(job)
-        # self.jobs is rebuilt empty on every launch, so without this a failure
-        # would be reachable only for as long as this process keeps running.
-        _record_history(job)
+        if not job.preview:
+            # self.jobs is rebuilt empty on every launch, so without this a
+            # failure would be reachable only for as long as this process keeps
+            # running. A preview is excluded for the same reason a finished one
+            # is: nothing about a sample is meant to outlive the session, and a
+            # failure row nothing later can supersede is worse than none at all.
+            _record_history(job)
 
 
 class _Cancelled(Exception):

@@ -4061,6 +4061,224 @@ def test_translate_resume():
         T._call_ollama = real_ollama
 
 
+def test_translate_resume_respects_settings_change():
+    """A partial left by one run's settings must never be adopted by another's.
+
+    The cache-meta stamp used to be written the moment a translation started,
+    not when its content actually changed on disk. A run under new settings
+    that stamped its own fingerprint and then died before its first batch
+    landed left the *previous* settings' lines on disk claiming the *new*
+    fingerprint — so the next attempt under the new settings resumed from
+    them and would have quietly mixed two runs' translations into one dub.
+    """
+    print("\n[19] A settings change must not adopt another run's stale partial")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.config import Settings, JOBS as JOBS_DIR
+
+    class TinyEngine:
+        name = "Test Engine"
+        sample_rate = 24000
+
+        def say(self, text, voice="", speed=1.0, speaker=0):
+            return _tone(300, 0.3, 24000), 24000
+
+    N = 26
+    DURATION = 42.0
+
+    def make_segments():
+        return [{"start": n * 1.5, "end": n * 1.5 + 1.0, "text": f"linea {n}"}
+                for n in range(N)]
+
+    work = WORK / "translate-resume-settings"
+    work.mkdir(parents=True, exist_ok=True)
+    clip = work / "clip.mp4"
+    if not clip.exists():
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                        "-map", "0:v", "-map", "1:a", "-t", f"{DURATION:g}",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(clip)], check=True)
+
+    def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
+        if progress:
+            progress(1.0, "Heard the lines")
+        return make_segments()
+
+    real_probe = pipeline.download.probe
+    real_download = pipeline.download.download
+    real_transcribe = pipeline.asr_backend.transcribe
+    real_make = pipeline.JobRunner._make_engine
+    real_prune = pipeline.prune_workdir
+    real_ollama = T._call_ollama
+    pipeline.asr_backend.transcribe = fake_transcribe
+    pipeline.JobRunner._make_engine = lambda *a, **k: (TinyEngine(), False)
+    pipeline.prune_workdir = lambda workdir: 0
+
+    def run(url, settings, call, timeout=300):
+        fake_probe, fake_download = stub_download(clip, "Translate Resume Settings", DURATION)
+        pipeline.download.probe = fake_probe
+        pipeline.download.download = fake_download
+        T._call_ollama = call
+        job = pipeline.runner.submit(url, settings)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < timeout:
+            time.sleep(0.5)
+        return job
+
+    def ids_in(prompt):
+        return [int(l.split("|")[0]) for l in prompt.splitlines()
+                if l and l[0].isdigit() and "|" in l]
+
+    try:
+        URL = "https://example.com/translate-resume-settings"
+        shutil_rmtree(JOBS_DIR / pipeline._job_id(URL))
+
+        # --- A completes one batch (25 of 26 lines), then dies ------------
+        calls_a = {"n": 0}
+
+        def a_dies_after_first_batch(prompt, model, host="x", **_):
+            calls_a["n"] += 1
+            ids = ids_in(prompt)
+            if calls_a["n"] > 1:
+                raise T.TranslationError("simulated outage partway through")
+            return "\n".join(f"{i}|EN-A {i}" for i in ids)
+
+        settings_a = Settings().apply_preset("fast")
+        settings_a.translator = "ollama"
+        settings_a.merge_lines = True
+        job_a = run(URL, settings_a, a_dies_after_first_batch)
+        check("A fails, leaving a partial behind",
+              job_a.status == "error", f"{job_a.status}: {job_a.error}")
+
+        pcache = JOBS_DIR / job_a.id / "translated.partial.json"
+        check("A's partial is on disk", pcache.exists())
+
+        # --- settings change to B; B dies before its first batch lands ----
+        def b_dies_immediately(prompt, model, host="x", **_):
+            raise T.TranslationError("simulated outage before any batch landed")
+
+        settings_b = Settings().apply_preset("fast")
+        settings_b.translator = "ollama"
+        settings_b.merge_lines = False
+        job_b1 = run(URL, settings_b, b_dies_immediately)
+        check("B's first attempt fails before writing anything",
+              job_b1.status == "error", f"{job_b1.status}: {job_b1.error}")
+
+        # --- the next attempt under B must not resume from A's lines ------
+        requested_b: list[int] = []
+
+        def b_records_and_answers(prompt, model, host="x", **_):
+            ids = ids_in(prompt)
+            requested_b.extend(ids)
+            return "\n".join(f"{i}|EN-B {i}" for i in ids)
+
+        job_b2 = run(URL, settings_b, b_records_and_answers)
+        check("B's retry completes", job_b2.status == "done",
+              f"{job_b2.status}: {job_b2.error}")
+        check("every line was asked for again under B, none adopted from A",
+              sorted(set(requested_b)) == list(range(N)), str(sorted(set(requested_b))))
+        check("no resume was reported, since A's lines belong to a different run",
+              not any("already translated" in note_text(n)
+                      for n in job_b2.stats.get("notes", [])),
+              str(job_b2.stats.get("notes")))
+
+        tcache = JOBS_DIR / job_b2.id / "translated.json"
+        saved = json.loads(tcache.read_text()) if tcache.exists() else []
+        check("none of A's translated text leaked into B's finished dub",
+              not any("EN-A" in s.get("translation", "") for s in saved),
+              str([s.get("translation") for s in saved]))
+    finally:
+        pipeline.download.probe = real_probe
+        pipeline.download.download = real_download
+        pipeline.asr_backend.transcribe = real_transcribe
+        pipeline.JobRunner._make_engine = real_make
+        pipeline.prune_workdir = real_prune
+        T._call_ollama = real_ollama
+
+
+def test_preview_failure_is_superseded_by_a_later_success():
+    """A sample that fails and then succeeds must not stay listed as failed.
+
+    _fail() recorded a history row for a preview job just as it does for a
+    full run, but the success path deliberately skips previews (a finished
+    sample gets no history row — it is not a thing the user asked to have).
+    Nothing later could ever supersede that failure row, so a sample that
+    failed once and then worked kept sitting under "Runs that didn't finish"
+    even after it worked.
+    """
+    print("\n[20] A failed sample does not stay listed as failed once it works")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.config import HISTORY_FILE, JOBS as JOBS_DIR, Settings
+
+    work = WORK / "preview-failure"
+    work.mkdir(parents=True, exist_ok=True)
+    clip = work / "clip.mp4"
+    DURATION = 60.0
+    if not clip.exists():
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                        "-map", "0:v", "-map", "1:a", "-t", f"{DURATION:g}",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(clip)], check=True)
+
+    def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
+        if progress:
+            progress(1.0, "Heard a line")
+        return [{"start": 1.0, "end": 4.0, "text": "una linea"}]
+
+    def fails(prompt, model=None, host=None, key=None, **_):
+        raise T.TranslationError("simulated translator outage")
+
+    def succeeds(prompt, model=None, host=None, key=None, **_):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        return "\n".join(f"{i}|A dubbed line." for i in ids)
+
+    real_probe, real_download = pipeline.download.probe, pipeline.download.download
+    real_transcribe = pipeline.asr_backend.transcribe
+    real_ollama = T._call_ollama
+    pipeline.asr_backend.transcribe = fake_transcribe
+
+    try:
+        URL = "https://example.com/preview-fails-then-succeeds"
+        shutil_rmtree(JOBS_DIR / pipeline._link_id(URL))
+        s = Settings().apply_preset("fast")
+        s.translator = "ollama"
+        job_id = pipeline._job_id(URL, True)
+
+        pipeline.download.probe, pipeline.download.download = stub_download(
+            clip, "Preview Fails Then Succeeds", DURATION)
+        T._call_ollama = fails
+        job = pipeline.runner.submit(URL, s, preview=True)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < 300:
+            time.sleep(0.5)
+        check("the sample fails", job.status == "error", f"{job.status}: {job.error}")
+
+        def failed_rows():
+            history = json.loads(HISTORY_FILE.read_text()) if HISTORY_FILE.exists() else []
+            return [h for h in history if h.get("job_id") == job_id and not h.get("output")]
+
+        T._call_ollama = succeeds
+        retry = pipeline.runner.submit(URL, s, preview=True)
+        t0 = time.time()
+        while retry.status in ("queued", "running") and time.time() - t0 < 300:
+            time.sleep(0.5)
+        check("the retry succeeds", retry.status == "done", f"{retry.status}: {retry.error}")
+
+        check("a sample that later succeeded is not left listed as failed",
+              not failed_rows(), str(failed_rows()))
+    finally:
+        pipeline.download.probe = real_probe
+        pipeline.download.download = real_download
+        pipeline.asr_backend.transcribe = real_transcribe
+        T._call_ollama = real_ollama
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -4080,6 +4298,8 @@ if __name__ == "__main__":
     test_job_record()
     test_near_empty_dub()
     test_translate_resume()
+    test_translate_resume_respects_settings_change()
+    test_preview_failure_is_superseded_by_a_later_success()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")
