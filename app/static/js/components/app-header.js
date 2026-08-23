@@ -20,7 +20,6 @@ const SHELL = `
       <button class="icon-btn" id="settingsBtn">Settings</button>
     </div>
   </header>
-  <p class="sub">Paste a video link. Get it back speaking English.</p>
   <div id="updateBanner" class="banner info hidden"
        style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
     <span id="updateText" style="flex:1;min-width:180px"></span>
@@ -35,8 +34,8 @@ class AppHeader extends BaseElement {
     this.$("#aAwake").onclick = () => this.toggleAwake();
     this.$("#settingsBtn").onclick = () => document.querySelector("settings-panel")?.open();
     this.$("#updateNow").onclick = () => {
-      if(!confirm("Update Dubbing Studio?\n\nThis opens the installer in Terminal. "
-                + "Your settings, videos and finished work are kept."))
+      if(!confirm("Update Dubbing Studio?\n\nThe installer opens in Terminal. "
+                + "Settings and finished videos are kept."))
         return;
       this.emit("run-update");
     };
@@ -67,13 +66,10 @@ class AppHeader extends BaseElement {
     el.innerHTML = MOON.replace("%SLASH%", on ? SLASH : "")
       + (on ? "Won't sleep" : "May sleep");
     this.$("#awakeTip").text = on
-      ? "Your Mac is kept awake for as long as a video is dubbing, so a long "
-        + "job doesn't stall if it sleeps. The screen can still sleep; "
-        + "closing the lid still sleeps. Click the pill to allow sleep during "
-        + "a dub."
-      : "Your Mac may sleep part-way through dubbing a video, which pauses "
-        + "the job until you wake it. Click the pill to keep it awake for the "
-        + "duration of a dub.";
+      ? "Your Mac is kept awake while a video is dubbing. The screen can still "
+        + "sleep, and closing the lid still sleeps. Click to allow sleep."
+      : "Your Mac may sleep while a video is dubbing, which pauses the job "
+        + "until you wake it. Click to keep it awake.";
   }
 
   toggleAwake(){

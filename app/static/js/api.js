@@ -2,7 +2,7 @@ async function request(path, opts){
   const r = await fetch(path, opts);
   if(!r.ok){
     const body = await r.json().catch(()=>({}));
-    const err = new Error(body.detail || "Something went wrong");
+    const err = new Error(body.detail || "The request failed.");
     err.detail = body.detail || "";
     throw err;
   }
@@ -42,7 +42,7 @@ export const api = {
                         + `&speed=${encodeURIComponent(speed)}`);
     if(!r.ok){
       const detail = (await r.json().catch(()=>({}))).detail;
-      throw new Error(detail || "That voice couldn't be played.");
+      throw new Error(detail || "The voice preview failed.");
     }
     return r.blob();
   },

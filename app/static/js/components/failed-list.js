@@ -24,15 +24,14 @@ function detail(job, s){
   return `
     ${job.url ? `<p class="hint" style="margin:0 0 12px;word-break:break-word">From `
                 + `${link(job.url)}</p>` : ""}
-    ${job.preset ? `<p class="hint" style="margin:0 0 12px">This attempt used the `
+    ${job.preset ? `<p class="hint" style="margin:0 0 12px">Ran with the `
                   + `${escapeHtml(presetLabel(job.preset, s.presets))} preset. Try `
-                  + `again uses whatever Settings holds now, which may differ.</p>` : ""}
+                  + `again uses the current settings.</p>` : ""}
     ${said
-      ? `<p style="margin:0 0 6px;font-weight:600">What the error actually said</p>`
+      ? `<p style="margin:0 0 6px;font-weight:600">Error details</p>`
         + `<pre style="white-space:pre-wrap;overflow-wrap:anywhere;margin:0">`
         + `${escapeHtml(said)}</pre>`
-      : `<p class="hint" style="margin:0">Nothing more specific was recorded for `
-        + `this attempt.</p>`}
+      : `<p class="hint" style="margin:0">No further details were recorded.</p>`}
   `;
 }
 
@@ -79,9 +78,7 @@ class FailedList extends CappedList {
         <div class="panel quiet">
           <div class="head">
             <div>
-              <h2 class="job-title">Runs that didn't finish</h2>
-              <p class="hint">Kept here so a failure survives closing the app, not
-                only reloading the page.</p>
+              <h2 class="job-title">Failed runs</h2>
             </div>
           </div>
           <div id="failed"></div>
@@ -90,9 +87,9 @@ class FailedList extends CappedList {
     }
 
     this.paintRows(failed, SHOWN, this.$("#failed"), "moreFailed",
-      rest => `…and ${rest} earlier failure${rest === 1 ? "" : "s"}, not shown here.`,
+      rest => `…and ${rest} earlier failure${rest === 1 ? "" : "s"}.`,
       j => {
-        const reason = j.error || "Something went wrong.";
+        const reason = j.error || "The run failed.";
         const data = {
           color: "var(--bad)",
           title: j.title || j.url,
@@ -105,7 +102,7 @@ class FailedList extends CappedList {
             // Same call as the one in Settings and on the live failed card: the
             // failure is already in the recent log entries, tagged with its id,
             // so no job argument is needed here either.
-            {label: "Copy details",
+            {label: "Diagnostics",
              onClick: () => document.querySelector("diagnostics-panel")?.open()},
           ],
         };

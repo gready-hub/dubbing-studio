@@ -101,7 +101,7 @@ def assemble(lines: list[dict], total_duration: float, sample_rate: int,
         cursor = start + len(audio) / sample_rate
 
         if progress and n % 25 == 0:
-            progress(n / max(1, len(lines)), f"Fitting line {n} of {len(lines)}")
+            progress(n / max(1, len(lines)), f"Aligning line {n} of {len(lines)}")
 
     peak = float(np.max(np.abs(track))) if track.size else 0.0
     if peak > 0:

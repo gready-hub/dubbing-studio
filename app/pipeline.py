@@ -40,15 +40,18 @@ from .steps.segments import merge_adjacent
 
 # (key, label, relative cost) — relative costs are turned into weights for
 # whichever stages a given job actually runs.
+# Named for the work itself. "Listening to the original" and "Speaking the new
+# soundtrack" described the app as if it were a person doing the job, which is
+# more character than a progress label needs.
 ALL_STAGES = [
-    ("download", "Fetching the video", 8),
+    ("download", "Downloading the video", 8),
     ("separate", "Separating speech from music", 14),
     ("diarize", "Identifying speakers", 5),
-    ("transcribe", "Listening to the original", 16),
+    ("transcribe", "Transcribing", 16),
     ("translate", "Translating", 13),
-    ("synthesize", "Speaking the new soundtrack", 34),
-    ("assemble", "Fitting it to the picture", 6),
-    ("finish", "Saving the finished video", 4),
+    ("synthesize", "Generating speech", 34),
+    ("assemble", "Aligning to the original timing", 6),
+    ("finish", "Saving the video", 4),
 ]
 
 
@@ -254,10 +257,10 @@ def _speaker_note(found: int, sample: bool) -> str:
     if found <= UNREMARKABLE_SPEAKERS:
         return ""
     later = "before dubbing the whole video" if sample else "and run it again"
-    return (f"{found} different speakers were detected. Telling speakers apart is the "
-            "least reliable step, and it can split one person into several voices. If "
-            "the video has fewer people in it than that, set “Who's speaking?” "
-            f"on the main page to one person {later}.")
+    return (f"{found} speakers were detected. Speaker detection is the least reliable "
+            "step and can split one person across several voices. If the video has "
+            "fewer people than that, set “Who's speaking?” on the main page to one "
+            f"person {later}.")
 
 
 def _safe_name(text: str) -> str:
@@ -733,9 +736,8 @@ class JobRunner:
                 # telling it to wait for a video that does not exist made the
                 # only job in the queue announce itself as second.
                 continue
-            job.message = ("Next — waiting for the current video to finish"
-                           if position == 1 else
-                           f"Waiting — {position - 1} ahead of it")
+            job.message = ("Next in the queue" if position == 1 else
+                           f"{position - 1} ahead in the queue")
             self._emit(job)
 
     def _stopped(self, job: Job) -> None:
@@ -809,8 +811,8 @@ class JobRunner:
         if job and job.status in ("queued", "running") and not job.cancelling:
             job.cancelling = True
             stage = job.stage_label or "the current step"
-            job.message = (f"Stopping — waiting for “{stage}” to finish first. "
-                           "That step can't be interrupted part way.")
+            job.message = (f"Stopping after “{stage}” finishes — that step "
+                           "can't be interrupted.")
             self._emit(job)
 
     def _check_cancel(self, job: Job) -> None:
@@ -950,7 +952,7 @@ class JobRunner:
                 # substantially the same work twice for no information.
                 job.preview, window = False, 0.0
                 notes.append(note_info(f"That video is only {_mins(job.duration)} long, so "
-                             "the whole thing was dubbed rather than a sample of it."))
+                             "the whole thing was dubbed rather than a sample."))
                 self._emit(job)
 
             # Unweighted when the site reports no duration — live streams and a
@@ -973,9 +975,9 @@ class JobRunner:
             if free < need:
                 raise RuntimeError(
                     f"There isn't enough room on the disk. This video needs about "
-                    f"{storage.human_size(need)} while it works, and there is "
+                    f"{storage.human_size(need)} and there is "
                     f"{storage.human_size(free)} free. "
-                    "Clear some working files in the app, empty the bin, and try again.")
+                    "Clear some working files, empty the bin and try again.")
 
             weight = (min(self.PREVIEW_DOWNLOAD_CAP, job.duration / window)
                       if window and job.duration else 1.0)
@@ -1078,7 +1080,7 @@ class JobRunner:
                     stats["diarization_failed"] = True
                     notes.append("Speakers could not be told apart, so the whole "
                                  "video is dubbed in one voice.")
-                    report(1.0, "Couldn't tell the speakers apart — using a single voice")
+                    report(1.0, "Speakers couldn't be told apart; using one voice")
 
             # -------------------------------------------------- transcribe
             report = self._stage(job, plan, "transcribe", notes)
@@ -1090,7 +1092,7 @@ class JobRunner:
                                      audio_dir.name)
             if cache.exists() and _cache_valid(workdir, "segments", asr_print):
                 segments = json.loads(cache.read_text())
-                report(1.0, "Reusing the transcription from last time")
+                report(1.0, "Reusing the transcription from the previous run")
             else:
                 segments = asr_backend.transcribe(speech16, machine.fast_path,
                                                   settings.asr_model, report)
@@ -1137,7 +1139,7 @@ class JobRunner:
                                        found)
             if tcache.exists() and _cache_valid(workdir, "translated", trans_print):
                 segments = json.loads(tcache.read_text())
-                report(1.0, "Reusing the translation from last time")
+                report(1.0, "Reusing the translation from the previous run")
             else:
                 # A prior attempt at these exact settings may have died part
                 # way through translating. Guarded by the same fingerprint as
@@ -1151,7 +1153,7 @@ class JobRunner:
                         except Exception:                        # noqa: BLE001
                             resume = {}
                         if resume:
-                            notes.append(note_info(f"Picking up where the last attempt left off — "
+                            notes.append(note_info(f"Resumed from the previous attempt — "
                                          f"{len(resume)} of {len(segments)} lines were "
                                          "already translated."))
                     else:
@@ -1307,15 +1309,14 @@ class JobRunner:
                         # in the report rather than losing everything before it.
                         if not degraded:
                             report(n / max(1, total),
-                                   f"The voice stopped working ({exc}); switching to the portable one")
+                                   f"The voice engine failed ({exc}); switching to the portable one")
                             try:
                                 engine = tts_backend.OnnxTTS()
                                 degraded = True
                                 notes.append("The voice engine stopped working "
-                                             "partway through, so the rest of the "
-                                             "lines were spoken by the portable "
-                                             "engine instead. The voices themselves "
-                                             "didn't change.")
+                                             "partway through; the remaining lines "
+                                             "were spoken by the portable engine. "
+                                             "The voices themselves are unchanged.")
                                 audio, rate = engine.say(
                                     text,
                                     voice_map.get(speaker) or settings.voice_for(speaker),
@@ -1339,7 +1340,7 @@ class JobRunner:
                     done = n + 1
                     lines_per_sec = done / max(0.1, time.time() - t0)
                     report(done / total,
-                           f"Speaking line {done} of {total} — about "
+                           f"Line {done} of {total} — about "
                            f"{_mins((total-done)/lines_per_sec)} left")
 
             if not spoken:
@@ -1411,7 +1412,7 @@ class JobRunner:
             # on the occasions it does happen.
             if stats.get("video_codec") and not stats.get("widely_playable"):
                 was = stats["video_codec"].upper()
-                report(0.85, "Converting the picture so it plays anywhere")
+                report(0.85, "Converting the picture to H.264")
                 converted = out_path.with_name(out_path.stem + ".h264.mp4")
                 encoder = mux.transcode_h264(out_path, converted)
                 if encoder:
@@ -1419,16 +1420,15 @@ class JobRunner:
                     stats.update(mux.verify(video, out_path))
                     stats["transcoded_from"] = was
                     notes.append(
-                        f"This video isn't offered in H.264, only {was}, so the "
-                        "picture was converted to H.264 after dubbing. That is why "
-                        "the finished file took longer than usual. It now plays on "
-                        "any Mac, phone or browser.")
+                        f"This video is only offered in {was}, so the picture was "
+                        "converted to H.264 after dubbing. That added to the run "
+                        "time; the file now plays on any Mac, phone or browser.")
                 else:
                     notes.append(
-                        f"The picture is {was}, because this video isn't offered in "
-                        "H.264 at all, and converting it didn't work either. "
+                        f"The picture is {was}: this video isn't offered in H.264, "
+                        "and converting it didn't work. "
                         + ("It plays on this Mac, but not on Macs older than an M3, "
-                           "and not reliably on phones — VLC opens it everywhere."
+                           "and not reliably on phones. VLC opens it everywhere."
                            if machine.av1_ok else
                            "QuickTime opens the file with sound but no picture. VLC "
                            "will play it."))
@@ -1467,7 +1467,7 @@ class JobRunner:
                     f"Only {n} line{'' if n == 1 else 's'} {'was' if n == 1 else 'were'} "
                     f"dubbed, leaving {int(stats['no_line_share'] * 100)}% of the video "
                     "with no dubbed line over it. That can be correct for a video with "
-                    "very little speech in it — worth a look before sending it on.")
+                    "little speech in it — worth checking.")
             if job.preview:
                 stats["preview"] = True
                 stats["preview_from"] = _clock(job.preview_from)
@@ -1475,10 +1475,9 @@ class JobRunner:
                 # conclusion. Timing is the thing that fails across a whole
                 # video and the thing thirty seconds cannot speak to.
                 notes.append(note_info(
-                    f"This is a {int(window)}-second sample taken from "
-                    f"{_clock(job.preview_from)}. It shows the voice, the wording and "
-                    "the sound levels. It can't promise the timing holds for the whole "
-                    "video, and a longer video may have more speakers in it."))
+                    f"A {int(window)}-second sample from {_clock(job.preview_from)}. "
+                    "It shows the voice, the wording and the levels, but not whether "
+                    "the timing holds across the whole video."))
             stats["notes"] = notes
 
             freed = 0
@@ -1501,7 +1500,7 @@ class JobRunner:
             job.status = "done"
             job.finished = time.time()
             job.overall = 1.0
-            job.message = ("Sample ready — have a listen" if job.preview
+            job.message = ("Sample ready" if job.preview
                            else f"Saved to {out_path.parent.name}/{out_path.name}")
             if not job.preview:
                 # Kept out of the history list for the same reason it is kept out

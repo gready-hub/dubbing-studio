@@ -8,7 +8,7 @@ const SHELL = `
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px">
       <div style="min-width:0">
         <p class="job-title" id="aTitle">Starting…</p>
-        <p class="msg" id="aMsg" role="status" aria-live="polite">Getting ready</p>
+        <p class="msg" id="aMsg" role="status" aria-live="polite"></p>
       </div>
       <button class="ghost" id="cancelBtn">Cancel</button>
     </div>
@@ -43,7 +43,7 @@ class ActivePanel extends BaseElement {
     if(!running) return;
 
     this.$("#aTitle").textContent = (job.preview ? "Sample — " : "")
-                            + (job.title || "Working…");
+                            + (job.title || "Untitled video");
     this.say("#aMsg", job.message);
     this.$("#aBar").style.width = (job.overall*100).toFixed(1)+"%";
     this.$("#aPct").textContent = Math.round(job.overall*100)+"%";
@@ -88,8 +88,8 @@ class ActivePanel extends BaseElement {
     box.dataset.refs = key;
     box.innerHTML = refs.length
       ? `<p class="hint" style="margin:10px 0 4px">Cloning from ${refs.length} `
-        + `reference clip${refs.length===1?"":"s"} taken from the original. Listen `
-        + `now — a bad one colours every line.</p>`
+        + `reference clip${refs.length===1?"":"s"} taken from the original. `
+        + `A poor clip affects every line.</p>`
         + refs.map((_,i)=>`<audio controls preload="none" style="width:100%;margin-top:6px"
              src="/api/job/${encodeURIComponent(job.id)}/reference/${i}"></audio>`).join("")
       : "";

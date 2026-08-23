@@ -133,10 +133,9 @@ def _friendly(stderr: str) -> str:
         # again in a minute at that point is advice that has already been taken
         # on their behalf and failed.
         return ("YouTube described the video but refused to send it, on every "
-                "attempt. It usually wants a signed-in browser session: open "
-                "Settings and set “Sign in as” to the browser you watch YouTube "
-                "in. If that doesn't do it, the video may be private, "
-                "age-restricted or members-only.")
+                "attempt. It usually wants a signed-in session: set “Sign in as” "
+                "in Settings to the browser you watch YouTube in. Otherwise the "
+                "video may be private, age-restricted or members-only.")
     if "private video" in s:
         return "That video is private, so it can't be downloaded."
     if "sign in to confirm your age" in s or "age" in s and "restricted" in s:
@@ -153,10 +152,10 @@ def _friendly(stderr: str) -> str:
     # out recently that the next one is refused on sight. Both clear on their
     # own, and both come back faster for being left alone.
     if "page needs to be reloaded" in s:
-        return ("YouTube turned the app away rather than the video down — it does "
-                "this after a burst of downloads, and to the same link it will "
-                "serve a few minutes later. Wait a little and press Try again. "
-                "Repeating it straight away makes the wait longer, not shorter.")
+        return ("YouTube declined the request rather than the video. This happens "
+                "after a burst of downloads and clears on its own. Wait a few "
+                "minutes and press Try again — retrying straight away makes the "
+                "wait longer.")
     # yt-dlp's own words here are "Requested format is not available. Use
     # --list-formats for a list of available formats", which tells somebody who
     # has never opened a terminal to pass a command-line flag. It also sounds
@@ -164,10 +163,10 @@ def _friendly(stderr: str) -> str:
     # nothing in the listing is offered, which on YouTube is a defensive response
     # to being asked repeatedly.
     if "requested format is not available" in s:
-        return ("YouTube listed the video but then wouldn't offer any version of "
-                "it to download. That is usually temporary — wait a few minutes "
-                "and try the same link again. If it keeps happening, open Settings "
-                "and set “Sign in as” to the browser you watch YouTube in.")
+        return ("YouTube listed the video but offered no version to download. "
+                "That is usually temporary — wait a few minutes and try again. If "
+                "it persists, set “Sign in as” in Settings to the browser you "
+                "watch YouTube in.")
     # A link that goes nowhere is one of the commonest ways this fails — a typo,
     # a stale bookmark, half a URL pasted — and it used to fall through to
     # yt-dlp's own words, which is where the interface got "ERROR: [generic]

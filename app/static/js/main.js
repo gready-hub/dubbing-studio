@@ -4,7 +4,6 @@ import { withBusy } from "./busy.js";
 import { errorDetailHtml } from "./format.js";
 
 import "./components/app-header.js";
-import "./components/step-indicator.js";
 import "./components/new-job-panel.js";
 import "./components/active-panel.js";
 import "./components/done-panel.js";
@@ -37,9 +36,9 @@ function setWindowTitle(job){
   document.title =
     !job || job.status === "queued" ? base
     : job.status === "running" ? `${at}% · ${base}`
-    : job.status === "done"      ? `Finished · ${base}`
-    : job.status === "error"     ? `Couldn't be dubbed · ${base}`
-    : job.status === "cancelled" ? `Stopped · ${base}`
+    : job.status === "done"      ? `Done · ${base}`
+    : job.status === "error"     ? `Failed · ${base}`
+    : job.status === "cancelled" ? `Cancelled · ${base}`
     : base;
 }
 
@@ -48,7 +47,7 @@ async function refreshDoctor(){
     const doctor = await api.doctor();
     store.setDoctor(doctor);
     if(!doctor.ready){
-      showSetupError("Something needed is missing — see Setup check below.", "", true);
+      showSetupError("Something needed is missing. See Setup check below.", "", true);
     }
   }catch(err){ /* best effort */ }
 }

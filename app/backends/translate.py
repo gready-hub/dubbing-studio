@@ -523,11 +523,10 @@ def describe_translator(settings, ram_gb: int) -> tuple[str, str]:
         return settings.openai_model, ""
     model, _ = usable_model(settings.resolved_ollama_model(ram_gb))
     if model in WEAK_LOCAL_MODELS:
-        return model, (f"Translated by {model}, the smallest local model, because "
-                       "that is what fits this Mac's memory. On specialist material "
-                       "it is the weakest part of the chain — if the wording reads "
-                       "badly, an API key under Settings costs a few pence a video "
-                       "and is markedly better.")
+        return model, (f"Translated by {model}, the smallest local model, which is "
+                       "what fits this Mac's memory. On specialist material it is "
+                       "the weakest part of the chain; an API key under Settings "
+                       "gives better results.")
     return model, ""
 
 
@@ -744,7 +743,7 @@ def extract_terms(segments: list[dict], settings, ram_gb: int,
         runs = []
         for n in range(EXTRACT_RUNS):
             if progress:
-                progress((n + 1) / (EXTRACT_RUNS + 1), "Reading the subject's vocabulary")
+                progress((n + 1) / (EXTRACT_RUNS + 1), "Collecting the video's terminology")
             runs.append(_extract_once(transcript, settings.target_language, call))
         terms = _agreed(runs, transcript)
         logs.get().info("terminology extracted", extra={

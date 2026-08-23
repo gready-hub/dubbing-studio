@@ -176,8 +176,8 @@ def groups() -> list[dict]:
     return [
         {"key": "jobs", "label": "Working files", "bytes": dir_size(JOBS) if JOBS.is_dir() else 0,
          "clearable": True, "path": str(JOBS),
-         "hint": "Part-finished audio kept so a repeated link doesn't redo the "
-                 "expensive parts. Safe to delete; the next run rebuilds it."},
+         "hint": "Part-finished audio, kept so a repeated link doesn't redo the "
+                 "expensive steps. Safe to delete; the next run rebuilds it."},
         {"key": "models", "label": "Speech models", "bytes": dir_size(MODELS) if MODELS.is_dir() else 0,
          "clearable": True, "path": str(MODELS),
          "hint": "The voices and the recogniser. Safe to delete, but the next "
@@ -189,9 +189,9 @@ def groups() -> list[dict]:
         {"key": "hfmodels", "label": "Downloaded AI models",
          "bytes": sum(dir_size(p) for p in model_cache_dirs()),
          "clearable": True, "path": str(HF_HUB) if HF_HUB.is_dir() else "",
-         "hint": "The recogniser, the voices and the music separator, as fetched "
-                 "from Hugging Face. Safe to delete; the next video downloads "
-                 "what it needs again. Other apps' models here are left alone."},
+         "hint": "The recogniser, the voices and the music separator, from "
+                 "Hugging Face. Safe to delete; the next video downloads what it "
+                 "needs again. Other apps' models here are left alone."},
         {"key": "venv", "label": "Python environment",
          "bytes": dir_size(VENV) if VENV.is_dir() else 0,
          "clearable": False, "path": str(APP_DIR),
@@ -199,12 +199,12 @@ def groups() -> list[dict]:
                  "by Uninstall rather than from here — it is what is running."},
         {"key": "ollama", "label": "Translation model", "bytes": _ollama_bytes(),
          "clearable": False, "path": "",
-         "hint": "Held by Ollama, not by this app. Remove it from there if you "
-                 "need the room — translation will stop working until it's back."},
+         "hint": "Held by Ollama, not by this app. Remove it there if you need "
+                 "the room — translation stops working until it's back."},
         {"key": "output", "label": "Finished videos",
          "bytes": dir_size(OUTPUT_DIR) if OUTPUT_DIR.is_dir() else 0,
          "clearable": False, "path": str(OUTPUT_DIR),
-         "hint": "The videos you asked for. This app will never delete these."},
+         "hint": "Never deleted by this app."},
     ]
 
 

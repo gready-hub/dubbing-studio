@@ -16,8 +16,8 @@ const SHELL = `
   <div class="panel quiet">
     <div class="head">
       <div>
-        <h2 class="job-title">Your dubbed videos</h2>
-        <p class="hint" id="outputWhere">Saved to your Movies folder.</p>
+        <h2 class="job-title">Dubbed videos</h2>
+        <p class="hint" id="outputWhere">Saved to the Movies folder.</p>
       </div>
       <button class="ghost" id="openFolder">Open folder</button>
     </div>
@@ -88,8 +88,7 @@ class HistoryList extends CappedList {
 
     this.$("#outputWhere").textContent = past.length
       ? `Saved to ${friendlyFolder(s.output_dir)}.`
-      : `Nothing dubbed yet. Finished videos are saved to `
-        + `${friendlyFolder(s.output_dir)}.`;
+      : `Finished videos are saved to ${friendlyFolder(s.output_dir)}.`;
 
     // Capped, because this is a shortcut to the recent ones, not a file
     // manager — Open folder is the answer for the rest.
@@ -103,7 +102,7 @@ class HistoryList extends CappedList {
           // it is how long the dub took. "Took", the same word the detail rows
           // below and the sample report use for the same number, says so.
           subtitle: [(dayAndClock(j.finished) || {}).day, `Took ${fmt(j.elapsed)}`,
-                     ...(gone ? ["file no longer there"] : [])].filter(Boolean).join(" · "),
+                     ...(gone ? ["file missing"] : [])].filter(Boolean).join(" · "),
           detail: detail(j, s, gone),
           // Nothing to show: the file has been moved or deleted, and offering to
           // reveal it would open the folder on nothing.

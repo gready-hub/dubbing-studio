@@ -6,13 +6,13 @@ const SHELL = `
     <p class="job-title" id="fTitle"></p>
     <div class="banner bad" id="fMsg" style="margin:10px 0 0" role="status" aria-live="polite"></div>
     <details id="fDetailWrap" class="hidden" style="margin-top:4px">
-      <summary>What the error actually said</summary>
+      <summary>Error details</summary>
       <pre id="fDetail"></pre>
     </details>
     <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
       <button class="primary" id="fRetry">Try again</button>
       <button class="ghost" id="fReset">Dub another</button>
-      <button class="ghost" id="fCopy">Copy details</button>
+      <button class="ghost" id="fCopy">Diagnostics</button>
     </div>
   </div>
 `;
@@ -45,8 +45,8 @@ class FailedPanel extends BaseElement {
 
     this.$("#fTitle").textContent = job.title
       ? (job.preview ? "Sample — " : "") + job.title
-      : "That video couldn't be dubbed";
-    this.say("#fMsg", job.error || "Something went wrong.");
+      : "Dub failed";
+    this.say("#fMsg", job.error || "The run failed.");
     // The tool's own words: one click away and copyable, rather than buried in
     // a log under Application Support.
     const detail = (job.error_detail || "").trim();

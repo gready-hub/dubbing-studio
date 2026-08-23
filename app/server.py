@@ -344,8 +344,8 @@ def voice_preview(voice: str, speed: float = 1.0):
         # this machine deep into swap — the interface stopped answering for
         # minutes. An already-rendered preview costs nothing and is still served.
         if runner.busy():
-            raise HTTPException(409, "Try that once the current video has finished — "
-                                     "playing a new voice now would slow it down.")
+            raise HTTPException(409, "Wait until the current video has finished — "
+                                     "playing a voice now would slow it down.")
         out.parent.mkdir(parents=True, exist_ok=True)
         import soundfile as sf
         from .backends import tts as tts_backend
@@ -452,7 +452,7 @@ def job_video(job_id: str):
     # the panel offering it is still on screen. Checked rather than assumed, so
     # the player gets a clean 404 to react to instead of a stalled request.
     if not Path(job.output).is_file():
-        raise HTTPException(404, "That file has been cleared away.")
+        raise HTTPException(404, "That file no longer exists.")
     return FileResponse(job.output, media_type="video/mp4")
 
 
@@ -506,7 +506,7 @@ def run_update(request: Request) -> dict:
     script = store.APP_DIR / "Update.command"
     if not script.is_file():
         raise HTTPException(404, "The updater isn't in the app folder. Re-install "
-                                 "from the README to get it.")
+                                 "from the README.")
     script.chmod(0o755)
     subprocess.run(["open", "-a", "Terminal", str(script)], check=False)
     return {"ok": True}

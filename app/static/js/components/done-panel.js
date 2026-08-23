@@ -120,26 +120,24 @@ class DonePanel extends BaseElement {
     this.$("#dSettingsBox").classList.toggle("hidden", !settings.length);
     this.$("#dSettings").innerHTML = statRows(settings);
 
+    // What the dub came out like, not what the machinery did on the way. The
+    // engineering numbers this used to carry — frame counts, sub-second A/V
+    // drift, peak dB, working files freed — each already have somewhere better
+    // to be: a re-encoded picture and a silent track both raise a note above,
+    // and the rest is in the diagnostics report. Sixteen rows for a finished
+    // video answered a question nobody had.
     this.$("#dStats").innerHTML = statRows([
       ...(sample ? [["Sample taken from", stats.preview_from ?? "0:00"]] : []),
       ["Speakers found", stats.speakers ?? "—"],
-      ["Translated by", stats.translated_by ?? "—"],
       ["Voices used", stats.voices ?? "—"],
+      ["Translated by", stats.translated_by ?? "—"],
       ["Music and effects kept", yn(stats.music_kept)],
       ["Lines spoken", stats.lines_spoken ?? "—"],
-      ["Needed compressing", `${stats.compressed ?? 0} of ${stats.lines ?? 0}`],
+      ["Lines compressed to fit", `${stats.compressed ?? 0} of ${stats.lines ?? 0}`],
       ["Hardest squeeze", stats.max_factor ? stats.max_factor.toFixed(2)+"x" : "none"],
-      ["Timing drift", (stats.max_drift ?? 0)+"s"],
-      ["Video frames preserved", stats.frames_match ? `yes (${stats.output_frames})` : "re-encoded"],
-      ["Audio vs video length", (stats.drift_seconds ?? 0)+"s apart"],
-      ["Dubbed audio level", stats.peak_db == null ? "—"
-        : `peak ${stats.peak_db} dB, average ${stats.mean_db} dB`],
-      ["No line spoken", stats.no_line_seconds == null ? "—"
-        : `${stats.no_line_seconds}s (${Math.round((stats.no_line_share ?? 0)*100)}% of the `
-          + `${sample ? "sample" : "video"})`],
-      ["Engine", stats.engine ?? "—"],
-      ...(sample ? [] : [["Working files freed",
-                          stats.working_files_freed ? stats.working_files_freed+" MB" : "—"]]),
+      ["Video with no dubbed line", stats.no_line_seconds == null ? "—"
+        : `${Math.round((stats.no_line_share ?? 0)*100)}% `
+          + `(${stats.no_line_seconds}s)`],
       ["Took", fmt(job.elapsed)]
     ]) + stages(job);
   }

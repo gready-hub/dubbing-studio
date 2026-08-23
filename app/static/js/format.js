@@ -39,7 +39,7 @@ export function niceDate(iso){
 // to anyone; the last two parts are what they will recognise in Finder.
 export function friendlyFolder(path){
   const parts = String(path || "").split("/").filter(Boolean);
-  return parts.slice(-2).join(" → ") || "your Movies folder";
+  return parts.slice(-2).join(" → ") || "Movies";
 }
 
 // An epoch-seconds stamp -> the local day and clock, kept apart so a caller

@@ -60,9 +60,8 @@ const SHELL = `
 
     <div class="modal-body">
       <div class="segmented" id="settingsTabs"></div>
-      <p class="hint" id="presetLine">Three settings here are the ones a quality
-        preset chooses, tagged <b>Set by preset</b>. Changing one by hand turns the
-        preset to Custom. A preset touches nothing else in this window.</p>
+      <p class="hint" id="presetLine">Settings tagged <b>Set by preset</b> are
+        chosen by the quality preset. Changing one makes the preset Custom.</p>
 
       <div data-pane="voice">
         <div class="grid">
@@ -82,7 +81,7 @@ const SHELL = `
           <div>
             <div class="field-head"><label for="voice_mode">Cloning</label>${PRESET_TAG}<info-tip
               label="cloning"
-              text="Cloning keeps the speaker's identity, but carries their accent into English."></info-tip></div>
+              text="Keeps the speaker's identity, but carries their accent into English."></info-tip></div>
             <select id="voice_mode">
               <option value="fixed">Use a built-in voice</option>
               <option value="clone">Clone the original speaker</option>
@@ -149,10 +148,9 @@ const SHELL = `
             <div class="field-head" style="margin-top:10px"><label
               for="anthropic_model">Claude model</label></div>
             <input type="text" id="anthropic_model" placeholder="claude-sonnet-5">
-            <p class="hint">The key is saved in plain text in
-              <code id="settingsPath1">settings.json</code> on this computer, so that
-              the app can translate without asking for it again. Anyone with access to
-              your account can read it.</p>
+            <p class="hint">Saved in plain text in
+              <code id="settingsPath1">settings.json</code>. Anyone with access to your
+              account can read it.</p>
           </div>
           <div id="openaiBox" class="hidden">
             <div class="field-head"><label for="openai_key">OpenAI API key</label></div>
@@ -160,10 +158,9 @@ const SHELL = `
             <div class="field-head" style="margin-top:10px"><label
               for="openai_model">OpenAI model</label></div>
             <input type="text" id="openai_model" placeholder="gpt-4o">
-            <p class="hint">The key is saved in plain text in
-              <code id="settingsPath2">settings.json</code> on this computer, so that
-              the app can translate without asking for it again. Anyone with access to
-              your account can read it.</p>
+            <p class="hint">Saved in plain text in
+              <code id="settingsPath2">settings.json</code>. Anyone with access to your
+              account can read it.</p>
           </div>
         </div>
         <div style="margin-top:14px">
@@ -174,9 +171,8 @@ const SHELL = `
           <div class="field-head"><label for="custom_glossary">Your own terms (one per
             line, “as spoken → English”)</label></div>
           <textarea id="custom_glossary" placeholder="ponto amêndoa -> almond stitch"></textarea>
-          <p class="hint">Used together with the stitch names above. The rest of a
-            video's specialist vocabulary the app works out from the video itself, in
-            any language.</p>
+          <p class="hint">Used alongside the stitch names above. Other specialist
+            vocabulary is taken from the video itself.</p>
         </div>
       </div>
 
@@ -193,7 +189,7 @@ const SHELL = `
           <div>
             <div class="field-head"><label for="youtube_cookies">Sign in as</label><info-tip
               label="signing in"
-              text="For videos YouTube refuses to send to a signed-out request. Borrows the session from a browser you're already signed into on this Mac. Nothing is uploaded; the cookies are only sent to the site the video is on."></info-tip></div>
+              text="For videos a site won't send to a signed-out request. Uses the session from a browser you're already signed into. The cookies go only to that site."></info-tip></div>
             <select id="youtube_cookies">
               <option value="">Don't sign in</option>
               <option value="safari">Safari</option>
@@ -206,7 +202,7 @@ const SHELL = `
           <div>
             <div class="field-head"><label for="keep_video_quality">Video
               quality</label><info-tip label="video quality"
-              text="The picture is copied, never re-encoded, so this decides the download size. On an hour-and-a-half tutorial, 1080p is around 1.8 GB and 720p around 730 MB — and 720p is plenty for following along."></info-tip></div>
+              text="The picture is copied, never re-encoded, so this decides the download size. On a 90-minute video, 1080p is around 1.8 GB and 720p around 730 MB."></info-tip></div>
             <select id="keep_video_quality">
               <option value="best">Best available</option>
               <option value="1080">Up to 1080p</option>
@@ -223,7 +219,7 @@ const SHELL = `
           <div>
             <div class="field-head"><label for="merge_lines">Run-on lines</label><info-tip
               label="run-on lines"
-              text="Fast dialogue arrives as many very short lines with no gap between them, and each has to be squeezed to fit. Joining them gives the translation room. Material with real pauses is unaffected. It also sets where the .srt breaks between cues, if you are saving one."></info-tip></div>
+              text="Fast dialogue arrives as many very short lines, each squeezed to fit. Joining them gives the translation room. It also sets where an .srt breaks between cues."></info-tip></div>
             <select id="merge_lines">
               <option value="true">Join lines that run together</option>
               <option value="false">Keep them exactly as heard</option>
@@ -232,7 +228,7 @@ const SHELL = `
           <div>
             <div class="field-head"><label for="max_stretch">Hardest allowed
               squeeze</label><info-tip label="the hardest allowed squeeze"
-              text="How much a line may be sped up to fit the gap the original speaker left. Past about 1.6x it starts to sound hurried; beyond the limit the line runs on and later pauses absorb it."></info-tip></div>
+              text="How much a line may be sped up to fit the gap the original left. Past about 1.6x it sounds hurried; beyond the limit the line runs on into later pauses."></info-tip></div>
             <select id="max_stretch">
               <option value="1.3">Gentle — 1.3x</option>
               <option value="1.55">Normal — 1.55x</option>
@@ -245,9 +241,8 @@ const SHELL = `
       <div class="danger-row">
         <div>
           <b>Restore defaults</b>
-          <small>Puts settings back to what the app ships with, straight away — there
-            is nothing to save afterwards. Finished videos and saved API keys are
-            never touched.</small>
+          <small>Applies immediately. Saved API keys and finished videos are not
+            touched.</small>
         </div>
         <button class="ghost icon-btn" id="resetTabBtn" data-busy="reset">Reset this tab</button>
         <button class="ghost icon-btn" id="resetAllBtn" data-busy="reset">Reset everything</button>
@@ -255,11 +250,11 @@ const SHELL = `
 
       <div class="danger-row">
         <div>
-          <b>Details to send</b>
-          <small>Describes this Mac and what the app has been doing, for when you need
-            to ask someone about it. No passwords or API keys.</small>
+          <b>Diagnostics</b>
+          <small>Describes this Mac and what the app has been doing. No passwords or
+            API keys.</small>
         </div>
-        <button class="ghost icon-btn" id="diagBtn">Copy details</button>
+        <button class="ghost icon-btn" id="diagBtn">Open</button>
       </div>
     </div>
 
@@ -492,10 +487,10 @@ class SettingsPanel extends BaseElement {
       const tip = this.$("#modelTip");
       tip.text =
         `Leave blank to use ${machine.suggested_model}, chosen for your `
-        + `${machine.ram_gb} GB of memory. You can name any model Ollama has — `
-        + `qwen3:32b translates specialist material better, but it is a 20 GB `
-        + `download and slower per line. Pull it in Ollama first; if it isn't there, `
-        + `the nearest installed model is used instead and the report says so.`;
+        + `${machine.ram_gb} GB of memory. qwen3:32b is better on specialist `
+        + `material, but a 20 GB download and slower per line — pull it in Ollama `
+        + `first. A model that isn't installed falls back to the nearest one, and `
+        + `the report says so.`;
       tip.classList.remove("hidden");
     }
   }
@@ -528,8 +523,7 @@ class SettingsPanel extends BaseElement {
     this.$("#languageBox").innerHTML =
       `<div class="field-head"><label>Translate into</label></div>
        <p class="stated">${lang}</p>
-       <p class="hint">Every voice the app has speaks ${lang}, so that is the
-         only language it can dub into.</p>`;
+       <p class="hint">All available voices speak ${lang}.</p>`;
   }
 
   paint(key, write){
@@ -603,19 +597,19 @@ class SettingsPanel extends BaseElement {
         const flag = this.$(`[data-flag="${key}"]`);
         if(!flag) return;
         flag.classList.toggle("on", differs);
-        if(differs) flag.title = `Ships as ${this.describe(key, defaults[key])}`;
+        if(differs) flag.title = `Default: ${this.describe(key, defaults[key])}`;
       });
       const badge = this.$(`[data-tabflag="${tab.key}"]`);
       badge.textContent = count ? String(count) : "";
       const button = badge.closest("button");
-      if(count) button.title = `${count} changed from what the app ships with`;
+      if(count) button.title = `${count} changed from default`;
       else button.removeAttribute("title");
       total += count;
     });
     this.$("#dlgSummary").textContent = total
       ? `${total} setting${total === 1 ? "" : "s"} differ${total === 1 ? "s" : ""} from `
-        + `what the app ships with, marked changed below.`
-      : "Everything here is as the app ships.";
+        + `the defaults, marked changed below.`
+      : "All settings are at their defaults.";
   }
 
   describe(key, value){
@@ -647,8 +641,8 @@ class SettingsPanel extends BaseElement {
     const audioHint = this.$("#audioModeHint");
     audioHint.classList.toggle("hidden", replacing);
     audioHint.textContent = replacing ? "" :
-      "Keeps the whole original in the file, not just its music — the "
-      + "original speech rides along with it.";
+      "Keeps the whole original track, not just its music — the original "
+      + "speech is included.";
 
     // Mirrors Settings.keep_music_applies() in config.py: there's a separated
     // bed to put back only when speech was split out, and only room for it
@@ -668,8 +662,8 @@ class SettingsPanel extends BaseElement {
     const hint = this.$("#keepMusicHint");
     hint.classList.toggle("hidden", !overridden);
     hint.textContent = overridden
-      ? "There's no room to mix a separate copy of the music in while the "
-        + "whole original is already staying in the file. Set Original audio "
+      ? "The whole original is already being kept, so a separate music mix "
+        + "has nowhere to go. Set Original audio "
         + "to Replace completely for the music and effects under the new "
         + "voices without the original speech."
       : "";
@@ -700,21 +694,20 @@ class SettingsPanel extends BaseElement {
     const tab = this.tab();
     const seen = this.visibleFields(tab).length;
     const lines = [
-      `Reset the ${seen} setting${seen === 1 ? "" : "s"} on ${tab.label} to what the `
-      + `app ships with?`,
+      `Reset the ${seen} setting${seen === 1 ? "" : "s"} on ${tab.label} to their `
+      + `defaults?`,
       "",
-      "It happens straight away — there is nothing to save afterwards. Nothing on the "
-      + "other tabs changes, and finished videos are untouched.",
+      "This applies immediately. Other tabs are unaffected.",
     ];
     if(tab.key === "translation"){
-      lines.push("", "Your saved API keys are left alone. To remove one, empty the box "
+      lines.push("", "Saved API keys are not cleared. To remove one, empty the box "
         + "and press Save.");
       // Named in the request, so the server's own guard does not hold it back —
       // and it is the one field on this tab that was typed out by hand and
       // cannot be chosen again from a menu.
       if((this._settings?.custom_glossary || "").trim()){
-        lines.push("", "Your own terms are on this tab, and they will be cleared. "
-          + "There is no undo — copy them somewhere first if you want to keep them.");
+        lines.push("", "Your own terms are on this tab and will be cleared. There "
+          + "is no undo.");
       }
     }
     this.ask(btn, lines, this.fields(tab));
@@ -722,12 +715,12 @@ class SettingsPanel extends BaseElement {
 
   resetAll(btn){
     this.ask(btn, [
-      "Reset every setting to what the app ships with?",
+      "Reset every setting to its default?",
       "",
-      "That includes the ones outside this window — who's speaking, and keeping the "
-      + "Mac awake. It happens straight away.",
+      "This includes settings outside this window — who's speaking, and keeping the "
+      + "Mac awake. It applies immediately.",
       "",
-      "Your saved API keys and your finished videos are left alone.",
+      "Saved API keys and finished videos are not touched.",
     ], null);
   }
 
@@ -739,8 +732,8 @@ class SettingsPanel extends BaseElement {
     const scope = keys || TABS.flatMap(t => this.fields(t));
     const losing = scope.filter(k => this._dirty.has(k) && this.shown(k)).length;
     if(losing){
-      lines.push("", `${losing} change${losing === 1 ? "" : "s"} you haven't saved yet `
-        + `${losing === 1 ? "is" : "are"} among them, and will be overwritten.`);
+      lines.push("", `${losing} unsaved change${losing === 1 ? "" : "s"} `
+        + `${losing === 1 ? "is" : "are"} among them and will be overwritten.`);
     }
     if(!confirm(lines.join("\n"))) return;
     scope.forEach(k => this._dirty.delete(k));
@@ -767,7 +760,7 @@ class SettingsPanel extends BaseElement {
     this.flashNote("#savedMsg", "Saved");
   }
 
-  showReset(){ this.flashNote("#savedMsg", "Back to defaults"); }
+  showReset(){ this.flashNote("#savedMsg", "Reset to defaults"); }
 
   // Left up until something replaces it: a save that did not happen is not news
   // to be missed while looking elsewhere.
@@ -781,7 +774,7 @@ class SettingsPanel extends BaseElement {
     btn.disabled = true;
     // The first click loads the speech model, which takes a few seconds; say so
     // rather than looking like the button did nothing.
-    msg.textContent = "Speaking…";
+    msg.textContent = "Loading…";
     try{
       const blob = await api.voicePreview(voice, speed);
       el.src = URL.createObjectURL(blob);

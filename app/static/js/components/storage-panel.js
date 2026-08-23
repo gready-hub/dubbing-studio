@@ -17,15 +17,15 @@ const SHELL = `
     <div class="usage" id="usage"></div>
     <div id="storageGroups"></div>
     <details id="jobsWrap" class="hidden" style="margin-top:12px">
-      <summary id="jobsSummary">Working files, video by video</summary>
+      <summary id="jobsSummary">Working files by video</summary>
       <div id="storageJobs" style="margin-top:6px"></div>
     </details>
     <div class="danger-row">
       <div style="min-width:0">
         <b>Remove Dubbing Studio</b>
-        <small>Deletes the app, its models and its working files. Your dubbed
-          videos are kept, and anything the rest of your Mac shares — Homebrew,
-          ffmpeg, Ollama — is listed rather than removed.</small>
+        <small>Deletes the app, its models and its working files. Dubbed videos
+          are kept. Shared tools — Homebrew, ffmpeg, Ollama — are listed rather
+          than removed.</small>
       </div>
       <button class="danger" id="uninstallBtn">Uninstall…</button>
     </div>
@@ -36,8 +36,8 @@ class StoragePanel extends BaseElement {
   connectedCallback(){
     this.html(SHELL);
     this.$("#uninstallBtn").onclick = () => {
-      if(!confirm("Open the uninstaller?\n\nIt shows exactly what it will delete and "
-                + "asks again before removing anything. Your dubbed videos are kept."))
+      if(!confirm("Open the uninstaller?\n\nIt lists what it will delete and asks "
+                + "again before removing anything."))
         return;
       this.emit("uninstall");
     };
@@ -53,7 +53,7 @@ class StoragePanel extends BaseElement {
   }
 
   showCheckError(){
-    this.$("#storageSummary").textContent = "Disk space — couldn't check";
+    this.$("#storageSummary").textContent = "Disk space — unavailable";
   }
 
   // One glance answers the question people actually open this panel with —
@@ -61,7 +61,7 @@ class StoragePanel extends BaseElement {
   paint(s){
     const free = fmtBytes(s.free || 0);
     this.$("#storageSummary").textContent = s.low
-      ? `Disk space — only ${free} left`
+      ? `Disk space — ${free} free (low)`
       : `Disk space — ${free} free`;
     this.$("#storageSummary").style.color = s.low ? "var(--bad)" : "";
 
@@ -72,7 +72,7 @@ class StoragePanel extends BaseElement {
         || "var(--muted)"}" title="${escapeAttr(g.label)} — ${fmtBytes(g.bytes)}"></i>`).join("");
     this.$("#usage").classList.toggle("hidden", !total);
     this.$("#usageTotal").textContent = total
-      ? `${fmtBytes(total)} in total` : "Nothing stored yet.";
+      ? `${fmtBytes(total)} in total` : "Nothing stored.";
 
     const groupsBox = this.$("#storageGroups");
     groupsBox.innerHTML = "";
@@ -94,7 +94,7 @@ class StoragePanel extends BaseElement {
 
     const jobs = s.jobs || [];
     this.$("#jobsWrap").classList.toggle("hidden", !jobs.length);
-    this.$("#jobsSummary").textContent = `Working files, video by video (${jobs.length})`;
+    this.$("#jobsSummary").textContent = `Working files by video (${jobs.length})`;
     const jobsBox = this.$("#storageJobs");
     jobsBox.innerHTML = "";
     jobs.forEach(j => {
@@ -110,8 +110,8 @@ class StoragePanel extends BaseElement {
   }
 
   clear(what, label, btn){
-    if(!confirm(`Delete "${label}"?\n\nFinished videos are never touched. `
-              + `Anything removed here is rebuilt or downloaded again when it is next needed.`))
+    if(!confirm(`Delete "${label}"?\n\nIt is downloaded or rebuilt again when `
+              + `next needed.`))
       return;
     this.emit("clear-storage", {what, label, btn});
   }

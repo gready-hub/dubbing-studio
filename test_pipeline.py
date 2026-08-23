@@ -3431,8 +3431,7 @@ def test_observability():
     check("the failed run's disclosure names no particular stage",
           "downloader" not in failed_js and "downloader" not in failed_list_js)
     check("both places that disclosure appears say it the same way",
-          "What the error actually said" in failed_js
-          and "What the error actually said" in failed_list_js)
+          "Error details" in failed_js and "Error details" in failed_list_js)
     check("a failed run's disclosure says what settings it ran under, since a "
           "retry runs under whatever Settings holds now instead",
           "job.preset" in failed_list_js and "presetLabel" in failed_list_js)
@@ -3489,7 +3488,7 @@ def test_observability():
           'id="awakeTip"' in header_js and "info-tip" in header_js)
     check("the tip explains both what being kept awake means and what "
           "clicking it off costs, not just repeating the pill's own label",
-          "kept awake for as long as a video is dubbing" in header_js
+          "kept awake while a video is dubbing" in header_js
           and "pauses" in header_js and "until you wake it" in header_js)
 
     # A history row said e.g. "August 19 · 52s" beside the title — the time the

@@ -81,9 +81,8 @@ cat <<'BANNER'
   │           Dubbing Studio Setup           │
   └──────────────────────────────────────────┘
 
-  This installs everything the app needs. It can take
-  10-20 minutes the first time, mostly downloading.
-  You can leave it running and come back.
+  Installs everything the app needs. 10-20 minutes the
+  first time, mostly downloading. Safe to leave running.
 
 BANNER
 
@@ -121,7 +120,7 @@ step "1 of 8  Apple developer tools"
 if xcode-select -p >/dev/null 2>&1; then
   ok "Already installed"
 else
-  warn "Not installed. A system window will open — click Install and wait."
+  warn "Not installed. A system window will open — click Install."
   xcode-select --install 2>/dev/null
   say "  Waiting for that to finish…"
   until xcode-select -p >/dev/null 2>&1; do sleep 10; done
@@ -146,7 +145,7 @@ brew_shellenv || true
 if command -v brew >/dev/null 2>&1; then
   ok "Already installed"
 else
-  warn "Installing Homebrew. It will ask for your Mac password — this is normal."
+  warn "Installing Homebrew. It will ask for your Mac password."
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
     || { bad "Homebrew install failed. See the message above."; finish_badly; exit 1; }
   brew_shellenv || true
@@ -251,7 +250,7 @@ fi
 python -m pip install --quiet --upgrade pip wheel
 REQ="requirements-portable.txt"
 [[ "$ARCH" == "arm64" ]] && REQ="requirements-mac.txt"
-say "  Installing Python packages (this is the slow bit)…"
+say "  Installing Python packages…"
 if python -m pip install -r "$REQ" >>"$LOG" 2>&1; then
   ok "Packages installed"
 else
@@ -273,22 +272,20 @@ fi
 
 # ---------------------------------------------------- 5. Quality extras
 step "5 of 8  Quality extras"
-say "  These enable keeping music and effects, telling speakers apart, and"
-say "  cloning voices. Around 3 GB — the biggest download here."
+say "  Music separation, speaker detection and voice cloning. Around 3 GB."
 if python -c "import demucs" 2>/dev/null && python -c "import chatterbox" 2>/dev/null; then
   ok "Already installed"
 elif python -m pip install -r requirements-quality.txt >>"$LOG" 2>&1; then
   ok "Quality extras installed"
 else
-  warn "Those failed to install. The app still works — you'll be limited to the"
-  warn "Fast preset, and can re-run this installer later to try again."
+  warn "Those failed to install. The app still works, limited to the Fast"
+  warn "preset. Re-run this installer to try again."
   warn "Details: $LOG"
 fi
 
 # --------------------------------------------------------- 6. Speech models
 step "6 of 8  Speech models"
-say "  Fetching the models the app will need, so the first video doesn't stop"
-say "  part way through to download them."
+say "  Fetched now so the first video doesn't stop to download them."
 # Not piped through grep: `||` binds to the last command in a pipeline, so the
 # warning was keyed on grep's exit status and could never fire.
 if ! python -m app.warmup 2>&1 | tee -a "$LOG"; then
@@ -311,7 +308,7 @@ if command -v ollama >/dev/null 2>&1; then
   # first launch has to unpack and start the helper, which takes well over the
   # four seconds this used to allow, and `ollama pull` just errors if it is early.
   ollama_up() { curl -fsS --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; }
-  say "  Waiting for Ollama to start (first launch is slow)…"
+  say "  Waiting for Ollama to start…"
   for _ in $(seq 1 90); do ollama_up && break; sleep 1; done
 
   # If the app is stuck behind a first-run window, run the server directly. The
@@ -345,7 +342,7 @@ if command -v ollama >/dev/null 2>&1; then
       total=${#LADDER[@]}; i=0
       for m in "${LADDER[@]}"; do
         i=$((i + 1))
-        say "  Downloading $m — chosen to fit your ${RAM_GB} GB. This is a few GB."
+        say "  Downloading $m — chosen to fit your ${RAM_GB} GB. A few GB."
         if ollama pull "$m"; then HAVE="$m"; ok "$m ready"; break; fi
         warn "That download didn't finish."
         if (( i < total )); then say "  Trying a smaller model instead…"; fi
@@ -390,16 +387,13 @@ if (( ${#WARNINGS[@]} == 0 )); then
   │              All finished                │
   └──────────────────────────────────────────┘
 
-  Dubbing Studio is now in your Applications folder.
-  Double-click it like any other app. Drag it to your
-  Dock if you want it handy.
+  Dubbing Studio is in your Applications folder.
 
   Keep this folder where it is — the app runs from here.
 
-  The models for your chosen quality setting are already
-  downloaded, so the first video goes straight to work.
-  Switching to a different setting later fetches whatever
-  that one needs, once.
+  The models for your chosen quality preset are already
+  downloaded. Switching preset later fetches what that
+  one needs, once.
 
 DONE
 else

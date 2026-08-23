@@ -13,13 +13,12 @@
 /* Wraps: the header carries a title, a toggle and a button, and at 430px an
    unwrapped row squashes all three. */
 header{display:flex;align-items:center;justify-content:space-between;
-       margin-bottom:8px;gap:10px;flex-wrap:wrap}
+       margin-bottom:24px;gap:10px;flex-wrap:wrap}
 header > div:last-child{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 /* Scales rather than wrapping. At 430px the fixed 26px broke the title across
    two lines — "Dubbing" above "Studio" — which is the first thing anyone sees. */
 h1{font-size:clamp(20px,5vw,26px);letter-spacing:-.02em;margin:0;font-weight:650;
    white-space:nowrap}
-p.sub{color:var(--muted);font-size:14px;margin:0 0 28px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
        box-shadow:var(--shadow);padding:22px;margin-bottom:18px;
        animation:rise .18s ease both}
@@ -84,10 +83,6 @@ button:disabled:hover{filter:none}
    was tried and dropped — muted on a filled pill is 3.8:1 at 12px, which is
    worse to read than the green it replaced. */
 .chip.done::before{content:"✓";margin-right:5px;opacity:.75}
-.chip.failed{border-color:var(--bad);color:var(--bad);font-weight:600}
-.chip.failed::before{content:"✕";margin-right:5px}
-.chip.stopped{border-color:var(--muted);color:var(--ink);font-weight:600}
-.chip.stopped::before{content:"–";margin-right:5px;opacity:.75}
 /* The duration rides inside the pill rather than in a row of its own. Set in
    tabular figures so a running stage does not jitter the chips beside it every
    time the seconds tick over, and dimmed so the row still reads as labels

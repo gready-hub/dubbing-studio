@@ -31,8 +31,8 @@ class DoctorPanel extends BaseElement {
       // panel exists to answer. `ready` was already computed for the tab
       // picker; this is the same value, said in words.
       verdict.textContent = s.doctor.ready
-        ? "Good to go — this machine has everything it needs to dub a video."
-        : "Not ready yet — one of the checks below needs fixing; it says what to do.";
+        ? "Ready. Everything needed is installed."
+        : "Not ready. A check below needs fixing — it says what to do.";
       verdict.style.color = s.doctor.ready ? "var(--ok)" : "var(--bad)";
       this.$("#doctor").innerHTML = s.doctor.checks.map(c=>`
         <div class="check">

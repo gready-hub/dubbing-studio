@@ -46,7 +46,7 @@ def _transcribe_mlx(audio: Path, progress: Progress = None) -> list[dict]:
     model = from_pretrained(MLX_MODEL)
 
     if progress:
-        progress(0.15, "Listening to the audio")
+        progress(0.15, "Transcribing")
     # Chunked so memory stays flat on long videos; overlap avoids clipped words.
     result = model.transcribe(str(audio), chunk_duration=120.0, overlap_duration=15.0)
 
@@ -56,7 +56,7 @@ def _transcribe_mlx(audio: Path, progress: Progress = None) -> list[dict]:
         if text:
             out.append({"start": float(s.start), "end": float(s.end), "text": text})
     if progress:
-        progress(1.0, f"Heard {len(out)} lines")
+        progress(1.0, f"Transcribed {len(out)} lines")
     return out
 
 
@@ -139,7 +139,7 @@ def _transcribe_onnx(audio: Path, progress: Progress = None) -> list[dict]:
         if progress and n % 10 == 0:
             progress(0.15 + 0.85 * n / total, f"Transcribing — {n} of {total} lines")
     if progress:
-        progress(1.0, f"Heard {len(out)} lines")
+        progress(1.0, f"Transcribed {len(out)} lines")
     return out
 
 
@@ -168,7 +168,7 @@ def _transcribe_whisper_mlx(audio: Path, progress: Progress = None) -> list[dict
         if text:
             out.append({"start": float(s["start"]), "end": float(s["end"]), "text": text})
     if progress:
-        progress(1.0, f"Heard {len(out)} lines")
+        progress(1.0, f"Transcribed {len(out)} lines")
     return out
 
 
@@ -189,7 +189,7 @@ def _transcribe_whisper_cpu(audio: Path, progress: Progress = None) -> list[dict
             progress(min(0.98, 0.1 + s.end / max(1.0, info.duration)),
                      f"Transcribing — {len(out)} lines so far")
     if progress:
-        progress(1.0, f"Heard {len(out)} lines")
+        progress(1.0, f"Transcribed {len(out)} lines")
     return out
 
 
@@ -265,7 +265,7 @@ def transcribe(audio_wav: Path, use_mlx: bool, model: str = "whisper",
             last_error = exc
             if n + 1 < len(ladder):
                 note(progress, f"{label} wouldn't run, so a different speech "
-                               f"engine was used instead ({exc}).")
+                               f"engine was used ({exc}).")
                 if progress:
                     progress(0.0, f"Falling back to another engine ({exc})")
     raise RuntimeError(f"Transcription failed: {last_error}")

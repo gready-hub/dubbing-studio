@@ -306,7 +306,7 @@ PRESETS = {
     },
     "best": {
         "label": "Best quality",
-        "blurb": "Also copies each speaker's own voice. Much slower — fine for a short clip, a real wait on a long one.",
+        "blurb": "Also clones each speaker's own voice. Much slower.",
         "separate_audio": True,
         "asr_model": "whisper", "voice_mode": "clone",
     },

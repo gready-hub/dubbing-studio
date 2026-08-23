@@ -4,7 +4,7 @@ The first dub stopped for several gigabytes of downloading in the middle of
 whichever stage happened to need them, reported as a fraction of that stage's
 progress. A progress bar that sits still for twenty minutes is indistinguishable
 from a hang, and the one thing the user can see — the stage name — says
-"Listening to the original", which is not what is happening.
+"Transcribing", which is not what is happening.
 
 Each backend says what *it* needs, through its own `prefetch()`, built from the
 same fallback ladder it uses at run time. This module only decides which

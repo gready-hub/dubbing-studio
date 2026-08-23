@@ -5,15 +5,14 @@ const SHELL = `
 <dialog id="dlg" aria-labelledby="dlgTitle">
   <div class="modal-card">
     <div class="modal-head">
-      <div class="modal-title" id="dlgTitle">Details to send
-        <p class="hint">Paste this into a message to whoever helps you with this
-          app. It describes your Mac and what the app has been doing. It contains
-          no passwords or API keys.</p>
+      <div class="modal-title" id="dlgTitle">Diagnostics
+        <p class="hint">Describes this Mac and what the app has been doing. No
+          passwords or API keys.</p>
       </div>
       <button class="modal-close" id="xBtn" aria-label="Close"></button>
     </div>
     <div class="modal-body report">
-      <pre id="diagText" tabindex="0">Gathering…</pre>
+      <pre id="diagText" tabindex="0">Collecting…</pre>
     </div>
     <div class="modal-foot">
       <button class="primary" id="copyBtn" autofocus>Copy</button>
@@ -69,7 +68,7 @@ class DiagnosticsPanel extends BaseElement {
     // throws on a dialog that is already showing.
     if(!dlg.open) dlg.showModal();
     this.$("#diagMsg").textContent = "";
-    this.$("#diagText").textContent = "Gathering…";
+    this.$("#diagText").textContent = "Collecting…";
     try{
       const r = await api.diagnostics();
       this.$("#diagText").textContent = r.text;
@@ -77,8 +76,8 @@ class DiagnosticsPanel extends BaseElement {
       // Even this failing is worth something to send, so it goes in the box
       // rather than into a message that replaces the text with an apology.
       this.$("#diagText").textContent =
-        "Could not gather the details (" + e + ").\nThe app may have stopped "
-        + "responding. The log is at ~/Library/Logs/DubbingStudio.log";
+        "Couldn't collect the details (" + e + ").\n"
+        + "The log is at ~/Library/Logs/DubbingStudio.log";
     }
   }
 
@@ -88,15 +87,15 @@ class DiagnosticsPanel extends BaseElement {
     const btn = this.$("#copyBtn");
     try{
       await navigator.clipboard.writeText(this.$("#diagText").textContent);
-      this.$("#diagMsg").textContent = "Copied — now paste it into a message.";
+      this.$("#diagMsg").textContent = "Copied to the clipboard.";
       // Only on success. Flipping the label regardless put "Copied ✓" next to
       // "couldn't reach the clipboard", and of the two the button is the one
       // people believe.
       btn.textContent = "Copied ✓";
       setTimeout(()=>{ btn.textContent = "Copy"; }, 2000);
     }catch(e){
-      this.$("#diagMsg").textContent = "Couldn't reach the clipboard — select the text "
-        + "above and copy it with ⌘C.";
+      this.$("#diagMsg").textContent = "The clipboard isn't available — select the "
+        + "text above and press ⌘C.";
       this.$("#diagText").focus();
     }
   }

@@ -151,7 +151,7 @@ fi
 say "  -       Logs"
 
 step "This will be left alone"
-say "  $(printf '%-6s' "$(size_of "$OUTPUT")")  Your dubbed videos"
+say "  $(printf '%-6s' "$(size_of "$OUTPUT")")  Dubbed videos"
 say "            ${DIM}$OUTPUT${RESET}"
 
 step "Shared with the rest of your Mac — not touched"
@@ -213,7 +213,7 @@ if (( ${#STRANDED[@]} )); then
 fi
 
 say ""
-ok "Your dubbed videos are still in $OUTPUT"
+ok "Dubbed videos are still in $OUTPUT"
 
 # Last, because this script is running from inside it — detached, so the shell
 # is not moving the ground out from under itself mid-run. "remove" already was
@@ -221,10 +221,10 @@ ok "Your dubbed videos are still in $OUTPUT"
 # already said would go.
 if [[ -n "$NESTED" ]]; then
   ( sleep 1; bin_it "$SUPPORT" ) >/dev/null 2>&1 &
-  ok "The app, its settings and its history will be in the Bin in a moment."
+  ok "The app, its settings and its history — moving to the Bin"
 else
   ( sleep 1; bin_it "$APP_DIR" ) >/dev/null 2>&1 &
-  ok "The app folder will be in the Bin in a moment."
+  ok "The app folder — moving to the Bin"
 fi
 
 say ""

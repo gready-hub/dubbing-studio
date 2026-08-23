@@ -4,17 +4,15 @@ import { escapeHtml, escapeAttr, flash } from "../format.js";
 import "./info-tip.js";
 
 const PRESET_TIP =
-  "A preset is a name for three settings: whether music and effects are "
-  + "separated from the speech, which transcription engine runs, and whether "
-  + "voices are built-in or cloned.\n\n"
-  + "Everything else in Settings — voice, speed, translator, language — is "
-  + "left as you set it.\n\n"
-  + "Change any of the three and no preset stays highlighted; the line below "
-  + "then says which one differs.";
+  "A preset sets three things: music separation, the transcription engine, "
+  + "and built-in versus cloned voices. Everything else in Settings is left "
+  + "as you set it.";
 
 const SPEAKERS_BLURB = {
-  false: "One speaker can't be split into several voices — the usual mishap.",
-  true: "Telling people apart is unreliable — check the result.",
+  false: "One voice throughout. Skips speaker detection, which is the least "
+         + "reliable step.",
+  true: "A voice each. Speaker detection can split one person across several "
+        + "voices — check the result.",
 };
 
 const MARK = `<span class="mark" aria-hidden="true">✓</span>`;
@@ -54,8 +52,10 @@ const SHELL = `
       <button class="primary" id="go" data-busy="start">Dub it</button>
     </div>
     <p class="hint" id="urlMsg" role="status" aria-live="polite"></p>
-    <p class="hint"><b>Try 30 seconds</b> dubs a short sample first, so you
-      can hear the voice before waiting for a whole video.</p>
+    <p class="hint hidden" id="stoppedMsg" role="status" aria-live="polite">Stopped.
+      Dub it again to pick up where it left off.</p>
+    <p class="hint">Try 30 seconds dubs a sample first, so you can hear the
+      voice before running the whole video.</p>
 
     <div class="preset-wrap">
       <div class="label-row">
@@ -69,8 +69,8 @@ const SHELL = `
 
       <label id="speakersLabel">Who's speaking?</label>
       <div class="segmented" id="speakers" role="group" aria-labelledby="speakersLabel">
-        <button data-diarize="false">${MARK}One person — faster, safer</button>
-        <button data-diarize="true">${MARK}Several people — a voice each</button>
+        <button data-diarize="false">${MARK}One person</button>
+        <button data-diarize="true">${MARK}Several people</button>
       </div>
       <p class="hint" id="speakersBlurb"></p>
 
@@ -82,7 +82,7 @@ const SHELL = `
 function blockedReasons(features){
   const f = features || {};
   return {
-    best: (!f.cloning || !f.whisper) ? "Needs the quality extras — see Setup check" : "",
+    best: (!f.cloning || !f.whisper) ? "Needs voice cloning and Whisper — see Setup check" : "",
     balanced: !f.separation ? "Music separation isn't installed" : "",
   };
 }
@@ -107,9 +107,8 @@ const DIFFERENCES = {
 };
 
 const PRESET_SUMMARY =
-  "Your own mix of the three settings a preset sets: music separation, the "
-  + "transcription engine, and built-in versus cloned voices. Pick one above "
-  + "to take all three from it.";
+  "A custom mix of music separation, the transcription engine, and built-in "
+  + "versus cloned voices. Pick a preset above to take all three from it.";
 
 function differingKeys(spec, settings){
   return PRESET_KEYS.filter(k => spec[k] !== settings[k]);
@@ -130,8 +129,8 @@ function customBlurb(presets, settings){
   const list = parts.length > 1
     ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`
     : parts[0];
-  return `Your own mix: ${nearest.p.label}, but with ${list}. Pick a preset `
-    + "above to go back to it, or change it in Settings.";
+  return `${nearest.p.label}, but with ${list}. Pick a preset above to go `
+    + "back to it.";
 }
 
 class NewJobPanel extends BaseElement {
@@ -189,6 +188,8 @@ class NewJobPanel extends BaseElement {
     // leaves the window with nothing in it but the step chips. The link is still
     // in the box, and starting it again picks the work up where it stopped.
     const collapsed = !!job && job.status !== "cancelled" && !this._expanded;
+    this.$("#stoppedMsg").classList.toggle("hidden",
+                                           !(job && job.status === "cancelled"));
     const form = this.$("#fullForm"), bar = this.$("#compactBar");
     // Whichever of the two is about to be taken off screen: focus left on a
     // hidden control drops to the body, and the swap goes both ways — a
@@ -197,8 +198,8 @@ class NewJobPanel extends BaseElement {
     form.classList.toggle("hidden", collapsed);
     bar.classList.toggle("hidden", !collapsed);
     if(collapsed){
-      this.$("#compactMsg").textContent = job.status === "done" ? "That one's finished."
-        : job.status === "error" ? "That one didn't finish."
+      this.$("#compactMsg").textContent = job.status === "done" ? "Last run finished."
+        : job.status === "error" ? "Last run failed."
         : "A video is dubbing.";
       if(held) this.$("#expandBtn").focus();
     } else if(held){

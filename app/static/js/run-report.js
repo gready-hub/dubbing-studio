@@ -4,10 +4,10 @@ import { STAGE_LABELS } from "./stages.js";
 
 // A sample lives in the working files, which get tidied up; a finished video can
 // be moved or deleted from the videos folder while the app is not looking.
-export const SAMPLE_GONE = "That sample has been cleared away — samples live in the "
-  + "working files, which get tidied up. Run it again to make a new one.";
-export const OUTPUT_GONE = "That video isn't where the app left it — it may have been "
-  + "moved, renamed or deleted since. The details of the run are still here.";
+export const SAMPLE_GONE = "The sample file has been deleted — samples are stored "
+  + "with the working files. Run it again to make a new one.";
+export const OUTPUT_GONE = "The file is no longer there. It may have been moved, "
+  + "renamed or deleted.";
 
 // The words the controls ask these choices in, so a finished run is described in
 // the terms it was asked for. Every one of them has an <option> or a button in
@@ -23,9 +23,7 @@ const MUSIC_BED = {true: "Mix it back under the new voices", false: "Drop it —
 const TRANSLATORS = {ollama: "Local model (free, private)",
                      anthropic: "Claude API (best quality)", openai: "OpenAI API"};
 const MODEL_LABELS = {ollama: "Local model", anthropic: "Claude model", openai: "OpenAI model"};
-// Who's speaking is asked on the front page, where each button also carries the
-// reason to pick it — "faster, safer", "a voice each". That is advice for
-// choosing, not a description of what was chosen, so only the choice is here.
+// The same words the buttons on the front page carry.
 const SPEAKING = {true: "Several people", false: "One person"};
 const ASR_MODELS = {parakeet: "Parakeet — fast", whisper: "Whisper — more accurate, slower"};
 const VIDEO_QUALITY = {best: "Best available", 1080: "Up to 1080p",

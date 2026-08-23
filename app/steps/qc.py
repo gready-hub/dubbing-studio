@@ -92,6 +92,6 @@ def summarise(report: dict) -> str:
                      "than a translation and were left silent")
     if not parts:
         return ""
-    return ("The translation needed patching up: " + ", and ".join(parts) +
-            ". This happens when a local model loses the thread part way through "
-            "a long video — a larger model, or an API key under Settings, avoids it.")
+    return ("The translation needed patching: " + ", and ".join(parts) +
+            ". A local model can lose the thread over a long video; a larger model, "
+            "or an API key under Settings, avoids this.")

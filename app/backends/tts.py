@@ -100,7 +100,7 @@ def load_tts(use_mlx: bool, progress: Progress = None):
             return MlxTTS()
         except Exception as exc:  # noqa: BLE001
             note(progress, "The Apple GPU voice wouldn't load, so the portable "
-                           f"one was used instead ({exc}).")
+                           f"one was used ({exc}).")
             if progress:
                 progress(0.0, f"GPU voice unavailable ({exc}); using the portable engine")
     if progress:
