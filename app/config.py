@@ -173,7 +173,10 @@ def detect_machine() -> Machine:
         ram_gb=_ram_gb(),
         has_mlx=apple_silicon and _module_available("mlx"),
         has_ffmpeg=shutil.which("ffmpeg") is not None,
-        has_ytdlp=shutil.which("yt-dlp") is not None or _module_available("yt_dlp"),
+        # The downloader runs `sys.executable -m yt_dlp`, so the module inside
+        # this environment is the thing whose absence would stop it. A yt-dlp on
+        # PATH is somebody else's binary and no longer counts as having one.
+        has_ytdlp=_module_available("yt_dlp"),
         has_ollama=_ollama_up(),
         av1_ok=can_decode_av1(),
     )
@@ -480,7 +483,7 @@ class Settings:
         """
         return self.separate_audio and self.audio_mode == "replace"
 
-    def run_snapshot(self) -> dict:
+    def run_snapshot(self, local_source: bool = False) -> dict:
         """The settings that shaped a run, kept with its result.
 
         What a dub sounds and looks like is decided by settings that are free to
@@ -504,6 +507,11 @@ class Settings:
         snap["has_custom_glossary"] = bool(self.custom_glossary.strip())
         if not self.keep_music_applies():
             snap.pop("keep_music", None)
+        if local_source:
+            # Which stream to fetch is a choice only a site offers. A file
+            # picked off this Mac is the quality it is, and a report that listed
+            # one anyway would be describing a decision nothing made.
+            snap.pop("keep_video_quality", None)
         return snap
 
     @classmethod

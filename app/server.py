@@ -130,14 +130,24 @@ def _feature_status() -> dict:
 
 
 # yt-dlp versions are dates, so how old one is needs no network to work out.
-YTDLP_STALE_DAYS = 60
+#
+# The threshold lives with the downloader, which needs the same number to decide
+# whether to blame a stale copy for a refusal. Two constants meant the setup
+# check and the error message could disagree about whether the very same yt-dlp
+# was too old — one calling it fine while the other named it as the cause.
+from .steps.download import YTDLP_STALE_DAYS
 
 
 def _ytdlp_age() -> tuple[bool, str]:
     """(is it old, what version). Never raises; unknown counts as fine."""
     import datetime as _dt
+    from .steps.download import _ytdlp_cmd
     try:
-        version = subprocess.run(["yt-dlp", "--version"], capture_output=True,
+        # The copy the downloader will actually run, not whatever PATH resolves.
+        # Asking bare "yt-dlp" here read the Homebrew binary on a PATH where the
+        # activated venv shadowed it, so this cheerfully dated a yt-dlp that was
+        # never going to be the one to fetch anything.
+        version = subprocess.run(_ytdlp_cmd() + ["--version"], capture_output=True,
                                  text=True, timeout=8).stdout.strip()
     except Exception:                                            # noqa: BLE001
         return False, ""
@@ -164,10 +174,16 @@ def doctor() -> dict:
     checks.append({
         "name": f"yt-dlp — {version}" if version else "yt-dlp",
         "ok": machine.has_ytdlp and not stale,
-        "hint": ("Install with: brew install yt-dlp" if not machine.has_ytdlp else
+        # Not "brew upgrade yt-dlp" any more: that freshens a binary on PATH,
+        # and the downloader runs the one inside .venv. Re-running the installer
+        # is what upgrades the copy this check just dated.
+        # Named so the panel can offer the one-click fix without having to
+        # recognise this row by its label, which carries a version number.
+        "action": "update-ytdlp",
+        "hint": ("Re-run the installer to set up yt-dlp." if not machine.has_ytdlp else
                  "This copy is old enough that YouTube has probably changed under "
-                 "it, which shows up as a video refusing to download. Update it:  "
-                 "brew update && brew upgrade yt-dlp"),
+                 "it, which shows up as a video refusing to download part way in. "
+                 "Press “Update yt-dlp” to fetch a current one."),
     })
     # Room to work in. A job holds the source video, a full-band wav, the
     # separated stems and the assembled track at once before it prunes itself,
@@ -510,6 +526,41 @@ def run_update(request: Request) -> dict:
     script.chmod(0o755)
     subprocess.run(["open", "-a", "Terminal", str(script)], check=False)
     return {"ok": True}
+
+
+@app.post("/api/ytdlp/update")
+def update_ytdlp(request: Request) -> dict:
+    """Refresh just yt-dlp, inside this app's own environment.
+
+    Separate from /api/update, which hands Update.command to Terminal and
+    re-downloads the code and re-runs the entire setup. That is the right shape
+    for a new version of the app and the wrong one for this: yt-dlp is the single
+    dependency with a deadline — YouTube changes something every few weeks, the
+    fix ships within days, and a copy left alone for a month refuses videos that
+    play fine in a browser. Making the commonest failure cost a full reinstall
+    meant the advice was correct and nobody took it.
+
+    Deliberately the same interpreter the downloader runs, so this upgrades the
+    copy that will actually do the fetching rather than one further along PATH.
+    """
+    _local_only(request)
+    from .steps import download as _dl
+    before = _dl.ytdlp_version()
+    try:
+        out = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+            capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(500, f"Couldn't run pip to update yt-dlp: {exc}")
+    # Cached for the life of the process, and it has just changed underneath.
+    _dl.ytdlp_version.cache_clear()
+    after = _dl.ytdlp_version()
+    if out.returncode != 0:
+        said = (out.stderr or out.stdout or "").strip().splitlines()
+        raise HTTPException(500, "Couldn't update yt-dlp. "
+                                 + (" ".join(said[-3:])[:300] or "pip said nothing."))
+    return {"ok": True, "before": before, "version": after,
+            "changed": after != before}
 
 
 @app.post("/api/uninstall")

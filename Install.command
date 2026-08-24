@@ -179,7 +179,7 @@ tool_usable() {
   esac
 }
 
-for tool in ffmpeg yt-dlp python@3.12; do
+for tool in ffmpeg python@3.12; do
   name="$(check_cmd_for "$tool")"
   if brew list --formula "$tool" >/dev/null 2>&1 || tool_usable "$name"; then
     ok "$name already installed"
@@ -193,16 +193,12 @@ for tool in ffmpeg yt-dlp python@3.12; do
     brew install "$tool" >/dev/null 2>&1 && ok "$name installed" || warn "$name may have failed — check below"
   fi
 done
-# YouTube changes break yt-dlp regularly and the fix ships within days, so an
-# old one is the commonest cause of a video that describes itself happily and
-# then refuses to download. `brew upgrade` alone is not enough: without a
-# refreshed formula index it compares against whatever Homebrew last knew about
-# and does nothing at all. Slow, and worth it once.
-say "  Checking for a newer yt-dlp…"
-brew update >/dev/null 2>&1 || true
-brew upgrade yt-dlp >/dev/null 2>&1 || true
-YTDLP_VERSION="$(yt-dlp --version 2>/dev/null || echo unknown)"
-ok "yt-dlp $YTDLP_VERSION"
+# yt-dlp is deliberately not installed here any more. It used to be, and was
+# kept fresh here with `brew update && brew upgrade yt-dlp` — but the app runs
+# `python -m yt_dlp` from inside .venv, and pip had put a second, older copy
+# there. Activating the venv puts .venv/bin first on PATH, so the copy this
+# section so carefully upgraded was the one that never ran. It is upgraded in
+# section 4 now, where the venv it lives in actually exists.
 
 # ------------------------------------------------------------- 4. Python
 step "4 of 8  Python environment"
@@ -259,6 +255,19 @@ else
   python -m pip install -r requirements-portable.txt >>"$LOG" 2>&1 \
     || { bad "Python setup failed. See $LOG"; finish_badly; exit 1; }
 fi
+
+# yt-dlp separately and always upgraded, because it is the one dependency with a
+# deadline. YouTube changes something every few weeks and the fix ships within
+# days; a requirements pin of ">=" is satisfied by whatever is already installed,
+# so re-running the installer — which otherwise preserves .venv precisely because
+# rebuilding it costs gigabytes and minutes — would leave the stale copy in place
+# forever. That is not hypothetical: a copy 51 days old described a video happily
+# and then refused to download it, because every player client it knew about had
+# been retired and the one that still worked was added after it was built.
+say "  Updating yt-dlp…"
+python -m pip install --quiet --upgrade yt-dlp >>"$LOG" 2>&1 \
+  && ok "yt-dlp $(python -m yt_dlp --version 2>/dev/null || echo '?')" \
+  || warn "Could not update yt-dlp — downloads may fail. Details: $LOG"
 
 # The Apple-GPU voice phonemises English through spacy and fetches this model the
 # first time it speaks. Do it now, so the first dub isn't quietly running a

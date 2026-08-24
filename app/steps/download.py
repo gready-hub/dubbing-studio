@@ -1,10 +1,12 @@
 """Fetch a video with yt-dlp and pull its audio out."""
 from __future__ import annotations
 
+import datetime
+import functools
 import json
 import re
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -26,25 +28,40 @@ _PROGRESS_TEMPLATE = (
 
 
 def _ytdlp_cmd() -> list[str]:
-    if shutil.which("yt-dlp"):
-        return ["yt-dlp"]
-    return ["python3", "-m", "yt_dlp"]
+    """The yt-dlp inside this app's own environment, and no other.
+
+    Deliberately not shutil.which("yt-dlp"). The launcher activates .venv, so
+    .venv/bin lands first on PATH and which() returns the copy pip put there —
+    while the installer's `brew update && brew upgrade yt-dlp` diligently
+    freshens a *different* binary further down the same PATH. The two drift
+    apart within weeks, and the one that ran was the one nobody was maintaining.
+    Measured on a video that plays fine in a browser: the pip copy knew only
+    clients YouTube had already retired and died with "HTTP Error 403" about
+    20 MB in, while the Homebrew copy six weeks newer negotiated `visionos` —
+    a client the older one does not have at all — and fetched it in one go.
+
+    sys.executable pins this to the interpreter already running, so it resolves
+    to the venv the app ships and the installer upgrades: one yt-dlp, one thing
+    to keep current, and no way for PATH order to choose between them. The bare
+    "python3" this used to fall back to was not that — it is whatever PATH
+    resolves, which need be neither the venv nor an interpreter with yt_dlp
+    installed at all.
+    """
+    return [sys.executable, "-m", "yt_dlp"]
 
 
-# Which YouTube clients to ask, in one request rather than as a retry ladder of
-# our own. yt-dlp merges the format lists of every client named here and knows
-# which one can actually serve each format, which is the thing our ladder was
-# guessing at: it tried one client, read the failure text, and decided from a
-# list of substrings whether a different client was worth a go. That decision is
-# yt-dlp's to make and it already makes it.
+# No player_client pin, on purpose. This used to name
+# "default,web_safari,tv" so the probe and the download would negotiate against
+# the same client list and agree on format ids — a real requirement, and the
+# reason a pinned id could come back "not available". But naming clients freezes
+# a judgement that goes stale: every one of those three is now refused for some
+# videos that play fine in a browser (403, "the page needs to be reloaded", and
+# "requested format is not available" respectively), because YouTube retired
+# them and yt-dlp moved its own default on. A list written here cannot follow.
 #
-# The list is passed to the probe as well as the download on purpose. The probe
-# is where choose_format() picks concrete format ids, so if the download asked a
-# client the probe never spoke to, the ids it was told to fetch need not exist —
-# which is precisely the "Requested format is not available" that ended the
-# ladder. Same clients, same list, same ids.
-_CLIENTS = "default,web_safari,tv"
-_CLIENT_ARGS = ["--extractor-args", f"youtube:player_client={_CLIENTS}"]
+# yt-dlp's defaults track YouTube release by release, which is the whole point of
+# keeping it current. The probe/download invariant is preserved by both simply
+# not asking: same binary, same defaults, same ids.
 
 # yt-dlp reads its own config files (portable, home, user, system) by default and
 # silently merges whatever they contain into this command, which can add unwanted
@@ -66,6 +83,15 @@ _RETRY_ARGS = [
 ]
 
 
+# Deliberately no --no-warnings on either command. yt-dlp says why it is about
+# to fail in a warning and then fails in an error that does not repeat it: the
+# 403 measured here was preceded by "n challenge solving failed: Some formats
+# may be missing" and by the note that the challenge solver had been skipped —
+# neither of which reached the log, because both are warnings and warnings were
+# switched off. stream() folds stderr into stdout, so keeping them costs nothing
+# and the tail that reaches the error pane finally says what happened.
+
+
 def probe(url: str, cookies_from: str = "") -> dict:
     """Ask the site what it has, without fetching any of it.
 
@@ -82,9 +108,9 @@ def probe(url: str, cookies_from: str = "") -> dict:
     a private or age-restricted video fails to extract at all, which is a
     different error and still raises here with its own advice.
     """
-    cmd = (_ytdlp_cmd() + ["-J", "--no-warnings", "--skip-download",
+    cmd = (_ytdlp_cmd() + ["-J", "--skip-download",
                            "--ignore-no-formats-error"]
-           + _CLIENT_ARGS + _RETRY_ARGS + _NO_CONFIG_ARGS)
+           + _RETRY_ARGS + _NO_CONFIG_ARGS)
     if cookies_from:
         cmd += ["--cookies-from-browser", cookies_from]
     out = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=120)
@@ -125,14 +151,80 @@ class DownloadError(RuntimeError):
         self.detail = detail.strip()
 
 
+# How old a yt-dlp has to be before it is the first thing to suspect. YouTube
+# retires the player clients an older copy knows how to ask as, and the copy that
+# produced the report this was written from was 51 days old.
+YTDLP_STALE_DAYS = 30
+
+
+@functools.lru_cache(maxsize=1)
+def ytdlp_version() -> str:
+    """The version string of the yt-dlp this app runs, or "" if it won't say.
+
+    Cached: it costs a subprocess, _friendly() may ask for it several times over
+    a run, and the answer cannot change without the app being restarted — an
+    update re-execs the installer.
+    """
+    try:
+        out = subprocess.run(_ytdlp_cmd() + ["--version"], capture_output=True,
+                             text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    lines = (out.stdout or "").strip().splitlines()
+    return lines[0].strip() if lines else ""
+
+
+def ytdlp_age_days() -> int | None:
+    """How many days old this yt-dlp is, or None when it cannot be dated.
+
+    yt-dlp versions are release dates, so this needs no network. A build that is
+    not three numbers — a distribution's own string, a git checkout — is not old,
+    it is unknown, and unknown must not be reported as a fault.
+    """
+    try:
+        year, month, day = (int(part) for part in ytdlp_version().split(".")[:3])
+        return (datetime.date.today() - datetime.date(year, month, day)).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _stale_lead() -> str:
+    """The sentence a refusal should open with when this yt-dlp is old enough to
+    be the cause — and nothing at all when it is not.
+
+    This exists because the advice was confidently wrong. A public video that
+    plays fine in a browser was refused with a 403, and the message told the user
+    to go and configure browser cookies and suggested the video might be private
+    or members-only. It was none of those: every player client that copy knew
+    about had been retired, and the one that still served the video had been
+    added to yt-dlp after it was built. Sending somebody to their cookie settings
+    for that is a wrong answer delivered with total confidence, which is worse
+    than no answer.
+    """
+    days = ytdlp_age_days()
+    if days is None or days <= YTDLP_STALE_DAYS:
+        return ""
+    return (f"This copy of yt-dlp is {days} days old, and that is the likeliest "
+            f"reason on its own: YouTube retires the players an older copy knows "
+            f"how to ask as, and what that looks like is exactly this. Press "
+            f"“Update yt-dlp” under Setup check, then try again. If it still "
+            f"refuses: ")
+
+
 def _friendly(stderr: str) -> str:
     s = stderr.lower()
     if "403" in s and "forbidden" in s:
         # By the time anyone reads this the download has already been attempted
-        # several times, each as a different player client. Telling them to try
-        # again in a minute at that point is advice that has already been taken
-        # on their behalf and failed.
-        return ("YouTube described the video but refused to send it, on every "
+        # several times. Telling them to try again in a minute at that point is
+        # advice that has already been taken on their behalf and failed.
+        #
+        # A stale yt-dlp is named first when there is one, because it is both the
+        # commonest cause of this and the only one the user can fix in a click.
+        # The sign-in advice stays either way — it is the right answer when the
+        # copy is current — but it is no longer the *first* answer regardless of
+        # whether it fits.
+        return (_stale_lead() +
+                "YouTube described the video but refused to send it, on every "
                 "attempt. It usually wants a signed-in session: set “Sign in as” "
                 "in Settings to the browser you watch YouTube in. Otherwise the "
                 "video may be private, age-restricted or members-only.")
@@ -163,7 +255,8 @@ def _friendly(stderr: str) -> str:
     # nothing in the listing is offered, which on YouTube is a defensive response
     # to being asked repeatedly.
     if "requested format is not available" in s:
-        return ("YouTube listed the video but offered no version to download. "
+        return (_stale_lead() +
+                "YouTube listed the video but offered no version to download. "
                 "That is usually temporary — wait a few minutes and try again. If "
                 "it persists, set “Sign in as” in Settings to the browser you "
                 "watch YouTube in.")
@@ -178,6 +271,14 @@ def _friendly(stderr: str) -> str:
     if ("name or service not known" in s or "nodename nor servname" in s
             or "temporary failure in name resolution" in s):
         return "That address couldn't be reached — check your internet connection."
+    # Now visible, since warnings are no longer suppressed. YouTube keeps a
+    # signed JS challenge in front of its media URLs; a yt-dlp that cannot solve
+    # it is handed a URL that serves a few tens of MB and then 403s — which
+    # reads as a refusal of the video and is nothing of the kind.
+    if "challenge solving failed" in s or "challenge solver" in s:
+        return ("This copy of yt-dlp couldn't answer YouTube's download check, "
+                "which YouTube changes every few weeks. Re-run the installer, or "
+                "press Update now — that fetches a current one and is the fix.")
     tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
     return _tidy(tail[-1]) if tail else "The download failed."
 
@@ -290,7 +391,60 @@ def _codec_rank(vcodec: str) -> int:
 
 
 def _size(f: dict) -> int:
+    """Bytes if the site published a number, 0 for "it didn't say"."""
     return int(f.get("filesize") or f.get("filesize_approx") or 0)
+
+
+def _size_key(f: dict) -> tuple[int, int]:
+    """Sort smallest-first, with unpublished sizes *last* rather than first.
+
+    _size() alone could not be used as a tiebreak: it reports an unknown size as
+    0, and 0 sorts smallest, so a format that declined to say how big it was beat
+    every format that answered honestly. Measured on a real video: 720p H.264 was
+    offered both as progressive https (300 MB, declared) and as HLS (no
+    filesize), the two tied on codec and height, and the HLS one won the "which
+    is smaller" test by knowing nothing.
+    """
+    size = _size(f)
+    return (1, 0) if size == 0 else (0, size)
+
+
+# Progressive https before HLS, where a site offers the same thing as both.
+# Nothing is wrong with the HLS copy, but it arrives as thousands of fragments
+# with no total to count against — so it publishes no filesize, which makes the
+# disk check guess and the progress bar count toward a total it does not have.
+# The https copy is one ranged fetch that yt-dlp can resume, and it says how big
+# it is up front, which is what everything downstream here was written to use.
+def _protocol_rank(f: dict) -> int:
+    return 1 if "m3u8" in (f.get("protocol") or "") else 0
+
+
+# YouTube publishes some audio tracks twice: the original, and a "-drc" variant
+# put through dynamic range compression. They tie on container, channels and
+# bitrate, so whichever the format list happened to mention first was taken —
+# and on a measured video that was the DRC one. It is the wrong track to take
+# here for a reason particular to this app: the audio is transcribed and then
+# dubbed over, so a copy that has already had its loudness squashed is a
+# processed rendition standing in for the source, given to a transcriber that
+# does better on the source.
+def _is_drc(f: dict) -> bool:
+    fid = str(f.get("format_id") or "")
+    return fid.endswith("-drc") or "drc" in (f.get("format_note") or "").lower()
+
+
+def _total_size(*picked: dict) -> int:
+    """The download's size, or 0 meaning "not known".
+
+    Summed straight, an unpublished size counted as nothing, so a video stream
+    that gave no figure plus an audio stream that did came back as the size of
+    the audio alone — "Downloading — 100% of 48.4 MB" against a file that
+    finished at 353 MB, and a disk-space check clearing a job seven times larger
+    than it measured. One unknown part makes the total unknown, and 0 already
+    means unknown to every caller: the progress bar falls back to the byte counts
+    yt-dlp reports as it goes.
+    """
+    sizes = [_size(f) for f in picked]
+    return 0 if any(size == 0 for size in sizes) else sum(sizes)
 
 
 def choose_format(info: dict, quality: str = "best") -> dict | None:
@@ -330,23 +484,27 @@ def choose_format(info: dict, quality: str = "best") -> dict | None:
     if video and audio:
         best_v = min(under_cap(video),
                      key=lambda f: (_codec_rank(f.get("vcodec")),
-                                    -(f.get("height") or 0), _size(f)))
+                                    -(f.get("height") or 0),
+                                    _protocol_rank(f), _size_key(f)))
         # m4a first: it drops into an mp4 without being re-encoded. Stereo
         # before surround, because "highest bitrate" on its own picks the 5.1
         # track where a video has one — three times the bytes (30.8 MB against
         # 10.3 MB on one measured video) for audio that is either replaced
         # outright or downmixed to mono for the transcriber.
-        best_a = min(audio, key=lambda f: (0 if f.get("ext") == "m4a" else 1,
+        best_a = min(audio, key=lambda f: (_is_drc(f),
+                                           0 if f.get("ext") == "m4a" else 1,
                                            1 if (f.get("audio_channels") or 2) > 2 else 0,
+                                           _protocol_rank(f),
                                            -(f.get("tbr") or 0)))
         return {"spec": f"{best_v['format_id']}+{best_a['format_id']}",
                 "height": best_v.get("height"), "vcodec": best_v.get("vcodec") or "",
-                "bytes": _size(best_v) + _size(best_a)}
+                "bytes": _total_size(best_v, best_a)}
 
     if combined:
         best = min(under_cap(combined),
                    key=lambda f: (_codec_rank(f.get("vcodec")),
-                                  -(f.get("height") or 0), _size(f)))
+                                  -(f.get("height") or 0),
+                                  _protocol_rank(f), _size_key(f)))
         return {"spec": best["format_id"], "height": best.get("height"),
                 "vcodec": best.get("vcodec") or "", "bytes": _size(best)}
 
@@ -529,9 +687,9 @@ def download(url: str, workdir: Path, quality: str = "best",
         # to the client yt-dlp negotiated it as, so overriding the agent
         # *desyncs* the two: a hand-set desktop Chrome string turns a download
         # that works into a reliable 403. yt-dlp's own default is correct.
-        "--newline", "--no-warnings",
+        "--newline",
         "--progress-template", _PROGRESS_TEMPLATE,
-    ] + _CLIENT_ARGS + _RETRY_ARGS + _NO_CONFIG_ARGS
+    ] + _RETRY_ARGS + _NO_CONFIG_ARGS
     # The fix for the stubborn case: YouTube increasingly wants a session, and a
     # signed-out request for some videos is refused whatever client asks. Off
     # unless the user names a browser, because reading their cookie store is not

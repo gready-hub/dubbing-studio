@@ -29,6 +29,10 @@ export const api = {
   doctor: () => request("/api/doctor"),
   version: () => request("/api/version"),
   runUpdate: () => request("/api/update", {method: "POST"}),
+  // Just yt-dlp, in place, without the full reinstall runUpdate() triggers.
+  // It is the dependency that goes stale on YouTube's schedule rather than
+  // ours, and the fix has to be cheaper than the failure it prevents.
+  updateYtdlp: () => request("/api/ytdlp/update", {method: "POST"}),
   uninstall: () => request("/api/uninstall", {method: "POST"}),
 
   async diagnostics(){

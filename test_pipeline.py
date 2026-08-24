@@ -602,6 +602,21 @@ def test_server():
     names = [c["name"] for c in r.json()["checks"]]
     check("the setup check names the yt-dlp version",
           any(n.startswith("yt-dlp — ") for n in names), str(names[:3]))
+    # The advice a 403 now gives is "press Update yt-dlp under Setup check", so
+    # the row has to carry that action and the route behind it has to exist.
+    # Both halves are checked because the advice is only as good as the button:
+    # naming a control that isn't there is worse than the vague message it
+    # replaced. The endpoint is not *called* here — it shells out to pip and
+    # would rewrite the environment the suite is running in.
+    ytdlp_row = next((c for c in r.json()["checks"]
+                      if str(c.get("name", "")).startswith("yt-dlp")), {})
+    check("the yt-dlp row offers the fix the app can perform itself",
+          ytdlp_row.get("action") == "update-ytdlp", str(ytdlp_row)[:120])
+    routes = {getattr(rt, "path", "") for rt in _srv.app.routes}
+    check("and the route that performs it is registered",
+          "/api/ytdlp/update" in routes)
+    check("the stale hint names that control, not the full reinstall",
+          "Update yt-dlp" in ytdlp_row.get("hint", ""), ytdlp_row.get("hint", "")[:80])
 
     real_run = _srv.subprocess.run
 
@@ -618,9 +633,17 @@ def test_server():
         _srv.subprocess.run = dated(200)
         stale, shown = _srv._ytdlp_age()
         check("one from months ago is", stale is True, shown)
-        _srv.subprocess.run = lambda *a, **k: _Out("2026.07.04.dev0+abc\n")
+        # Genuinely undateable: a version that is not three numbers. The fixture
+        # here used to be "2026.07.04.dev0+abc", which splits to 2026/07/04 and
+        # dates perfectly well — it only looked "left alone" because it happened
+        # to fall inside the staleness window, and tightening that window turned
+        # a test that had been asserting nothing into a failure.
+        _srv.subprocess.run = lambda *a, **k: _Out("stable@2026.07.04\n")
         check("a build with an undateable version is left alone",
-              _srv._ytdlp_age() == (False, "2026.07.04.dev0+abc"))
+              _srv._ytdlp_age() == (False, "stable@2026.07.04"))
+        _srv.subprocess.run = lambda *a, **k: _Out("2020.01.01.dev0+abc\n")
+        check("but a dev build that does carry a date is dated, not waved through",
+              _srv._ytdlp_age() == (True, "2020.01.01.dev0+abc"))
         def boom(*a, **k): raise OSError("no yt-dlp")
         _srv.subprocess.run = boom
         check("and a missing yt-dlp is not reported as stale",
@@ -866,6 +889,39 @@ def test_server():
     check("a 403 says what to actually do about it",
           "Sign in as" in forbidden and "every attempt" in forbidden, forbidden[:80])
     check("and no longer claims it is temporary", "temporary" not in forbidden.lower())
+    # The advice that was confidently wrong. A public video which plays fine in a
+    # browser was refused with a 403, and this message sent the user off to
+    # configure browser cookies and suggested the video might be private or
+    # members-only. It was none of those: the copy of yt-dlp asking was 51 days
+    # old, every player client it knew had been retired, and the one that still
+    # served the video was added after it was built. When the copy is old enough
+    # to be the cause, it is named first — and it is a one-click fix, which the
+    # cookie advice is not.
+    import app.steps.download as _dlm
+    _real_version = _dlm.ytdlp_version
+    try:
+        _dlm.ytdlp_version = lambda: "2020.01.01"
+        stale_403 = _dlm._friendly("ERROR: unable to download: HTTP Error 403: Forbidden")
+        check("an old yt-dlp is named first when a 403 arrives",
+              stale_403.startswith("This copy of yt-dlp is")
+              and "Update yt-dlp" in stale_403, stale_403[:70])
+        check("and the sign-in advice still follows it, rather than being lost",
+              "Sign in as" in stale_403)
+        stale_fmt = _dlm._friendly("ERROR: Requested format is not available")
+        check("the same for a listing that offers nothing, the other stale symptom",
+              stale_fmt.startswith("This copy of yt-dlp is"), stale_fmt[:70])
+        # An unknown version is not an old one, and guessing would put a wrong
+        # first sentence on every failure a distribution build ever produced.
+        _dlm.ytdlp_version = lambda: "stable@2026.07.04"
+        undated = _dlm._friendly("ERROR: unable to download: HTTP Error 403: Forbidden")
+        check("a yt-dlp whose version cannot be dated is not blamed",
+              not undated.startswith("This copy of yt-dlp is"), undated[:70])
+        _dlm.ytdlp_version = lambda: ""
+        silent = _dlm._friendly("ERROR: unable to download: HTTP Error 403: Forbidden")
+        check("nor is one that will not say its version at all",
+              not silent.startswith("This copy of yt-dlp is"), silent[:70])
+    finally:
+        _dlm.ytdlp_version = _real_version
     odd = _friendly("ERROR: [youtube] abc: Something nobody anticipated "
                     "(caused by <SomeError: blah>)")
     check("anything unrecognised is passed on, minus the scaffolding",
@@ -2785,12 +2841,10 @@ def test_translation_qc():
     # fallback rung ended the ladder — and every part of it is something yt-dlp
     # already does properly. Now it is asked once, for all the clients at once,
     # with yt-dlp's own exponential backoff.
-    from app.steps.download import _CLIENT_ARGS, _RETRY_ARGS
+    from app.steps.download import _RETRY_ARGS
     import app.steps.download as dlmod
 
-    args = " ".join(_CLIENT_ARGS + _RETRY_ARGS)
-    check("more than one player client is asked, in one request",
-          "player_client=" in args and args.count(",") >= 2, args[:60])
+    args = " ".join(_RETRY_ARGS)
     check("retries are yt-dlp's, with real exponential backoff",
           "--retry-sleep" in args and "exp=" in args, args)
     check("extraction gets its own retry count, not just the HTTP fetch",
@@ -2798,9 +2852,82 @@ def test_translation_qc():
     # The seam that broke: the probe is where concrete format ids are chosen, so
     # a download that asked a client the probe never spoke to could be told to
     # fetch ids that client has not got — which is the "Requested format is not
-    # available" that used to end the ladder.
-    check("the probe and the download ask the same clients",
-          src.count("_CLIENT_ARGS") >= 2 and "+ _CLIENT_ARGS" in src)
+    # available" that used to end the ladder. It used to be held by pinning the
+    # same client list on both commands; that list then went stale, and a video
+    # which plays fine in a browser was refused with "HTTP Error 403" about
+    # 20 MB in because every client it named had been retired. Neither command
+    # names one now, so both get yt-dlp's own current defaults: same binary,
+    # same defaults, same ids, and the invariant holds by omission.
+    #
+    # Asserted against the argv actually built, not against the source text — the
+    # comment explaining why no client is pinned contains the word
+    # "player_client" and would satisfy any grep for it.
+    # A clean copy of the module: earlier sections of the suite leave probe() and
+    # download() stubbed out, and a stub builds no argv at all — which is how
+    # this first went green while checking nothing (both commands reported
+    # "<never built>" and passed the "pins no player client" test on a string
+    # that was never a command).
+    import importlib.util as _ilu
+    _argv_spec = _ilu.spec_from_file_location(
+        "app.steps._download_argv_check", ROOT / "app" / "steps" / "download.py")
+    dlargv = _ilu.module_from_spec(_argv_spec)
+    _argv_spec.loader.exec_module(dlargv)
+
+    built = {}
+
+    class _ProbeReply:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps({"title": "t", "duration": 1.0, "formats": []})
+
+    class _SubprocessShim:
+        def __init__(self, real):
+            self._real = real
+
+        def run(self, cmd, *a, **k):
+            built["probe"] = list(cmd)
+            return _ProbeReply()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_subprocess = dlargv.subprocess
+    dlargv.subprocess = _SubprocessShim(real_subprocess)
+    try:
+        dlargv.probe("https://example.invalid/watch?v=x")
+    finally:
+        dlargv.subprocess = real_subprocess
+
+    def _capture_stream(cmd, on_line=None, tail_lines=30):
+        built["download"] = list(cmd)
+        return 0, ""
+
+    real_stream = dlargv.stream
+    dlargv.stream = _capture_stream
+    try:
+        dlargv.download("https://example.invalid/watch?v=x", WORK / "argv-check",
+                        "best", None, {"title": "t", "duration": 1.0, "formats": []})
+    except Exception:                                             # noqa: BLE001
+        pass                       # no file appears, which is not what is under test
+    finally:
+        dlargv.stream = real_stream
+
+    check("both yt-dlp commands were actually built, so the rest is a real check",
+          sorted(built) == ["download", "probe"], str(sorted(built)))
+    for which in ("probe", "download"):
+        argv = " ".join(built.get(which, []))
+        check(f"the {which} command pins no player client",
+              bool(argv) and "player_client" not in argv, argv[:160] or "<never built>")
+    check("the probe and the download run the very same yt-dlp",
+          built.get("probe", [])[:3] == built.get("download", [])[:3]
+          == dlargv._ytdlp_cmd(), str(built.get("probe", [])[:3]))
+    # The copy inside .venv, reached through the interpreter already running —
+    # not whichever yt-dlp PATH resolves. The launcher activates .venv, so a
+    # bare "yt-dlp" found the pip copy there while the installer kept a
+    # different, newer one on PATH freshened; the app ran the stale one.
+    check("and it is this environment's own yt-dlp, not one found on PATH",
+          dlargv._ytdlp_cmd()[0] == sys.executable
+          and dlargv._ytdlp_cmd()[1:] == ["-m", "yt_dlp"], str(dlargv._ytdlp_cmd()))
     # Demonstrated on a real job through the real UI: a --write-thumbnail left
     # in a user's yt-dlp config turned an ordinary download into source.mp4
     # *and* source.webp sitting in the same working directory _finished_file()

@@ -41,6 +41,19 @@ def _tool_version(*cmd: str) -> str:
         return "not found"
 
 
+def _ytdlp_version() -> str:
+    """The version of the yt-dlp the downloader will really run.
+
+    A bug report is worth having only if it names the binary that failed. Read
+    as bare "yt-dlp" this reported whichever copy PATH resolved first, which
+    under the activated venv was not the one doing the downloading — so a report
+    could show a current yt-dlp while a six-week-old one was producing the 403
+    the report was written about.
+    """
+    from .steps.download import _ytdlp_cmd
+    return _tool_version(*_ytdlp_cmd(), "--version")
+
+
 def _settings_lines(settings) -> list[str]:
     rows = []
     # Everything except the secrets, rather than a list of the interesting ones.
@@ -97,7 +110,7 @@ def report(limit: int = 200) -> str:
     lines.append(f"  app: {_installed_version()}")
     lines.append(f"  python: {sys.version.split()[0]}")
     lines.append(f"  ffmpeg: {_tool_version('ffmpeg', '-version')}")
-    lines.append(f"  yt-dlp: {_tool_version('yt-dlp', '--version')}")
+    lines.append(f"  yt-dlp: {_ytdlp_version()}")
     lines.append(f"  ollama: {_tool_version('ollama', '--version')}")
     lines.append("")
 
