@@ -22,6 +22,10 @@ export const api = {
   // server reads as "all but the API keys".
   resetSettings: keys => request("/api/settings/reset", json({keys: keys ?? null})),
   startJob: (url, preview) => request("/api/job", json({url, preview: !!preview})),
+  // Opened by the server, not by the page: a browser hands a page the contents
+  // of a chosen file and never its path, and the path is the whole point — the
+  // video is already on this disk and gets read where it lies.
+  chooseFile: () => request("/api/choose-file", {method: "POST"}),
   cancelJob: id => request(`/api/job/${encodeURIComponent(id)}/cancel`, {method: "POST"}),
   storage: () => request("/api/storage"),
   clearStorage: what => request("/api/storage/clear", json({what})),

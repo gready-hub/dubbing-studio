@@ -11,5 +11,11 @@ export const STAGE_LABELS = {
   transcribe:"Transcribe", translate:"Translate", synthesize:"Speech",
   assemble:"Align", finish:"Save"
 };
+// "Download" is the wrong word for a file that is already on this Mac. It is
+// the same slot in the same plan either way — see JobRunner._plan — and what it
+// does in that slot is open the file rather than fetch it.
+export const stageLabel = (key, job) =>
+  (key === "download" && job && job.local) ? "Open" : (STAGE_LABELS[key] || key);
+
 // Until the job reports its own plan, which it does as soon as it starts.
 export const DEFAULT_STAGES = ["download","transcribe","translate","synthesize","assemble","finish"];

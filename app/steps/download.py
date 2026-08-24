@@ -1,19 +1,104 @@
-"""Fetch a video with yt-dlp and pull its audio out."""
+"""Get hold of the video — fetched from a site with yt-dlp, or already on this
+Mac — and pull its audio out."""
 from __future__ import annotations
 
 import datetime
 import functools
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import unquote, urlparse
 
 from ..storage import human_size
 from .proc import stream
 
 Progress = Optional[Callable[[float, str], None]]
+
+
+# --------------------------------------------------- which kind of source is it
+
+# Extensions people actually hand this app. Used for one thing only: telling a
+# filename apart from a web address typed without its scheme. "clip.mov" and
+# "youtube.com/watch" are both a name with a dot in it, and somebody whose file
+# has been moved should not be told they forgot to type https://.
+MEDIA_SUFFIXES = frozenset({
+    ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".mpg", ".mpeg", ".wmv",
+    ".flv", ".ts", ".m2ts", ".mts", ".3gp", ".ogv", ".mxf",
+})
+
+# A host with at least one dot in it, an optional port, and then the end or the
+# start of a path. Anchored so it cannot match anything that begins the way a
+# path does.
+_BARE_LINK = re.compile(r"^(?![/~.])[\w-]+(\.[\w-]+)+(:\d+)?([/?#]|$)")
+
+
+def normalise_source(raw: str) -> str:
+    """Settle, once, what somebody put in the one box the app offers.
+
+    A web link is left exactly as typed. yt-dlp is the authority on what it will
+    accept, and rewriting a link on the way there can only get in its way.
+
+    Anything else is a file on this Mac, and is resolved to a single absolute
+    path here rather than being half-interpreted in each of the places
+    downstream that would otherwise have to try. That is not tidiness: the job
+    folder is named after a hash of this string, so "~/Movies/a.mp4" and
+    "/Users/me/Movies/a.mp4" would otherwise be two jobs racing over one video.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    # Unwrapped before anything else is decided about it. A path copied out of
+    # Terminal arrives inside quotes and Terminal is where a lot of paths get
+    # copied from, but so does a link — and asking whether it began with http://
+    # first sent a perfectly good quoted link down the file branch, to be
+    # reported as a missing file at ".../https:/www.youtube.com/watch". A
+    # matching pair around the whole string is part of neither a real filename
+    # nor a real URL, so taking it off cannot lose anything.
+    if len(text) > 1 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+        if not text:
+            return ""
+    if text.lower().startswith(("http://", "https://")):
+        return text
+    if text.lower().startswith("file://"):
+        # Finder and browsers both hand out percent-encoded file URLs. The host
+        # part is either empty or "localhost"; neither belongs in a path.
+        text = unquote(urlparse(text).path)
+    try:
+        return str(Path(text).expanduser().resolve())
+    except (OSError, RuntimeError):
+        # An unresolvable path is still the answer somebody gave, and the caller
+        # has far better things to say about it than a traceback from here.
+        return os.path.expanduser(text)
+
+
+def is_local_source(source: str) -> bool:
+    """True for a file on this Mac, false for something yt-dlp should fetch.
+
+    Asked of a normalise_source() result, which has already turned any file://
+    URL into a path — so the whole of the question is whether it is still a link.
+    """
+    return bool(source) and not source.lower().startswith(("http://", "https://"))
+
+
+def looks_like_bare_link(typed: str) -> bool:
+    """A web address with the scheme left off, told apart from a filename.
+
+    Only worth asking once a path has been found not to exist. At that point the
+    difference between "there is no file there" and "put https:// on the front"
+    is the difference between advice that works and advice that doesn't.
+    """
+    text = (typed or "").strip().strip("\"'")
+    if not text or Path(text).suffix.lower() in MEDIA_SUFFIXES:
+        return False
+    return bool(_BARE_LINK.match(text))
+
+
+# --------------------------------------------------------- fetching from a site
 
 # yt-dlp will emit progress in a shape we choose, rather than us reading the
 # shape it chose for humans. The old regex matched "[download]  12.3%" out of
@@ -805,6 +890,114 @@ def download(url: str, workdir: Path, quality: str = "best",
     if progress:
         progress(1.0, "Download complete")
     return video, info
+
+
+# ------------------------------------------------- a video already on this Mac
+
+def _seconds(value) -> float:
+    """A duration ffprobe may have reported as "N/A", as nothing, or not at all."""
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _ffprobe_streams(path: Path) -> tuple[set[str], float, str]:
+    """(what kinds of stream are in it, how long it is, what ffprobe complained
+    about). Never raises — an unreadable file is an answer, not an exception.
+
+    The streams are asked for their own durations as well as the container, so
+    that a file whose header does not carry one still arrives with a length. A
+    transport stream and a growing recording both do that, and the pipeline
+    divides by this number to weight a sample and to find where the speech
+    starts.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "stream=codec_type,duration:format=duration", "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return set(), 0.0, str(exc)
+    if out.returncode != 0:
+        return set(), 0.0, out.stderr.strip()
+    try:
+        data = json.loads(out.stdout or "{}")
+    except ValueError:
+        return set(), 0.0, out.stdout[:400]
+    streams = data.get("streams") or []
+    kinds = {s.get("codec_type", "") for s in streams}
+    duration = _seconds((data.get("format") or {}).get("duration"))
+    if not duration:
+        duration = max((_seconds(s.get("duration")) for s in streams), default=0.0)
+    return kinds, duration, ""
+
+
+def probe_local(path: Path | str) -> dict:
+    """The same description of a video that probe() gets out of a site, for a
+    file that is already here.
+
+    Shaped identically on purpose: the pipeline reads a title, a duration and a
+    format list out of one dictionary whichever end it came from. The empty
+    format list is the honest answer rather than a stub — there is nothing to
+    choose between, which is exactly what choose_format() returning None means.
+
+    The two refusals are the two the pipeline cannot recover from further down.
+    A file with no picture has nothing to mux the new soundtrack onto, and a
+    file with no sound has nothing to transcribe — both would otherwise die
+    inside ffmpeg, minutes later, in its words rather than ours.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise DownloadError(f"There's no file at {path} any more.",
+                            f"{path} is not a file that exists.")
+    kinds, duration, complaint = _ffprobe_streams(path)
+    if not kinds:
+        raise DownloadError(
+            f"“{path.name}” isn't a video file this Mac can read.", complaint)
+    if "video" not in kinds:
+        raise DownloadError(
+            f"“{path.name}” has no picture in it. Dubbing Studio puts a new "
+            "soundtrack onto a video, so it needs a video to put it on.",
+            f"ffprobe found only: {', '.join(sorted(k for k in kinds if k)) or 'nothing'}")
+    if "audio" not in kinds:
+        raise DownloadError(
+            f"“{path.name}” has no sound in it, so there's nothing to dub.",
+            f"ffprobe found only: {', '.join(sorted(k for k in kinds if k))}")
+    return {
+        "title": path.stem,
+        "duration": duration,
+        "uploader": "",
+        "thumbnail": "",
+        "formats": [],
+        "is_live": False,
+    }
+
+
+def use_local(path: Path | str, progress: Progress = None,
+              info: dict | None = None) -> tuple[Path, dict]:
+    """download()'s counterpart for a file that never needed downloading.
+
+    Deliberately no copy into the job folder. The source video is the largest
+    thing a job touches — this app refuses to start when the disk is tight, and
+    prunes itself afterwards to get the space back — so duplicating a file that
+    is already on the same disk, in order to read it once, would be the most
+    expensive no-op in the pipeline. Everything downstream treats it as an
+    ffmpeg input and writes elsewhere, so reading it where it lies is safe and
+    the user's own file is never touched.
+    """
+    path = Path(path)
+    # Re-checked even when the caller brought an info along: the probe happens
+    # before the disk check and the progress plan, and a file can be moved,
+    # renamed or unmounted in the seconds between.
+    if not path.is_file():
+        raise DownloadError(f"There's no file at {path} any more.",
+                            f"{path} was there when the job started and is not now.")
+    info = info or probe_local(path)
+    if progress:
+        progress(1.0, f"Using “{info['title']}”")
+    return path, info
 
 
 def extract_audio(video: Path, dst: Path) -> Path:

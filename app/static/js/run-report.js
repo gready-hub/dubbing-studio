@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { escapeHtml, fmt } from "./format.js";
-import { STAGE_LABELS } from "./stages.js";
+import { stageLabel } from "./stages.js";
 
 // A sample lives in the working files, which get tidied up; a finished video can
 // be moved or deleted from the videos folder while the app is not looking.
@@ -124,7 +124,7 @@ export const stages = job => Object.entries(job.stage_times || {})
   .filter(([,sec]) => sec >= 1)
   .sort((a,b) => b[1] - a[1])
   .map(([key,sec]) => `<div class="stat sub"><span>`
-    + `${escapeHtml(STAGE_LABELS[key] || key)}</span>`
+    + `${escapeHtml(stageLabel(key, job))}</span>`
     + `<span>${escapeHtml(fmt(sec))}</span></div>`).join("");
 
 // output_exists is worked out afresh every time the server is asked, and the

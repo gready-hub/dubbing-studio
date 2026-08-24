@@ -34,6 +34,10 @@ const STYLE = `
   #saveMsg{min-height:1.45em;margin:10px 0 0}
   #saveMsg.bad{color:var(--bad)}
   #urlMsg{min-height:1.45em;margin:8px 0 0;color:var(--bad)}
+  /* Its own row rather than a fourth control crammed alongside the input: with
+     the two actions beside it the line wrapped at almost every window width,
+     and which button ended up where changed as it did. */
+  #actions{margin-top:10px}
 </style>`;
 
 const SHELL = `
@@ -44,16 +48,21 @@ const SHELL = `
   </div>
 
   <div class="panel" id="fullForm">
-    <label for="url">Video link</label>
+    <label for="url">Video link or file</label>
     <div class="row">
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=…"
              autocomplete="off" spellcheck="false">
+      <button class="ghost" id="chooseBtn" data-busy="start">Choose a file…</button>
+    </div>
+    <div class="row" id="actions">
       <button class="ghost" id="tryBtn" data-busy="start">Try 30 seconds</button>
       <button class="primary" id="go" data-busy="start">Dub it</button>
     </div>
     <p class="hint" id="urlMsg" role="status" aria-live="polite"></p>
     <p class="hint hidden" id="stoppedMsg" role="status" aria-live="polite">Stopped.
       Dub it again to pick up where it left off.</p>
+    <p class="hint">Paste a link, or choose a video that's already on this Mac —
+      it's read where it sits and never moved or changed.</p>
     <p class="hint">Try 30 seconds dubs a sample first, so you can hear the
       voice before running the whole video.</p>
 
@@ -136,6 +145,7 @@ function customBlurb(presets, settings){
 class NewJobPanel extends BaseElement {
   connectedCallback(){
     this.html(STYLE + SHELL);
+    this.$("#chooseBtn").onclick = () => this.emit("choose-file", {});
     this.$("#tryBtn").onclick = () => this.start(true);
     this.$("#go").onclick = () => this.start(false);
     this.$("#url").addEventListener("keydown", e => { if(e.key === "Enter") this.start(false); });
@@ -159,10 +169,22 @@ class NewJobPanel extends BaseElement {
 
   setUrl(value){
     this.$("#url").value = value;
+    // Typing into the box clears whatever it was last told off for, and being
+    // handed a path by the file chooser is the same event by another route —
+    // an "there's no file at…" left standing over a path just picked from
+    // Finder reads as a verdict on the new one.
+    flash(this.$("#urlMsg"), "", 0);
   }
 
   focusUrl(){
     this.$("#url").focus();
+  }
+
+  // The file chooser failing is about the box, not about a job — nothing has
+  // been submitted yet — so it goes where the other things wrong with what is
+  // in the box go, rather than in the banner at the top of the window.
+  showSourceError(message){
+    flash(this.$("#urlMsg"), message, 8000);
   }
 
   start(preview){
@@ -170,7 +192,7 @@ class NewJobPanel extends BaseElement {
     // A dead button is worse than a refusal: say what is missing rather than
     // letting the press do nothing at all.
     if(!url){
-      flash(this.$("#urlMsg"), "Paste a video link first.", 5000);
+      flash(this.$("#urlMsg"), "Paste a video link, or choose a file, first.", 5000);
       this.$("#url").focus();
       return;
     }

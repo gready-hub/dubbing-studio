@@ -101,7 +101,7 @@ def human_size(count: int) -> str:
 
 
 def estimate_needed(duration: float, quality: str = "best",
-                    source_bytes: int = 0) -> int:
+                    source_bytes: int = 0, local_source: bool = False) -> int:
     """Roughly what a job of this length will occupy while it runs.
 
     Deliberately the peak rather than the leftover. A job prunes itself down to
@@ -117,7 +117,31 @@ def estimate_needed(duration: float, quality: str = "best",
     is still fetched to take the sample out of — so the estimate was 500 MB for
     a download of well over a gigabyte, on the check that exists to stop a full
     disk taking the machine down with it.
+
+    local_source says the video is already on this disk and is not being copied
+    in, which takes the fetch out of the estimate but not the dub written back
+    out — see below.
     """
+    if local_source:
+        # A file already on this disk is read where it lies rather than copied
+        # into the job folder, so the source itself costs nothing. What it does
+        # still cost is the dub: mux copies the picture rather than re-encoding
+        # it, so the finished file is about the size of the one it came from —
+        # and a source that is not already H.264 is converted into a second
+        # full-size file beside it before that one replaces it. Hence twice,
+        # exactly as for a download, just with the fetch taken out.
+        #
+        # source_bytes is what this run will actually write, which is the whole
+        # picture on a full run and a thirty-second cut of it on a sample; the
+        # caller scales it, because only the caller knows which this is.
+        if source_bytes > 0:
+            return max(MINIMUM_NEED,
+                       int(source_bytes * 2 + max(0.0, duration) * DERIVED_PER_SECOND))
+        # No size to go on — a file that could not be stat'd. Fall back to the
+        # same per-second guess a download uses rather than to the derived
+        # figure alone, which would leave no room for the dub at all.
+        rate = BYTES_PER_SECOND.get(quality, BYTES_PER_SECOND["best"])
+        return max(MINIMUM_NEED, int(max(0.0, duration) * rate))
     rate = BYTES_PER_SECOND.get(quality, BYTES_PER_SECOND["best"])
     need = max(0.0, duration) * rate
     if source_bytes > 0:

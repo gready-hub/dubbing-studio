@@ -66,15 +66,47 @@ def _link_id(url: str) -> str:
     return hashlib.sha1(url.strip().encode("utf-8")).hexdigest()[:12]
 
 
-def _job_id(url: str, preview: bool = False) -> str:
-    """Distinct from the work folder, which is keyed on the link alone.
+def _source_key(source: str, local: bool = False) -> str:
+    """What the work folder is called, for a link or for a file on this Mac.
 
-    A preview and the full run of the same link have to be two jobs — they queue
-    separately, they are cancelled separately, and submit() treats one id as one
-    piece of work — while sharing one folder, because the entire value of
+    A link is the whole of its own identity, so it hashes on its own. A path is
+    not: the same one routinely holds a different video tomorrow — an export
+    written again over the top of yesterday's is the ordinary case, not an edge
+    one — and every cached stage in that folder would then be replayed against
+    the wrong film, silently, which is the one failure this app must never have.
+
+    Size and modification time go in with it, so replacing the file starts a new
+    job while re-running the same file still resumes. A file that cannot be
+    stat'd falls back to the path alone rather than failing here; the caller is
+    about to report the missing file far better than this could.
+    """
+    if not local:
+        return _link_id(source)
+    try:
+        stat = Path(source).stat()
+        return _link_id(f"{source}|{stat.st_size}|{int(stat.st_mtime)}")
+    except OSError:
+        return _link_id(source)
+
+
+def _job_id(source: str, preview: bool = False, local: bool = False) -> str:
+    """Distinct from the work folder, which is keyed on the source alone.
+
+    A preview and the full run of the same video have to be two jobs — they
+    queue separately, they are cancelled separately, and submit() treats one id
+    as one piece of work — while sharing one folder, because the entire value of
     previewing first is that the download is not paid for twice.
     """
-    return _link_id(url) + ("-preview" if preview else "")
+    return _source_key(source, local) + ("-preview" if preview else "")
+
+
+def _file_size(path: str | Path) -> int:
+    """How big a file is, or 0 if it will not say. Never raises: the callers are
+    estimating, and an estimate is not worth failing a job over."""
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return 0
 
 
 def _fingerprint(*parts) -> str:
@@ -385,6 +417,10 @@ def _trim(src: Path, dst: Path, start: float, length: float) -> Path:
 @dataclass
 class Job:
     id: str
+    # Where the video comes from: a web link, or the path to a file on this Mac.
+    # Still called url because it is what every history entry ever written calls
+    # it, and the panels that read those entries back would not find it under
+    # any other name.
     url: str
     status: str = "queued"
     stage: str = ""
@@ -411,6 +447,12 @@ class Job:
     references: list[str] = field(default_factory=list)
     preview: bool = False                # a 30s taster, not the finished thing
     preview_from: float = 0.0            # where in the video the window starts
+    local: bool = False                  # a file on this Mac, not a link to fetch
+    # The work folder's name, settled once when the job was submitted. Worked
+    # out again in _run() it could differ: a local file's key folds in its size
+    # and modification time, and a video still being written when it was queued
+    # would be handed a second folder by the time it ran.
+    key: str = ""
     # The stages this job actually runs, in order. The interface used to hold
     # its own fixed list, which omitted separation and speaker detection — so
     # for the whole of Demucs, often the longest part of a Balanced run, no chip
@@ -666,8 +708,14 @@ class JobRunner:
             except Exception:                                    # noqa: BLE001
                 pass
 
-    def submit(self, url: str, settings: Settings, preview: bool = False) -> Job:
-        job_id = _job_id(url, preview)
+    def submit(self, source: str, settings: Settings, preview: bool = False) -> Job:
+        # Normalised here rather than trusted from the caller, so that a path
+        # typed one way and picked another is one job either way. Harmless for a
+        # link, which comes back exactly as it went in.
+        source = download.normalise_source(source)
+        local = download.is_local_source(source)
+        key = _source_key(source, local)
+        job_id = key + ("-preview" if preview else "")
         with self._lock:
             existing = self.jobs.get(job_id)
             # The same link submitted twice is one job, not two racing over the
@@ -676,7 +724,8 @@ class JobRunner:
             # the whole video", are still one.
             if existing and existing.status in ("queued", "running"):
                 return existing
-            job = Job(id=job_id, url=url, preset=settings.preset, preview=preview)
+            job = Job(id=job_id, url=source, preset=settings.preset,
+                      preview=preview, local=local, key=key)
             self.jobs[job_id] = job
             self._cancel.discard(job_id)
             self._pending.append((job, settings))
@@ -830,8 +879,8 @@ class JobRunner:
     # duration alone suggests. Capped where that fixed cost starts to dominate.
     PREVIEW_DOWNLOAD_CAP = 12.0
 
-    def _plan(self, settings: Settings,
-              download_weight: float = 1.0) -> dict[str, tuple[float, float, str]]:
+    def _plan(self, settings: Settings, download_weight: float = 1.0,
+              local: bool = False) -> dict[str, tuple[float, float, str]]:
         """Map stage key -> (start_fraction, weight, label) for the stages in use."""
         active = []
         for key, label, cost in ALL_STAGES:
@@ -846,7 +895,15 @@ class JobRunner:
                 # not the ~2x this used to assume.
                 cost = int(cost * 9.0)
             if key == "download":
-                cost = cost * download_weight
+                if local:
+                    # Nothing is fetched — the file is already here. The slot is
+                    # kept rather than dropped because it is not quite empty: a
+                    # sample is cut out of the source in it, and because every
+                    # job showing the same row of steps is worth more than
+                    # shaving one chip off the ones that start from a file.
+                    label, cost = "Opening the video file", 1
+                else:
+                    cost = cost * download_weight
             active.append((key, label, cost))
 
         total = sum(c for _, _, c in active) or 1
@@ -900,10 +957,11 @@ class JobRunner:
         # backends that have no idea a job exists — says which job it belongs to.
         logs.current_job.set(job.id)
         machine = detect_machine()
-        # Keyed on the link, not on the job: a preview and the full run of the
-        # same video are two jobs sharing one folder, which is what lets the
-        # full run skip a download the preview has already paid for.
-        workdir = JOBS / _link_id(job.url)
+        # Keyed on the source, not on the job: a preview and the full run of
+        # the same video are two jobs sharing one folder, which is what lets the
+        # full run skip a download the preview has already paid for. Taken from
+        # the job rather than worked out again — see Job.key.
+        workdir = JOBS / (job.key or _source_key(job.url, job.local))
         workdir.mkdir(parents=True, exist_ok=True)
         job.status = "running"
         job.engine = "Apple GPU (MLX)" if machine.fast_path else "Portable (CPU)"
@@ -913,7 +971,7 @@ class JobRunner:
         # time anybody reads the result. Settings can be changed while a job is
         # queued, and are routinely changed before the next one is started.
         stats: dict = {"preset": settings.preset,
-                       "settings": settings.run_snapshot()}
+                       "settings": settings.run_snapshot(local_source=job.local)}
         # Things the user should know happened but which are not failures. The
         # progress messages that carry them scroll past while a job runs, so a
         # fallback that changed the result was only visible to whoever happened
@@ -927,9 +985,10 @@ class JobRunner:
             # the download covers before it can weight it. Costs nothing: this
             # is the same call download() made for itself a moment later, now
             # handed to it.
-            job.message = "Looking up the video…"
+            job.message = "Reading the file…" if job.local else "Looking up the video…"
             self._emit(job)
-            info = download.probe(job.url, settings.youtube_cookies)
+            info = (download.probe_local(job.url) if job.local
+                    else download.probe(job.url, settings.youtube_cookies))
             job.title = info["title"]
             job.duration = float(info["duration"] or 0)
             self._emit(job)
@@ -967,10 +1026,24 @@ class JobRunner:
             # Asked here rather than left to the download, because the check
             # this feeds happens before anything is fetched. Pure dictionary
             # work on the listing the probe already returned; no second request.
-            picked = download.choose_format(info, settings.keep_video_quality)
+            # A local file publishes no format list and needs no choice made:
+            # there is one stream, it is already here, and choose_format() would
+            # return None for the empty list anyway.
+            picked = (None if job.local else
+                      download.choose_format(info, settings.keep_video_quality))
+            source_bytes = (picked or {}).get("bytes", 0)
+            if job.local:
+                # Not what will be fetched — nothing is — but what will be
+                # written: the dub carries the original picture through
+                # untouched, so it lands about the size of the file it came
+                # from. A sample writes a cut of that rather than all of it.
+                source_bytes = _file_size(job.url)
+                if window and job.duration:
+                    source_bytes = int(source_bytes * min(1.0, window / job.duration))
             need = storage.estimate_needed(window or job.duration,
                                            settings.keep_video_quality,
-                                           source_bytes=(picked or {}).get("bytes", 0))
+                                           source_bytes=source_bytes,
+                                           local_source=job.local)
             free = storage.free_bytes(JOBS)
             if free < need:
                 raise RuntimeError(
@@ -981,7 +1054,7 @@ class JobRunner:
 
             weight = (min(self.PREVIEW_DOWNLOAD_CAP, job.duration / window)
                       if window and job.duration else 1.0)
-            plan = self._plan(settings, weight)
+            plan = self._plan(settings, weight, local=job.local)
             job.stages = list(plan)
 
             # The downloaded video is keyed on the quality that fetched it too:
@@ -989,11 +1062,18 @@ class JobRunner:
             # derived from it would have re-derived everything downstream from
             # the previous quality's video and looked like a fix without being
             # one.
-            source_dir = _derived_dir(workdir, "source", settings.keep_video_quality)
+            # Quality is what was asked of the *site*, so for a file already on
+            # this Mac it names nothing: keying the folder on it would re-derive
+            # the audio for a setting that had no bearing on the source at all.
+            source_key = "local" if job.local else settings.keep_video_quality
+            source_dir = _derived_dir(workdir, "source", source_key)
             report = self._stage(job, plan, "download", notes)
-            video, _ = download.download(job.url, source_dir,
-                                         settings.keep_video_quality, report, info,
-                                         cookies_from=settings.youtube_cookies)
+            if job.local:
+                video, _ = download.use_local(job.url, report, info)
+            else:
+                video, _ = download.download(job.url, source_dir,
+                                             settings.keep_video_quality, report, info,
+                                             cookies_from=settings.youtube_cookies)
             if not job.duration:
                 job.duration = download.media_duration(video)
             self._emit(job)
@@ -1013,7 +1093,7 @@ class JobRunner:
                 # worse than a bar that holds still while the message changes.
                 report(1.0, "Finding where the speech starts")
                 job.preview_from = _speech_start(video, job.duration, window)
-                media_dir = _derived_dir(workdir, "preview", settings.keep_video_quality,
+                media_dir = _derived_dir(workdir, "preview", source_key,
                                          job.preview_from, window)
                 report(1.0, f"Taking {int(window)} seconds from {_clock(job.preview_from)}")
                 video = _trim(video, media_dir / "source.mp4", job.preview_from, window)
@@ -1058,9 +1138,9 @@ class JobRunner:
             # in the folder — those are keyed on audio_dir.name, and they are
             # the expensive ones.
             audio_dir = _derived_dir(
-                workdir, *(("speech-preview", settings.keep_video_quality, separated,
+                workdir, *(("speech-preview", source_key, separated,
                             job.preview_from, window) if window else
-                           ("speech", settings.keep_video_quality, separated)))
+                           ("speech", source_key, separated)))
             speech16 = audio_dir / "speech16k.wav"
             if not speech16.exists():
                 _resample_to(speech_wav, speech16, 16000, mono=True)

@@ -1,6 +1,7 @@
 # Dubbing Studio
 
-**Paste a video link. Get the video back speaking English.**
+**Paste a video link, or pick a video off your Mac. Get it back speaking
+English.**
 
 Everything runs on your own machine. No account, no upload, no subscription.
 
@@ -47,8 +48,11 @@ are tagged by macOS as coming from an unidentified developer; files fetched by
 ## Use it
 
 1. Open **Dubbing Studio**
-2. Paste a video link
+2. Paste a video link, or press **Choose a file…** and pick one off this Mac
 3. Press **Try 30 seconds** — or **Dub it** if you already know what you want
+
+> A file you choose is read where it sits. Nothing is copied, moved or changed,
+> and the dub is written to **Movies → Dubbed** like any other.
 
 > **Try 30 seconds** dubs a short sample from where the speech starts, so you can
 > hear the voice, the wording and the levels before committing to a long video.
@@ -76,6 +80,7 @@ next.
 ```mermaid
 flowchart TD
     URL([Paste a link]) --> DL["<b>Download</b><br/>yt-dlp"]
+    FILE([Choose a file]) --> DL
     DL --> SEP["<b>Separate speech from music</b><br/>Demucs"]
     SEP -->|speech| ASR["<b>Transcribe</b><br/>Whisper, or Parakeet for speed"]
     SEP -->|speech| DIA["<b>Tell speakers apart</b><br/>pyannote + 3D-Speaker"]
@@ -107,13 +112,15 @@ compressions and near-zero drift means a clean fit.
 <details>
 <summary>Where the work is kept, and what invalidates it</summary>
 
-Every stage caches into the job folder, so re-running a link picks up where it
-left off. Each artefact is keyed on the settings that produced it — reaching a
+Every stage caches into the job folder, so running the same video again picks up
+where it left off. A file of your own is identified by its path together with its
+size and modification time, so re-exporting over the top of one starts a fresh
+job rather than replaying the last one's transcript against the new footage. Each artefact is keyed on the settings that produced it — reaching a
 stale one is impossible rather than merely unlikely.
 
 | Artefact | Re-made when you change |
 |---|---|
-| `source.mp4` | video quality |
+| `source.mp4` | video quality (a file of your own isn't copied, so there's none) |
 | separated audio | quality, or whether separation ran |
 | `segments.json` | the audio above, or the transcription engine |
 | `translated.json` | the transcript, translator, model, target language, glossary |
@@ -329,7 +336,9 @@ why the app is a few megabytes rather than a few hundred.
 ## What you download
 
 This fetches whatever link you give it, which makes it a question of what you're
-entitled to download rather than what's technically possible. Downloading from
+entitled to download rather than what's technically possible. (A file you choose
+off your own Mac is downloaded from nowhere, so only the second half of this
+applies to it.) Downloading from
 YouTube generally breaches their terms unless it's your own content, it's
 offered for download, or the licence permits it. Dubbing someone's video also
 creates a derivative work. Your call — worth making deliberately.

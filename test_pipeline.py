@@ -592,13 +592,89 @@ def test_server():
     r = client.post("/api/job", json={"url": "not a url"})
     check("non-link is rejected", r.status_code == 400)
 
+    # One box, two kinds of answer. "That doesn't look like a web link" was the
+    # only thing this endpoint could say, and it is the wrong thing to say about
+    # three of the four ways a file can be unusable.
+    from app import pipeline as _pl
+    from app import server as _srv
+    tiny = SCRATCH / "server-clip.mp4"
+    if not tiny.exists():
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440",
+                        "-t", "1", "-c:v", "libx264", "-preset", "ultrafast",
+                        "-shortest", str(tiny)], check=True)
+
+    r = client.post("/api/job", json={"url": str(SCRATCH / "nope.mp4")})
+    check("a file that isn't there says so, and names it",
+          r.status_code == 400 and "no file at" in r.json()["detail"],
+          str(r.json())[:90])
+    r = client.post("/api/job", json={"url": "youtube.com/watch?v=x"})
+    check("a link with the https:// left off is told what's missing",
+          r.status_code == 400 and "https://" in r.json()["detail"],
+          str(r.json())[:90])
+    r = client.post("/api/job", json={"url": str(SCRATCH)})
+    check("a folder is refused as a folder",
+          r.status_code == 400 and "folder" in r.json()["detail"],
+          str(r.json())[:90])
+
+    # Accepted, and normalised on the way in: the file chooser hands over a
+    # tidy path but a person types "~/…", and those have to be one job.
+    real_submit = _pl.runner.submit
+    seen = []
+    # The canonical path, not the one that happens to be typed: the scratch
+    # folder lives under /var, which macOS symlinks to /private/var, and
+    # resolving that is the whole point — two spellings of one video have to be
+    # one job over one folder rather than two racing over it.
+    settled = str(tiny.resolve())
+
+    def fake_submit(source, settings, preview=False):
+        seen.append(source)
+        return _pl.Job(id="stub", url=source, local=_pl.download.is_local_source(source))
+
+    _pl.runner.submit = fake_submit
+    try:
+        r = client.post("/api/job", json={"url": str(tiny)})
+        check("a real video file is accepted", r.status_code == 200, str(r.json())[:90])
+        check("and reaches the runner as itself", seen[-1:] == [settled], str(seen[-1:]))
+        client.post("/api/job", json={"url": f"file://{tiny}"})
+        check("a file:// URL arrives as the same path", seen[-1] == settled, seen[-1])
+        client.post("/api/job", json={"url": f'"{tiny}"'})
+        check("and so does one pasted with quotes round it", seen[-1] == settled, seen[-1])
+    finally:
+        _pl.runner.submit = real_submit
+
+    # The file chooser, without a dialog: the endpoint's job is to run the
+    # script and read what comes back, and both answers it has to cope with —
+    # a path, and somebody pressing Cancel — can be produced without one.
+    real_script = _srv._CHOOSE_FILE
+    try:
+        _srv._CHOOSE_FILE = 'return "/Users/x/Movies/a b.mp4"'
+        r = client.post("/api/choose-file")
+        check("the file chooser hands back the path it was given",
+              r.status_code == 200 and r.json()["path"] == "/Users/x/Movies/a b.mp4",
+              str(r.json()))
+        _srv._CHOOSE_FILE = "error number -128"
+        r = client.post("/api/choose-file")
+        check("and Cancel is an answer, not a failure",
+              r.status_code == 200 and r.json()["path"] == "", str(r.json()))
+        _srv._CHOOSE_FILE = 'error "no such thing" number -1728'
+        r = client.post("/api/choose-file")
+        check("a chooser that genuinely fails says so", r.status_code == 500,
+              str(r.json())[:90])
+    finally:
+        _srv._CHOOSE_FILE = real_script
+
+    # A page on some other site can reach the endpoints that take no body.
+    r = client.post("/api/choose-file", headers={"Origin": "https://evil.example"})
+    check("and no other web page can open it", r.status_code == 403, str(r.json())[:60])
+
     r = client.get("/api/doctor")
     check("doctor endpoint responds", r.status_code == 200 and "checks" in r.json())
 
     # An old yt-dlp is the commonest reason a video describes itself happily and
     # then refuses to download, and the check used to say only that it existed.
     import datetime as _dt
-    from app import server as _srv
     names = [c["name"] for c in r.json()["checks"]]
     check("the setup check names the yt-dlp version",
           any(n.startswith("yt-dlp — ") for n in names), str(names[:3]))
@@ -2085,6 +2161,46 @@ def test_storage():
           store.estimate_needed(3600, "720", source_bytes=1024) == hour)
     check("and no size at all leaves the estimate exactly as it was",
           store.estimate_needed(3600, "720", source_bytes=0) == hour)
+
+    # A file already on this disk is read where it lies rather than copied into
+    # the job folder, so the fetch comes out of the estimate. The dub does not:
+    # mux copies the picture through rather than re-encoding it, so the finished
+    # file lands about the size of the one it came from, and a source that isn't
+    # already H.264 gets a converted copy beside it before that one takes over.
+    # Dropping the source term outright estimated a 12 GB file at 600 MB and
+    # sailed past the guard that exists to stop a full disk taking the machine
+    # down with it.
+    huge = 12 * 1024**3                                  # 20 minutes of 4K
+    local = store.estimate_needed(1200, "best", source_bytes=huge, local_source=True)
+    check("a local file still reserves room for the dub written back out",
+          local > 2 * huge, f"{local / 1024**3:.1f} GB for a {huge / 1024**3:.0f} GB file")
+    # Where the two differ is the fetch. At this bitrate they happen to agree —
+    # both are then dominated by picture-sized files, a fetched copy in the job
+    # folder in one case and the dub written out in the other — so the ordinary
+    # video is what shows it: there, the download falls back to its per-second
+    # guess for a source it has to hold as well as write.
+    ordinary = store.estimate_needed(3600, "best", source_bytes=big, local_source=True)
+    check("but is not charged for a download it never makes",
+          ordinary < store.estimate_needed(3600, "best", source_bytes=big),
+          f"{ordinary / 1024**3:.1f} GB against "
+          f"{store.estimate_needed(3600, 'best', source_bytes=big) / 1024**3:.1f} GB")
+    # A sample writes a cut of the picture, not a copy of it, and the caller
+    # scales what it passes accordingly — so the same file sampled must not
+    # reserve the room its full run would.
+    sample = store.estimate_needed(30, "best", source_bytes=huge // 40, local_source=True)
+    check("and a sample of it reserves a sample's worth",
+          sample < local / 10, f"{sample / 1024**3:.2f} GB against "
+                               f"{local / 1024**3:.1f} GB")
+    # A file that will not say how big it is falls back to the per-second guess
+    # rather than to the derived figure alone, which would leave nothing for the
+    # dub at all.
+    check("a local file of unknown size still leaves room for one",
+          store.estimate_needed(3600, "best", source_bytes=0, local_source=True)
+          > 3600 * store.DERIVED_PER_SECOND * 2,
+          f"{store.estimate_needed(3600, 'best', source_bytes=0, local_source=True) / 1024**3:.1f} GB")
+    check("and a very short local file still reserves the floor",
+          store.estimate_needed(2, "best", source_bytes=1024,
+                                local_source=True) == store.MINIMUM_NEED)
 
     check("free space is a real number", store.free_bytes() > 0)
 
@@ -4706,6 +4822,240 @@ def test_preview_failure_is_superseded_by_a_later_success():
         T._call_ollama = real_ollama
 
 
+# ================================================= N. a video already on this Mac
+def test_local_file():
+    """Dubbing a file off the disk rather than a link off a site.
+
+    The interesting differences are all invisible from the outside: nothing is
+    fetched, nothing is copied, and the job folder has to be keyed on something
+    other than a string that can quietly come to mean a different video.
+    """
+    print("\n[N] Local video files")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.config import JOBS, OUTPUT_DIR, Settings
+    from app.steps import download as dl
+
+    work = WORK / "local"
+    work.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------ telling the two apart
+    home = str(Path.home())
+    cases = [
+        ("https://youtu.be/abc", "https://youtu.be/abc", False),
+        ("  https://youtu.be/abc  ", "https://youtu.be/abc", False),
+        ("~/Movies/a.mp4", f"{home}/Movies/a.mp4", True),
+        ("file:///Users/x/My%20Video.mp4", "/Users/x/My Video.mp4", True),
+        ('"/Users/x/My Video.mp4"', "/Users/x/My Video.mp4", True),
+        # Quotes come off whatever is inside them. Asking about http:// first
+        # read this as a filename and reported "no file at .../https:/www…".
+        ('"https://www.youtube.com/watch?v=abc"',
+         "https://www.youtube.com/watch?v=abc", False),
+        ("'https://youtu.be/abc'", "https://youtu.be/abc", False),
+        ('""', "", False),
+        ("", "", False),
+    ]
+    for typed, want, local in cases:
+        got = dl.normalise_source(typed)
+        check(f"{typed!r} reads as {want!r}", got == want, got)
+        check(f"and is {'a file' if local else 'not a file'}",
+              dl.is_local_source(got) is local)
+
+    # A path is made absolute so that two spellings of one video cannot become
+    # two jobs racing over one folder.
+    check("a relative path is made absolute",
+          Path(dl.normalise_source("clip.mp4")).is_absolute())
+
+    # The one place the guess matters: a link typed without its scheme, which
+    # would otherwise be reported as a missing file.
+    check("a scheme-less link is spotted", dl.looks_like_bare_link("youtube.com/watch?v=x"))
+    check("and so is one with www on the front", dl.looks_like_bare_link("www.vimeo.com/1"))
+    check("but a filename with a dot in it is not",
+          not dl.looks_like_bare_link("holiday.mp4"))
+    check("nor is anything that starts like a path",
+          not dl.looks_like_bare_link("/Users/me/a.b.mp4")
+          and not dl.looks_like_bare_link("~/a.b.mkv"))
+
+    # ------------------------------------------------------- what ffprobe sees
+    clip = work / "local-clip.mp4"
+    if not clip.exists():
+        audio = speech_wav(work / "speech.wav", seconds=70.0)
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=320x240:rate=15",
+                        "-i", str(audio), "-map", "0:v", "-map", "1:a", "-t", "70",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(clip)], check=True)
+
+    info = dl.probe_local(clip)
+    check("a local file describes itself like a link does",
+          set(info) >= {"title", "duration", "uploader", "formats", "is_live"},
+          str(sorted(info)))
+    check("its title is the filename", info["title"] == "local-clip", info["title"])
+    check("its duration comes from the file", 69 < info["duration"] < 71,
+          str(info["duration"]))
+    # The empty list is the honest answer, and the one choose_format() already
+    # knows how to read: there is nothing to choose between.
+    check("it publishes no formats to choose between", info["formats"] == [])
+    check("and choose_format agrees there is nothing to pick",
+          dl.choose_format(info, "best") is None)
+
+    silent = work / "silent.mp4"
+    if not silent.exists():
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                        "-i", "testsrc=size=160x120:rate=10", "-t", "2",
+                        "-c:v", "libx264", "-preset", "ultrafast", str(silent)],
+                       check=True)
+    try:
+        dl.probe_local(silent)
+        check("a file with no sound is refused", False, "it was accepted")
+    except dl.DownloadError as exc:
+        check("a file with no sound is refused, in plain English",
+              "no sound" in str(exc), str(exc))
+
+    soundonly = work / "sound-only.m4a"
+    if not soundonly.exists():
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                        "-i", "sine=frequency=440", "-t", "2", str(soundonly)],
+                       check=True)
+    try:
+        dl.probe_local(soundonly)
+        check("a file with no picture is refused", False, "it was accepted")
+    except dl.DownloadError as exc:
+        check("a file with no picture is refused, in plain English",
+              "no picture" in str(exc), str(exc))
+
+    try:
+        dl.probe_local(work / "not-here.mp4")
+        check("a file that isn't there is refused", False, "it was accepted")
+    except dl.DownloadError as exc:
+        check("a file that isn't there is refused",
+              "no file at" in str(exc), str(exc))
+
+    # -------------------------------------------- what names the job folder
+    key = pipeline._source_key(str(clip), local=True)
+    check("the same file twice is the same job", key == pipeline._source_key(str(clip), True))
+    check("and a link is still keyed on the link alone",
+          pipeline._source_key("https://x/y") == pipeline._link_id("https://x/y"))
+
+    moved = work / "same-bytes-elsewhere.mp4"
+    shutil.copy(clip, moved)
+    check("the same footage under another name is another job",
+          pipeline._source_key(str(moved), True) != key)
+
+    # The case this exists for: an export written again over the top of the last
+    # one. Every cached stage in that folder was made from the old footage.
+    rewritten = work / "rewritten.mp4"
+    shutil.copy(clip, rewritten)
+    before = pipeline._source_key(str(rewritten), True)
+    time.sleep(1.1)                       # the key holds mtime to the second
+    shutil.copy(silent, rewritten)
+    check("replacing the file starts a fresh job rather than resuming the old one",
+          pipeline._source_key(str(rewritten), True) != before)
+
+    # ------------------------------------------------------- the stage plan
+    settings = Settings()
+    settings.separate_audio = False
+    settings.diarize = False
+    plan = pipeline.runner._plan(settings, local=True)
+    check("the fetching step is renamed for a file that is already here",
+          plan["download"][2] == "Opening the video file", plan["download"][2])
+    check("and it is worth a fraction of a real download",
+          plan["download"][1] < pipeline.runner._plan(settings)["download"][1],
+          f"{plan['download'][1]:.3f}")
+
+    # ----------------------------------------------------- the run itself
+    PHRASES = ["Right, let's carry on with the next round.",
+               "We chain three and turn the work.",
+               "Now single crochet into the same stitch.",
+               "Keep the tension loose so it drapes nicely."]
+
+    def fake_llm(prompt, model=None, host=None, key=None, **_):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        return "\n".join(f"{i}|{PHRASES[i % len(PHRASES)]}" for i in ids)
+
+    real_ollama = T._call_ollama
+    T._call_ollama = fake_llm
+    settings.translator = "ollama"
+    settings.voice = "bf_emma"
+    settings.audio_mode = "replace"
+
+    stamp = (clip.stat().st_size, clip.stat().st_mtime_ns)
+
+    def run(source, preview=False):
+        job = pipeline.runner.submit(source, settings, preview=preview)
+        print("      running…", end="", flush=True)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < 900:
+            time.sleep(2)
+            print(".", end="", flush=True)
+        print()
+        return job
+
+    try:
+        # "Try 30 seconds" is the first button on the panel, so it is the first
+        # thing to work. Deliberately submitted the way somebody would type it
+        # rather than pre-resolved: submit() is where that is settled, and a
+        # feature that only works when handed a tidy path is one that only works
+        # from the file chooser.
+        typed = f"~{str(clip)[len(home):]}" if str(clip).startswith(home) else str(clip)
+        sample = run(typed, preview=True)
+        check("a sample of a local file dubs", sample.status == "done",
+              f"{sample.status}: {sample.error}")
+        if sample.status != "done":
+            return
+        check("it really was a sample, not the whole thing", sample.preview is True)
+        check("taken from where the speech starts", sample.preview_from >= 0,
+              str(sample.preview_from))
+        check("and it plays out of the job folder rather than the finished videos",
+              JOBS in Path(sample.output).parents, sample.output)
+
+        job = run(typed)
+        check("a local file dubs", job.status == "done", f"{job.status}: {job.error}")
+        if job.status != "done":
+            return
+
+        # The sample and the full run are two jobs over one folder — the whole
+        # value of sampling first is not paying for the same work twice.
+        check("the full run picks up the sample's folder", job.key == sample.key,
+              f"{job.key} vs {sample.key}")
+        check("but is its own job", job.id != sample.id)
+
+        check("the job knows it came off the disk", job.local is True)
+        check("its title is the file's name", job.title == "local-clip", job.title)
+        out = Path(job.output)
+        check("a dubbed video was written", out.is_file(), str(out))
+        check("into the finished-videos folder, like any other",
+              OUTPUT_DIR in out.parents, str(out))
+        check("and it is the whole video, not the sample",
+              abs(pipeline.download.media_duration(out) - info["duration"]) < 2.0,
+              str(pipeline.download.media_duration(out)))
+
+        # The whole reason nothing is copied: the source is the largest thing a
+        # job touches, and this app refuses to start when the disk is tight.
+        # Judged by size rather than by absence, because the sample cut its own
+        # 30 seconds out into a source.mp4 of its own and that one is earned.
+        whole = clip.stat().st_size
+        sizes = {p.name: p.stat().st_size for p in (JOBS / job.key).rglob("source.*")}
+        check("the video itself was never copied into the job folder",
+              all(size < whole for size in sizes.values()),
+              ", ".join(f"{n} {v} of {whole}" for n, v in sizes.items()) or "nothing there")
+        check("and the user's own file is exactly as it was",
+              (clip.stat().st_size, clip.stat().st_mtime_ns) == stamp)
+
+        # Which stream to fetch is a choice only a site offers.
+        used = job.stats.get("settings") or {}
+        check("the report doesn't claim a video quality nothing chose",
+              "keep_video_quality" not in used, str(sorted(used))[:80])
+        check("while a link's report still does",
+              "keep_video_quality" in Settings().run_snapshot())
+
+        check("the stage that opened the file is named as such",
+              job.stage_times.get("download") is not None, str(job.stage_times))
+    finally:
+        T._call_ollama = real_ollama
+
+
 if __name__ == "__main__":
     test_align()
     test_translate()
@@ -4727,6 +5077,7 @@ if __name__ == "__main__":
     test_translate_resume()
     test_translate_resume_respects_settings_change()
     test_preview_failure_is_superseded_by_a_later_success()
+    test_local_file()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

@@ -164,6 +164,26 @@ document.addEventListener("start-job", async e => {
   }
 });
 
+document.addEventListener("choose-file", async () => {
+  const panel = document.querySelector("new-job-panel");
+  // Every button in the group, not just this one: the picker is a modal dialog
+  // in front of the whole app, and starting a job from behind it would leave
+  // somebody choosing a file for a run that had already gone without it.
+  panel.setBusy(true, null, "start");
+  try{
+    const { path } = await api.chooseFile();
+    // An empty path is Cancel, which is an answer. Nothing to say about it.
+    if(path){
+      panel.setUrl(path);
+      panel.focusUrl();
+    }
+  }catch(err){
+    panel.showSourceError(err.message);
+  }finally{
+    panel.setBusy(false, null, "start");
+  }
+});
+
 document.addEventListener("cancel-job", e => {
   api.cancelJob(e.detail.id).catch(()=>{});
 });

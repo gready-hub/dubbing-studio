@@ -1,7 +1,7 @@
 import { BaseElement } from "../base-element.js";
 import { store } from "../store.js";
 import { escapeHtml, fmt, fmtRough } from "../format.js";
-import { STAGE_LABELS, DEFAULT_STAGES } from "../stages.js";
+import { stageLabel, DEFAULT_STAGES } from "../stages.js";
 
 const SHELL = `
   <div class="panel">
@@ -67,7 +67,7 @@ class ActivePanel extends BaseElement {
                   : (i<at ? times[key] : 0);
       const clock = spent > 0 ? `<small>${fmt(spent)}</small>` : "";
       return `<span class="chip ${i===at?"on":(i<at?"done":"")}">${
-        escapeHtml(STAGE_LABELS[key] || key)}${clock}</span>`;
+        escapeHtml(stageLabel(key, job))}${clock}</span>`;
     }).join("");
 
     // A cancel can only take effect between steps, so say it has been heard

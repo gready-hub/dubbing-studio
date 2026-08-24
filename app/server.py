@@ -23,6 +23,7 @@ from .config import (BUILTIN_GLOSSARIES, JOBS, OUTPUT_DIR, PRESETS, PREVIEWS,
 from . import diagnostics, logs
 from . import storage as store
 from .pipeline import runner
+from .steps import download
 
 STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="Dubbing Studio")
@@ -43,6 +44,9 @@ def diagnostics_report() -> dict:
 # ------------------------------------------------------------------ models
 
 class JobRequest(BaseModel):
+    # A web link, or the path to a file on this Mac. One box in the interface
+    # and one field here, because which of the two it is is a question the
+    # server can answer for itself and nobody typing should have to.
     url: str
     preview: bool = False
 
@@ -311,19 +315,109 @@ def reset_settings(req: SettingsReset, request: Request) -> dict:
     return _apply_settings(Settings.load(), {k: defaults[k] for k in wanted})
 
 
+def _check_local_file(typed: str, path: Path) -> None:
+    """Say which of the several ways this isn't a video went wrong.
+
+    "That doesn't look like a web link" was the only answer this endpoint had,
+    and now that the box takes a file as well it is the wrong one more often
+    than it is right: a path can be missing, be a folder, or be something macOS
+    will not let this app read. Each of those has a different thing to do about
+    it, and none of them is "check the link".
+
+    Opened rather than merely stat'd. On a Mac the interesting refusal is
+    macOS's own — Desktop, Documents and Downloads sit behind a permission this
+    app may never have been granted — and that one is invisible to os.access(),
+    which reads the file's permission bits and knows nothing about the privacy
+    layer sitting over them.
+    """
+    if not path.exists():
+        if download.looks_like_bare_link(typed):
+            raise HTTPException(400, "That looks like a web address with the "
+                                     "https:// missing from the front of it.")
+        raise HTTPException(400, f"There's no file at {path}.")
+    if path.is_dir():
+        raise HTTPException(400, "That's a folder. Choose the video file inside it.")
+    try:
+        with path.open("rb") as handle:
+            handle.read(1)
+    except PermissionError:
+        raise HTTPException(400, "macOS is stopping Dubbing Studio from reading "
+                                 "that file. Allow it under System Settings → "
+                                 "Privacy & Security → Files and Folders, or copy "
+                                 "the video somewhere else and choose it there.")
+    except OSError as exc:
+        raise HTTPException(400, f"That file can't be read — {exc.strerror or exc}.")
+
+
 @app.post("/api/job")
 def create_job(req: JobRequest) -> dict:
-    url = req.url.strip()
-    if not url:
-        raise HTTPException(400, "Paste a link first.")
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "That doesn't look like a web link.")
+    source = download.normalise_source(req.url)
+    if not source:
+        raise HTTPException(400, "Paste a link, or choose a file, first.")
+    local = download.is_local_source(source)
+    if local:
+        _check_local_file(req.url, Path(source))
     machine = detect_machine()
     if not machine.has_ffmpeg:
         raise HTTPException(400, "ffmpeg isn't installed — re-run the installer.")
-    if not machine.has_ytdlp:
+    # Asked only of a link. A file on this Mac is never fetched, and refusing to
+    # dub one for want of a downloader it has no use for would be a stopper
+    # invented out of nothing.
+    if not local and not machine.has_ytdlp:
         raise HTTPException(400, "yt-dlp isn't installed — re-run the installer.")
-    return runner.submit(url, Settings.load(), preview=req.preview).public()
+    return runner.submit(source, Settings.load(), preview=req.preview).public()
+
+
+# activate first, so the dialog comes to the front instead of opening behind the
+# window that asked for it. Movies is the default location where there is one,
+# and there is no file-type filter at all on purpose: the containers people
+# actually have lying about (mkv, webm, mts) are not reliably tagged as movies
+# by macOS, and a picker that hides the very file somebody is looking for is
+# worse than one that lets them choose wrongly and be told why a second later.
+_CHOOSE_FILE = """
+activate
+try
+    set start to (path to movies folder)
+on error
+    set start to (path to home folder)
+end try
+return POSIX path of (choose file with prompt "Choose a video to dub" default location start without invisibles)
+"""
+
+
+@app.post("/api/choose-file")
+async def choose_file(request: Request) -> dict:
+    """Open the Mac's own file chooser and hand back the path that was picked.
+
+    Done here, in the process that needs the answer, because a browser will not
+    give a page one: it offers the file's *contents* instead, and the contents
+    are the wrong thing entirely — the video is already on this disk, often
+    several gigabytes of it, and this app reads it where it lies rather than
+    taking a second copy to work from.
+
+    async, and asyncio's own subprocess rather than the thread pool, on purpose.
+    The dialog stays open for exactly as long as somebody takes to decide, and
+    FastAPI runs every ordinary `def` endpoint on one small pool of threads — a
+    picker left open over lunch would be one of those gone for the duration.
+    """
+    _local_only(request)
+    if platform.system() != "Darwin":
+        raise HTTPException(400, "Type or paste the path to the file instead.")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", _CHOOSE_FILE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, err = await proc.communicate()
+    except OSError as exc:
+        raise HTTPException(500, f"The file chooser wouldn't open — {exc}.")
+    if proc.returncode != 0:
+        # -128 is somebody pressing Cancel, which is an answer and not a fault.
+        said = err.decode(errors="replace")
+        if "-128" in said or "User canceled" in said:
+            return {"path": ""}
+        raise HTTPException(500, "The file chooser wouldn't open — "
+                                 f"{said.strip() or 'no reason given'}.")
+    return {"path": out.decode(errors="replace").strip()}
 
 
 @app.post("/api/job/{job_id}/cancel")
