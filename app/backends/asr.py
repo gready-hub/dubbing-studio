@@ -11,7 +11,10 @@ Both return the same thing: a list of {"start", "end", "text"} in seconds.
 """
 from __future__ import annotations
 
+import contextlib
 import subprocess
+import sys
+import types
 import wave
 from pathlib import Path
 from typing import Callable, Optional
@@ -155,13 +158,106 @@ WHISPER_CPU = "large-v3"
 WHISPER_CPU_COMPUTE = "int8"
 
 
+def _whisper_mlx_cached() -> bool:
+    """Whether the model is already on this disk, asked without a network call.
+
+    Only used to decide whether to warn about a 3 GB download. Anything that
+    goes wrong here is answered "no": promising a download that then does not
+    happen wastes a moment's worry, where staying silent about one that does
+    leaves somebody watching an unexplained pause for several minutes.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+        snapshot_download(WHISPER_MLX, local_files_only=True)
+        return True
+    except Exception:                                            # noqa: BLE001
+        return False
+
+
+@contextlib.contextmanager
+def _mlx_whisper_progress(progress: Progress, first: float, last: float):
+    """Report mlx_whisper's own decode progress while inside this block.
+
+    mlx_whisper.transcribe() is one blocking call that swallows the whole file,
+    and it was reported as a single jump from 5% to done — six minutes of a
+    frozen bar on a 52-minute video, under a label still saying "Loading
+    Whisper". It does publish its position, just to a progress *bar* rather than
+    to a callback: the decode loop runs inside `with tqdm.tqdm(total=
+    content_frames)` and calls pbar.update() once per window, where the counter
+    is the audio position. That is an exact fraction of the file, and better
+    than the line counting the CPU path settles for.
+
+    So the meter is swapped for one that calls us instead of drawing. Its module
+    is reached through sys.modules deliberately: mlx_whisper.transcribe is the
+    *function* — the package's __init__ rebinds the name — so the obvious
+    attribute lookup finds something with no tqdm on it.
+
+    This does reach into another package's internals, so it is written to fail
+    into the old behaviour rather than to fail: no callback, no tqdm to replace,
+    or a shape that no longer matches, and the transcription simply runs as it
+    did before with a quiet bar. It is restored unconditionally, since leaving a
+    foreign module monkeypatched would follow every later call in the process.
+    """
+    module = sys.modules.get("mlx_whisper.transcribe")
+    real = getattr(module, "tqdm", None)
+    if progress is None or real is None:
+        yield
+        return
+
+    class _Meter:
+        """Enough of tqdm's surface for the one call site that builds it."""
+
+        def __init__(self, *_args, total=None, **_kw):
+            self.total = int(total or 0)
+            self.n = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def update(self, n=1):
+            self.n += int(n or 0)
+            if self.total <= 0:
+                return                       # nothing to be a fraction of
+            share = max(0.0, min(1.0, self.n / self.total))
+            progress(first + (last - first) * share,
+                     f"Transcribing — {share * 100:.0f}%")
+
+        def close(self):
+            pass
+
+    module.tqdm = types.SimpleNamespace(tqdm=_Meter)
+    try:
+        yield
+    finally:
+        module.tqdm = real
+
+
 def _transcribe_whisper_mlx(audio: Path, progress: Progress = None) -> list[dict]:
     import mlx_whisper
 
+    # Fetched as its own step so the download can be spoken about honestly. The
+    # message here was unconditional — every run, for the life of the install,
+    # announced a 3 GB first-run download — and transcribe() loads and decodes
+    # in a single call, so there was no moment at which the app could have said
+    # the loading had finished and the work had started.
+    cached = _whisper_mlx_cached()
     if progress:
-        progress(0.05, "Loading Whisper (first run downloads about 3 GB)")
-    result = mlx_whisper.transcribe(str(audio), path_or_hf_repo=WHISPER_MLX,
-                                    word_timestamps=False, verbose=None)
+        progress(0.02, "Loading Whisper" if cached
+                 else "Loading Whisper (first run downloads about 3 GB)")
+    if not cached:
+        # Only when there is really something to fetch. Asked unconditionally it
+        # is a second full trip through snapshot_download() for a model already
+        # on the disk, which costs a wasted pass and prints a second "Fetching"
+        # bar into the window the user is told to leave open.
+        _fetch_whisper_mlx()
+    if progress:
+        progress(0.05, "Transcribing — 0%")
+    with _mlx_whisper_progress(progress, 0.05, 0.98):
+        result = mlx_whisper.transcribe(str(audio), path_or_hf_repo=WHISPER_MLX,
+                                        word_timestamps=False, verbose=None)
     out = []
     for s in result.get("segments", []):
         text = (s.get("text") or "").strip()

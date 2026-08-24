@@ -913,11 +913,15 @@ def test_server():
     finally:
         T.installed_models = real_installed
 
-    # A substituted model used to warn on the finished run's own report and say
-    # nothing at all on the Setup check's green dot for the same fact — a
-    # creator read the warning as useful, a non-technical tester read amber as
-    # broken. The run succeeded, so the note is information now, not a
-    # warning; and Setup check says what happened instead of just going green.
+    # A substituted model is off the finished run's report entirely. It began as
+    # a warning there, was softened to information, and was still the wrong
+    # place for it: which local models are installed is a property of this Mac
+    # rather than of this video, it does not change from one dub to the next,
+    # and it was restated on every finished job — twice, because the translation
+    # and the terminology pass each resolve a backend and each recorded it. A
+    # note is for what this run did differently. Setup check is the one place it
+    # is said now, on the row named for the model, where the fix is actionable.
+    import inspect as _inspect
     from app.config import Settings as _Settings, Machine as _Machine
     T.installed_models = lambda host="": [{"name": "qwen3:8b", "size": 5_000_000_000}]
     try:
@@ -926,13 +930,14 @@ def test_server():
         recorded = []
         progress = type("P", (), {})()
         progress.note = recorded.append
-        T.backend_for(settings6, 16, progress)
-        check("a substituted model's note is tagged information, not a warning",
-              len(recorded) == 1 and isinstance(recorded[0], dict)
-              and recorded[0].get("kind") == "info", recorded)
-        check("but the cause and the fix command still reach the reader",
-              "qwen3:32b" in note_text(recorded[0])
-              and "ollama pull qwen3:32b" in note_text(recorded[0]), note_text(recorded[0]))
+        _, label6 = T.backend_for(settings6, 16)
+        check("a substituted model is not recorded on the finished job at all",
+              recorded == [], str(recorded))
+        check("and there is no progress callback left to record it through",
+              "progress" not in _inspect.signature(T.backend_for).parameters,
+              str(_inspect.signature(T.backend_for)))
+        check("while the substitute is still the model actually used",
+              "qwen3:8b" in label6, label6)
 
         real_load, real_detect = _srv.Settings.load, _srv.detect_machine
         _srv.Settings.load = staticmethod(lambda: settings6)
@@ -3215,6 +3220,60 @@ def test_translation_qc():
     check("a progress template is asked for", "--progress-template" in src)
     check("and it carries the byte counts, not just a percentage",
           "downloaded_bytes" in src and "total_bytes" in src)
+
+    # Whisper on the Apple GPU is one blocking call that swallows the whole
+    # file. It reported 5% and then nothing until it was done — on a measured
+    # 52-minute video that was 5m50s of frozen bar, under a label still reading
+    # "Loading Whisper (first run downloads about 3 GB)", which it printed
+    # whether or not anything was being downloaded. It does publish its
+    # position, to a tqdm bar rather than to a callback, so the meter is
+    # borrowed. Exercised against a stand-in module rather than by transcribing
+    # something, which would put a 3 GB model and a minute of GPU in the way of
+    # a unit test.
+    from app.backends import asr as _asr
+    import types as _types
+    stand_in = _types.ModuleType("mlx_whisper.transcribe")
+    stand_in.tqdm = _types.SimpleNamespace(tqdm=object)
+    was_there = sys.modules.get("mlx_whisper.transcribe")
+    sys.modules["mlx_whisper.transcribe"] = stand_in
+    try:
+        seen = []
+        with _asr._mlx_whisper_progress(lambda f, m: seen.append((f, m)), 0.05, 0.98):
+            # Built and driven exactly as mlx_whisper's decode loop does it:
+            # a context manager over a frame total, updated by however far the
+            # read head moved. disable=True is passed because it passes it —
+            # and is ignored, which is the point. A tqdm subclass could not be
+            # used here: its update() returns early when disabled, so the
+            # counter would never move.
+            with stand_in.tqdm.tqdm(total=100, unit="frames", disable=True) as bar:
+                bar.update(25)
+                bar.update(25)
+                bar.update(50)
+        check("whisper's own decode position is reported as progress",
+              [round(f, 4) for f, _ in seen] == [0.2825, 0.515, 0.98], str(seen))
+        check("and the stage says it is transcribing, not still loading",
+              seen and all("Transcribing" in m for _, m in seen), str(seen))
+        check("the borrowed meter is handed back afterwards",
+              stand_in.tqdm.tqdm is object)
+        # It reaches into another package's internals, so the failure that
+        # matters is the one where those internals have moved: it must lose the
+        # progress reporting and nothing else.
+        del stand_in.tqdm
+        ran = []
+        with _asr._mlx_whisper_progress(lambda f, m: ran.append(f), 0.05, 0.98):
+            ran.append("body ran")
+        check("a mlx_whisper without a tqdm to borrow still transcribes",
+              ran == ["body ran"], str(ran))
+        sys.modules.pop("mlx_whisper.transcribe")
+        ran2 = []
+        with _asr._mlx_whisper_progress(lambda f, m: ran2.append(f), 0.05, 0.98):
+            ran2.append("body ran")
+        check("and so does one that is not imported at all", ran2 == ["body ran"])
+    finally:
+        if was_there is None:
+            sys.modules.pop("mlx_whisper.transcribe", None)
+        else:
+            sys.modules["mlx_whisper.transcribe"] = was_there
 
     from app.config import can_decode_av1, mac_generation, AV1_FROM_GENERATION
     check("AV1 is gated on the generation that can decode it",

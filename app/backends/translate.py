@@ -17,7 +17,6 @@ import urllib.request
 from typing import Callable, Optional
 
 from .. import logs
-from ..notes import info as note_info, note
 
 Progress = Optional[Callable[[float, str], None]]
 
@@ -739,7 +738,7 @@ def extract_terms(segments: list[dict], settings, ram_gb: int,
         # everyday phrases it would then have pinned.
         if len(transcript) < 2 * BATCH_CHARS:
             return ""
-        call, _ = backend_for(settings, ram_gb, progress)
+        call, _ = backend_for(settings, ram_gb)
         runs = []
         for n in range(EXTRACT_RUNS):
             if progress:
@@ -756,21 +755,29 @@ def extract_terms(segments: list[dict], settings, ram_gb: int,
         return ""
 
 
-def backend_for(settings, ram_gb: int, progress: Progress = None):
+def backend_for(settings, ram_gb: int):
     """(call, label) for whichever translator is configured.
 
-    Lifted out of translate() so the terminology pass uses the same backend, the
-    same model and the same substitution note rather than a second copy that
-    could drift away from it.
+    Lifted out of translate() so the terminology pass uses the same backend and
+    the same model rather than a second copy that could drift away from it.
+
+    Takes no progress callback. It used to, for the sole purpose of recording
+    which model had been substituted — and since both the translation and the
+    terminology pass call this, the finished job carried that note twice.
     """
     backend = settings.translator
     if backend == "ollama":
-        model, swapped = usable_model(settings.resolved_ollama_model(ram_gb))
-        if swapped:
-            # The run still succeeded with a model that works, so this is
-            # explanation, not a fault — tagged the same way as other good news,
-            # not boxed like the warnings beside it.
-            note(progress, note_info(swapped))
+        # Deliberately not noted on the finished job. Which local models are
+        # installed is a property of this Mac, not of this video: it does not
+        # change from one run to the next, and it was being restated on every
+        # finished dub — twice, because the translation and the terminology pass
+        # each resolve a backend and each recorded it. Setup check already
+        # carries it, on the row named for the model, which is where a
+        # standing fact about the machine belongs and where the command to
+        # change it is actually actionable. A note is for what this run did
+        # differently, and "you have not installed a model you never asked for
+        # by name" is not that.
+        model, _ = usable_model(settings.resolved_ollama_model(ram_gb))
         return ((lambda p, system=SYSTEM: _call_ollama(p, model, system=system)),
                 f"local model {model}")
     if backend == "anthropic":
@@ -805,7 +812,7 @@ def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = 
     """
     glossary = _merge_glossaries(settings.glossary_text(), extra_glossary)
     target = settings.target_language
-    call, label = backend_for(settings, ram_gb, progress)
+    call, label = backend_for(settings, ram_gb)
 
     for n, seg in enumerate(segments):
         seg["i"] = n
