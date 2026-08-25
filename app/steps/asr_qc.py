@@ -310,6 +310,17 @@ def _find_flags(segments: list[dict]) -> list[dict]:
                 units[-1]["reasons"].append(reason)
                 units[-1]["info"].append(info)
                 continue
+            # The cap said no. The hit still has to start after everything the
+            # previous unit already claimed, or the two overlap — and check()
+            # walks these in order, replacing each span and moving a cursor past
+            # it, so an overlap emits the same loop twice and a unit whose end
+            # falls short of the cursor winds it *backwards* and re-emits the
+            # segments behind it. On the real file that produced four overlapping
+            # lines all reading "4 cadenetas." for one window: the loop this
+            # exists to remove, delivered four times over.
+            lo = units[-1]["hi"] + 1
+            if lo > hi:
+                continue                    # nothing of it left to claim
         units.append({"lo": lo, "hi": hi, "reasons": [reason], "info": [info]})
     return units
 
@@ -390,6 +401,29 @@ def _is_sane(text: str, duration: float) -> bool:
     return True
 
 
+def _words_in(segments: list[dict], lo: int, hi: int) -> set[str]:
+    return {w for k in range(lo, hi + 1)
+            for w in (_normalize_word(t) for t in
+                      (segments[k].get("text") or "").split()) if w}
+
+
+def _collapse_keeps_everything(segments: list[dict], lo: int, hi: int,
+                               collapsed: str) -> bool:
+    """Whether collapsing lo..hi to `collapsed` throws away only repetition.
+
+    Asked as the invariant itself rather than as a proxy for it: every distinct
+    word the span contained has to still be there afterwards. That is what
+    separates a collapse from a deletion, and it is true of more than just
+    identical lines — "ellos" sixteen times beside "ellos" fourteen times is two
+    different strings holding one word between them, and keeping that word keeps
+    all of it. A grid of "y 60", "y 61", "y 62" is not: collapsing to "y 60"
+    keeps two words out of thirteen, and no amount of counting it as a repair
+    makes the other eleven not deleted.
+    """
+    return _words_in(segments, lo, hi) <= {
+        w for w in (_normalize_word(t) for t in collapsed.split()) if w}
+
+
 def _collapse(text: str) -> str:
     """The repeated thing said once, keeping the original's spelling.
 
@@ -441,7 +475,7 @@ def check(segments: list[dict], audio: Path, use_mlx: bool,
     becomes that word spoken once.
     """
     report = {"segments": len(segments), "flagged": 0, "recovered": 0,
-              "collapsed": 0, "skipped": 0}
+              "collapsed": 0, "left_alone": 0, "skipped": 0}
     if not segments:
         return report
 
@@ -479,9 +513,19 @@ def check(segments: list[dict], audio: Path, use_mlx: bool,
         base = {k: v for k, v in segments[lo].items() if k not in _STALE_STATS}
 
         # Worth asking a second engine at all? Not if the span is too short to
-        # hold an answer, and not if the only other engine is the one that
-        # produced this transcript in the first place — asking Parakeet to check
-        # Parakeet's own work gets agreement, not an opinion.
+        # hold an answer, and not if Parakeet is the engine that was *asked* for
+        # in the first place — checking Parakeet's own work with Parakeet gets
+        # agreement rather than an opinion.
+        #
+        # This reads the requested engine, not the one that actually ran, and
+        # those can differ: transcribe()'s ladder falls back through both
+        # Whisper engines to Parakeet, so a "whisper" job on a machine where
+        # Whisper will not load is second-guessed by the engine that produced
+        # it. Left as is deliberately — knowing which rung answered means
+        # changing what transcribe() returns, and every caller and test with it,
+        # for a case where the cost is now merely a pointless re-transcribe: the
+        # engine agrees, no reading is preferred, and the span is collapsed or
+        # left alone exactly as it would have been. It cannot delete anything.
         span_ok = (pad_end - pad_start) >= MIN_SPAN_FOR_OPINION_S
         different_engine = asr_model != "parakeet"
         candidate = (_parakeet_span(audio, pad_start, pad_end, use_mlx)
@@ -493,8 +537,10 @@ def check(segments: list[dict], audio: Path, use_mlx: bool,
                        extra={"at": round(start, 1), "why": reason,
                               "was": original[:160], "now": candidate[:160]})
             new_segments.append({**base, "start": start, "end": end, "text": candidate})
-        else:
-            # No better reading available, so what was said stands — once.
+        elif _collapse_keeps_everything(
+                segments, lo, hi, _collapse(segments[lo].get("text") or "")):
+            # Every distinct word in the span survives, so this throws away
+            # repetition and nothing else.
             collapsed = _collapse(segments[lo].get("text") or "")
             report["collapsed"] += 1
             if not (span_ok and different_engine):
@@ -504,6 +550,24 @@ def check(segments: list[dict], audio: Path, use_mlx: bool,
                               "was": original[:160], "now": collapsed[:160],
                               "asked_second_engine": bool(span_ok and different_engine)})
             new_segments.append({**base, "start": start, "end": end, "text": collapsed})
+        else:
+            # The segments say *different* things — a counting grid, where each
+            # line is its own number. There is no single instance to keep, and
+            # standing the first one in for all of them is a deletion however it
+            # is counted: on the real file one 44-second segment reading "y 3"
+            # replaced twenty-two distinct lines, under a report still promising
+            # that nothing had been dropped. With no better reading to put here,
+            # the honest move is to leave it exactly as the recogniser left it.
+            # Fabricated counting left in place is a worse dub and a smaller
+            # wrong than real speech thrown away, and it is the one this module
+            # is allowed to make.
+            report["left_alone"] += 1
+            log.warning("a suspect transcript span was left as it was: its lines "
+                       "differ from each other, so there was nothing to collapse "
+                       "and no second reading to prefer",
+                       extra={"at": round(start, 1), "why": reason,
+                              "lines": hi - lo + 1, "was": original[:160]})
+            new_segments.extend(segments[lo:hi + 1])
         cursor = hi + 1
     new_segments.extend(segments[cursor:])
     segments[:] = new_segments
@@ -523,6 +587,14 @@ def summarise(report: dict) -> str:
     if report.get("collapsed"):
         parts.append(f"{report['collapsed']} shortened to a single instance of "
                      "what was being repeated")
+    # Said rather than quietly omitted: these are the places the app noticed
+    # something wrong and could not improve on it, so the dub still carries
+    # whatever was there. Somebody skimming the result deserves to know which
+    # moments to spot-check, and a sentence that only lists successes reads as
+    # if the whole thing were handled.
+    if report.get("left_alone"):
+        parts.append(f"{report['left_alone']} left as they were, having no "
+                     "repetition to shorten and no better reading available")
     if not parts:
         return ""
     return ("The transcript repeated itself in places, and was patched: "

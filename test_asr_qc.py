@@ -465,9 +465,51 @@ def test_grid_and_never_deletes():
     check("with no second opinion to be had, nothing is emptied",
          all((s["text"] or "").strip() for s in segs),
          [s for s in segs if not (s["text"] or "").strip()][:3])
-    check("every flagged unit is accounted for as re-read or collapsed",
-         report["flagged"] == report["recovered"] + report["collapsed"], report)
+    check("every flagged unit is accounted for",
+         report["flagged"] == report["recovered"] + report["collapsed"]
+         + report["left_alone"], report)
     check("and the report cannot even say 'silenced'", "silenced" not in report, report)
+
+    # "Nothing was dropped" stated as arithmetic over the whole real file rather
+    # than as a promise in a comment. With no second engine to prefer, every
+    # distinct word that went in has to come back out — collapsing may remove
+    # repetitions of a word, never the only copy of one. This is the assertion
+    # that catches the failure a code review found: a unit whose lines each said
+    # a different number was being replaced by the first of them, so one 44-second
+    # segment reading "y 3" stood in for twenty-two distinct lines while the
+    # report still promised nothing had gone.
+    def words_of(ss):
+        return {w for s in ss for w in
+                (asr_qc._normalize_word(t) for t in (s["text"] or "").split()) if w}
+
+    check("no distinct word anywhere in the file is lost",
+         words_of(d) <= words_of(segs), sorted(words_of(d) - words_of(segs))[:12])
+    # A span whose lines differ from one another has nothing to collapse to, so
+    # it must survive intact rather than being folded onto its first line.
+    grid_kept = [s for s in segs if 2700 <= s["start"] <= 2760]
+    check("a counting grid keeps its separate lines instead of folding to one",
+         len(grid_kept) > 10, len(grid_kept))
+    # And a run that really is one word over and over does collapse, even when
+    # the lines differ in *length* — "ellos"x16 beside "ellos"x14 is two strings
+    # with one word between them.
+    ellos = [s for s in segs if 384 <= s["start"] <= 414]
+    check("but a one-word loop still collapses to that word",
+         len(ellos) == 1 and ellos[0]["text"].strip() == "ellos", ellos)
+
+    # check() walks the units in order and moves a cursor past each, so any
+    # overlap emits the same loop twice and any unit ending behind the cursor
+    # winds it backwards and re-emits what was already consumed. On this file
+    # the span cap produced exactly that: four overlapping lines all reading
+    # "4 cadenetas." for one window.
+    units = asr_qc._find_flags(d)
+    check("units never overlap and never run backwards",
+         all(b["lo"] > a["hi"] and b["hi"] >= a["hi"]
+             for a, b in zip(units, units[1:])),
+         [(a["lo"], a["hi"], b["lo"], b["hi"]) for a, b in zip(units, units[1:])
+          if not (b["lo"] > a["hi"] and b["hi"] >= a["hi"])][:3])
+    dupes = [s["start"] for s in segs if sum(
+        1 for t in segs if t["start"] == s["start"]) > 1]
+    check("and no two output segments start at the same moment", not dupes, dupes[:5])
 
     # Uniform timing alone must not be enough. Real counting at a steady pace
     # looks like a metronome in every respect but one: it leaves air between the
