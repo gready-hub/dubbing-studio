@@ -35,7 +35,7 @@ from .backends import separate as separate_backend
 from .backends import tts as tts_backend
 from .backends.translate import (describe_translator, extract_terms,
                                  translate as run_translate, TranslationError)
-from .steps import align, download, mux, qc
+from .steps import align, asr_qc, download, mux, qc
 from .steps.segments import merge_adjacent
 
 # (key, label, relative cost) — relative costs are turned into weights for
@@ -1194,6 +1194,18 @@ class JobRunner:
             else:
                 segments = asr_backend.transcribe(speech16, machine.fast_path,
                                                   settings.asr_model, report)
+                # Only on a freshly-transcribed run, and before the labelling
+                # and merging below. A cache hit replays segments this has
+                # already had its say on, so re-running it would load a second
+                # speech engine only to re-confirm a repair already written into
+                # the file. And merge_adjacent() would fuse a run of degenerate
+                # segments into one longer line, hiding the very shape — many
+                # short identical ones — that gives the failure away.
+                asr_check = asr_qc.check(segments, speech16, machine.fast_path, report)
+                stats["asr_check"] = asr_check
+                trouble = asr_qc.summarise(asr_check)
+                if trouble:
+                    notes.append(trouble)
                 cache.write_text(json.dumps(segments, ensure_ascii=False, indent=1))
                 _cache_stamp(workdir, "segments", asr_print)
             if not segments:
