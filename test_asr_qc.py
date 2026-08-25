@@ -239,33 +239,48 @@ def test_confirmed_hallucinations_flagged_and_crochet_counting_spared():
     # A stub, not the real engine — this test is about detection and about
     # real content surviving, not about what any particular ASR says back.
     # The real-engine claim gets its own integration test below.
+    real_mlx, real_onnx = asr_qc._transcribe_mlx, asr_qc._transcribe_onnx
     asr_qc._transcribe_mlx = lambda path, progress=None: []
     asr_qc._transcribe_onnx = lambda path, progress=None: []
-
-    report = asr_qc.check(segments, audio, True)
+    try:
+        report = asr_qc.check(segments, audio, True)
+    finally:
+        asr_qc._transcribe_mlx, asr_qc._transcribe_onnx = real_mlx, real_onnx
 
     check("all four confirmed hallucinations are found (one unit each)",
          report["flagged"] == 4, report)
-    check("with nothing recoverable from a silent stub, all four are silenced",
-         report["silenced"] == 4 and report["recovered"] == 0, report)
+    # The engine offering nothing is the case that used to delete the line.
+    # Now it keeps one instance of whatever was being repeated, and the report
+    # has no way to say "silenced" because nothing here silences anything.
+    check("with nothing to be had from the stub, all four collapse rather than vanish",
+         report["collapsed"] == 4 and report["recovered"] == 0
+         and "silenced" not in report, report)
 
     texts = [s["text"] for s in segments]
     for kept in real_texts_untouched:
         check(f"real line survives untouched: {kept[:40]!r}", kept in texts)
     check("the crochet-counting line specifically was not silenced",
          crochet_text in texts and crochet_text != "")
+    check("and no segment anywhere was emptied out",
+         all((s["text"] or "").strip() for s in segments),
+         [s for s in segments if not (s["text"] or "").strip()])
+    # What each loop became: the thing itself, once.
+    check("the ellos loop reads as one 'ellos', not 52 and not nothing",
+         "ellos" in texts, [t for t in texts if "ellos" in t])
+    check("the ¡Chao! run is one goodbye, and it is still a goodbye",
+         "¡Chao!" in texts, [t for t in texts if "Chao" in t])
 
 
 # ============================================ 4. the second opinion itself
-def test_second_opinion_recovers_and_silences():
-    """The mandatory cross-check: a flagged span whose second opinion looks
-    sane gets its text replaced; one whose second opinion is equally
-    degenerate (or empty) gets silenced instead. This is the asymmetry the
-    whole module exists for — a stub stands in for Parakeet, chosen by call
-    order (check() processes flagged units in ascending start order, so the
-    first call answers for the earlier span and the second for the later).
+def test_second_opinion_recovers_or_collapses():
+    """The cross-check: a flagged span whose second opinion looks sane takes
+    that text; one whose second opinion is equally degenerate keeps its own
+    words with the repetition collapsed to one instance. Neither outcome
+    deletes anything — a stub stands in for Parakeet, chosen by call order
+    (check() processes flagged units in ascending start order, so the first
+    call answers for the earlier span and the second for the later).
     """
-    print("\n[4] Mandatory second opinion: recover one, silence the other")
+    print("\n[4] Second opinion: re-read one, collapse the other, delete neither")
     from app.steps import asr_qc
 
     # Same "ellos" shape as above, timestamps shifted to start near 0 so the
@@ -309,8 +324,8 @@ def test_second_opinion_recovers_and_silences():
     finally:
         asr_qc._transcribe_mlx, asr_qc._transcribe_onnx = real_mlx, real_onnx
 
-    check("two units flagged, one recovered, one silenced",
-         (report["flagged"], report["recovered"], report["silenced"]) == (2, 1, 1), report)
+    check("two units flagged, one re-read, one collapsed",
+         (report["flagged"], report["recovered"], report["collapsed"]) == (2, 1, 1), report)
     check("segment count collapsed: 9 raw -> 4 (5 duplicates folded away)",
          len(segments) == 4, [s["text"] for s in segments])
 
@@ -322,9 +337,13 @@ def test_second_opinion_recovers_and_silences():
              (recovered["start"], recovered["end"]) == (4.32, 33.00),
              (recovered["start"], recovered["end"]))
 
-    silenced = [s for s in segments if s["start"] == 40.00]
-    check("the Vale span was silenced, not replaced with more 'ellos'",
-         len(silenced) == 1 and silenced[0]["text"] == "", silenced)
+    # The Vale span: the stub answers with the same kind of repetition, so
+    # there is nothing better to be had. It used to be deleted on exactly this
+    # evidence — a second engine agreeing that the audio is repetitive is not
+    # evidence that the audio is empty. It keeps one "¿Vale?" instead.
+    kept = [s for s in segments if s["start"] == 40.00]
+    check("the Vale span keeps one instance rather than being emptied",
+         len(kept) == 1 and kept[0]["text"].strip() == "¿Vale?", kept)
 
     untouched = [s["text"] for s in segments if s["start"] in (0.00, 34.32)]
     check("the two real lines either side were never touched",
@@ -332,15 +351,22 @@ def test_second_opinion_recovers_and_silences():
          and "Bueno, pues desde" in " ".join(untouched), untouched)
 
     # A second opinion can be too short to reach the flagging floor and still
-    # be obvious nonsense. Judged at that floor it counted as a recovery, so a
-    # smaller helping of the same repetition went into the dub in place of the
-    # silence it had earned; the sanity test looks from three words up for
-    # exactly this. A genuinely short answer must still be allowed through.
+    # be obvious nonsense; the sanity test looks from three words up for exactly
+    # that. A genuinely short answer must still be allowed through.
     from app.steps.asr_qc import _is_sane
-    check("a short but repetitive second opinion is not sane",
+    check("a short but repetitive second opinion is not preferred",
          not _is_sane("vale vale vale", 2.0))
     check("while a short real one still is",
          _is_sane("un punto alto", 2.0))
+    # The words-per-second *floor* used to live here and it deleted real
+    # speech: a flagged run's span is unbounded, so a floor measured against it
+    # demanded arbitrarily many words back. The real "¡Chao!" at the end of the
+    # source video is one word over 36.6s, and the floor called the speaker's
+    # own goodbye insane. Only an implausibly fast answer is rejected now.
+    check("one real word over a long span is a fine answer",
+         _is_sane("Ciao.", 36.6))
+    check("and an impossibly fast one is still not",
+         not _is_sane(" ".join(f"w{i}" for i in range(60)), 2.0))
 
 
 # ============================================ 5. the real Parakeet cross-check
@@ -375,12 +401,110 @@ def test_real_parakeet_cross_check_on_real_hallucination_audio():
          not degenerate, {"text": text[:200], **info})
 
 
+# ======================================== 6. the metronome, and never deleting
+def test_grid_and_never_deletes():
+    """The shape that nearly got away, and the property that must always hold.
+
+    An independent review of the first version of this module found that the
+    largest hallucination in the evidence file was invisible to it: 158
+    consecutive segments from 2685.84s to 3001.84s, every one exactly 2.00s
+    long, counting numbers that skip as they climb. The texts differ by a word
+    so no run of identical lines forms, and each is two words so the
+    intra-segment floor never admits them. It was 71% of the fabricated
+    timeline and the module flagged none of it.
+
+    Run against the real dumps rather than a reconstruction, because the
+    signal being tested here *is* the timing, and hand-typed timestamps would
+    be testing the test.
+    """
+    print("\n[6] The fixed-grid counting loop, and never deleting anything")
+    import json
+    from app.steps import asr_qc
+
+    dirty = FIXTURES / "full_video_default_decode.json"
+    clean = FIXTURES / "full_video_nocond_decode.json"
+    if not dirty.exists() or not clean.exists():
+        print("      SKIP — decode dumps not on this machine")
+        return
+
+    def spoken(p):
+        return [s for s in json.loads(p.read_text())["segments"]
+                if (s.get("text") or "").strip()]
+
+    d, c = spoken(dirty), spoken(clean)
+
+    d_units = asr_qc._find_flags(d)
+    grid = [u for u in d_units if any("fixed grid" in r for r in u["reasons"])]
+    in_blind_spot = [u for u in d_units
+                     if d[u["lo"]]["start"] >= 2680 and d[u["hi"]]["end"] <= 3010]
+    covered = sum(d[u["hi"]]["end"] - d[u["lo"]]["start"] for u in in_blind_spot)
+    check("the fixed-grid counting loop is seen at all", len(grid) > 0, len(grid))
+    check("and most of its 316 seconds is covered, not a token slice of it",
+         covered > 250, f"{covered:.0f}s of 316s across {len(in_blind_spot)} units")
+
+    # The whole point of a third signal is more reach without more noise.
+    c_units = asr_qc._find_flags(c)
+    check("and the clean decode of the same audio still flags nothing at all",
+         len(c_units) == 0,
+         [(round(c[u["lo"]]["start"], 1), (c[u["lo"]]["text"] or "")[:40])
+          for u in c_units[:5]])
+
+    # The invariant, asserted over the whole real file rather than a fixture:
+    # every flagged unit must come out of check() carrying words.
+    audio = Path(tempfile.mkdtemp(prefix="asr-qc-grid-")) / "silence.wav"
+    _silence_wav(audio, 3140.0)
+    real_mlx, real_onnx = asr_qc._transcribe_mlx, asr_qc._transcribe_onnx
+    asr_qc._transcribe_mlx = lambda path, progress=None: []   # no help available
+    asr_qc._transcribe_onnx = lambda path, progress=None: []
+    try:
+        segs = [dict(s) for s in d]
+        report = asr_qc.check(segs, audio, True)
+    finally:
+        asr_qc._transcribe_mlx, asr_qc._transcribe_onnx = real_mlx, real_onnx
+
+    check("with no second opinion to be had, nothing is emptied",
+         all((s["text"] or "").strip() for s in segs),
+         [s for s in segs if not (s["text"] or "").strip()][:3])
+    check("every flagged unit is accounted for as re-read or collapsed",
+         report["flagged"] == report["recovered"] + report["collapsed"], report)
+    check("and the report cannot even say 'silenced'", "silenced" not in report, report)
+
+    # Uniform timing alone must not be enough. Real counting at a steady pace
+    # looks like a metronome in every respect but one: it leaves air between the
+    # numbers, where a generated grid runs gapless because nothing is finding
+    # speech boundaries any more. Both fixtures below were flagged and collapsed
+    # in full before the gap test existed — the first is the suite's own
+    # translate-resume fixture, which is how this was found.
+    paced = [{"start": n * 1.5, "end": n * 1.5 + 1.0, "text": f"linea {n}"}
+             for n in range(26)]
+    check("26 uniformly paced lines with gaps between them are left alone",
+         asr_qc._find_flags(paced) == [], asr_qc._find_flags(paced)[:2])
+    stitches = [{"start": n * 2.0, "end": n * 2.0 + 1.6, "text": f"punto {n}"}
+                for n in range(30)]
+    check("and so is someone counting stitches at a steady pace",
+         asr_qc._find_flags(stitches) == [], asr_qc._find_flags(stitches)[:2])
+    gapless = [{"start": n * 2.0, "end": n * 2.0 + 2.0, "text": f"y {n}"}
+               for n in range(30)]
+    check("while the same counting with no air in it at all is caught",
+         len(asr_qc._find_flags(gapless)) > 0)
+
+    # Collapsing keeps what was said, once — including the original disaster.
+    check("221 copies of one word collapse to that word",
+         asr_qc._collapse("como " * 221) == "como")
+    check("a repeated phrase collapses to the phrase",
+         asr_qc._collapse("ya toda cadeneta " * 6) == "ya toda cadeneta")
+    check("and a real line is left exactly as it was",
+         asr_qc._collapse("un punto alto en el siguiente arco")
+         == "un punto alto en el siguiente arco")
+
+
 if __name__ == "__main__":
     test_intra_segment_thresholds()
     test_cross_segment_consecutive_duplicates()
     test_confirmed_hallucinations_flagged_and_crochet_counting_spared()
-    test_second_opinion_recovers_and_silences()
+    test_second_opinion_recovers_or_collapses()
     test_real_parakeet_cross_check_on_real_hallucination_audio()
+    test_grid_and_never_deletes()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"FAILED ({len(FAILS)}):")

@@ -1201,7 +1201,8 @@ class JobRunner:
                 # the file. And merge_adjacent() would fuse a run of degenerate
                 # segments into one longer line, hiding the very shape — many
                 # short identical ones — that gives the failure away.
-                asr_check = asr_qc.check(segments, speech16, machine.fast_path, report)
+                asr_check = asr_qc.check(segments, speech16, machine.fast_path,
+                                         settings.asr_model, report)
                 stats["asr_check"] = asr_check
                 trouble = asr_qc.summarise(asr_check)
                 if trouble:

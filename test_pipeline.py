@@ -1609,6 +1609,86 @@ def _dominant_hz(path: Path) -> float:
     return float(np.fft.rfftfreq(len(data), 1 / rate)[int(np.argmax(spec))])
 
 
+def test_asr_repetition_reaches_the_report():
+    """A looping transcript has to be repaired by the real pipeline, and said.
+
+    asr_qc has its own suite; this is about the wiring, which had none. The
+    stage runs the check between transcribe and merge_adjacent, stores its
+    report in stats, and adds a note — and a real run of a real video only
+    exercises that when the recogniser actually loops, which the synthesised
+    speech in this suite never does. So the recogniser is replaced by one that
+    returns a known loop, and the finished job is asked what it did about it.
+    """
+    print("\n[6] A looping transcript, repaired and reported by the pipeline")
+    from app import pipeline
+    from app.backends import translate as T
+    from app.config import Settings
+
+    work = WORK / "asrqc"
+    work.mkdir(parents=True, exist_ok=True)
+    clip = work / "clip.mp4"
+    if not clip.exists():
+        audio = speech_wav(work / "speech.wav", seconds=30.0)
+        subprocess.run(["ffmpeg", "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-i", str(audio), "-map", "0:v", "-map", "1:a", "-t", "30",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        str(clip)], check=True)
+
+    pipeline.download.probe, pipeline.download.download = stub_download(
+        clip, "Looping Clip", 30.0, replace=True)
+
+    # Ten identical lines butted together, exactly the shape the real failure
+    # took, plus real lines either side that must come through untouched.
+    def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
+        segs = [{"start": 0.0, "end": 4.0, "text": "This is the first real line."}]
+        segs += [{"start": 4.0 + i * 0.04, "end": 4.04 + i * 0.04, "text": "Vale."}
+                 for i in range(10)]
+        segs.append({"start": 6.0, "end": 10.0, "text": "And this is the last real line."})
+        return segs
+
+    real_transcribe = pipeline.asr_backend.transcribe
+    real_ollama = T._call_ollama
+
+    # *_ , not just prompt: the caller passes the model positionally, so a
+    # one-argument stub raises inside the translator and every line comes back
+    # missing — which reads as a translation failure rather than a broken stub.
+    def fake_llm(prompt, *_a, **_kw):
+        ids = [int(l.split("|")[0]) for l in prompt.splitlines()
+               if l and l[0].isdigit() and "|" in l]
+        return "\n".join(f"{i}|Spoken line number {i} here." for i in ids)
+
+    T._call_ollama = fake_llm
+    pipeline.asr_backend.transcribe = fake_transcribe
+    try:
+        settings = Settings()
+        settings.translator = "ollama"
+        settings.diarize = False
+        job = pipeline.runner.submit("https://example.com/looping", settings)
+        t0 = time.time()
+        while job.status in ("queued", "running") and time.time() - t0 < 600:
+            time.sleep(2)
+    finally:
+        pipeline.asr_backend.transcribe = real_transcribe
+        T._call_ollama = real_ollama
+
+    check("the job finished", job.status == "done", f"{job.status}: {job.error}")
+    if job.status != "done":
+        return
+    rep = job.stats.get("asr_check") or {}
+    check("the check ran and its report reached the job's stats",
+          rep.get("flagged") == 1, str(rep))
+    check("the loop was collapsed rather than emptied out",
+          rep.get("collapsed") == 1 and "silenced" not in rep, str(rep))
+    check("and every unit is accounted for",
+          rep.get("flagged") == rep.get("recovered", 0) + rep.get("collapsed", 0), str(rep))
+    said = " ".join(note_text(n) for n in job.stats.get("notes", []))
+    check("the finished job says the transcript repeated itself",
+          "repeated itself" in said, said[:120] or "(no notes)")
+    check("and says nothing was dropped, because nothing was",
+          "Nothing was dropped" in said, said[:120] or "(no notes)")
+
+
 def test_preset_change_reseparates():
     """Running a link on Fast and then on Balanced must not reuse the downmix.
 
@@ -5452,6 +5532,7 @@ if __name__ == "__main__":
     test_server()
     test_end_to_end()
     test_resume()
+    test_asr_repetition_reaches_the_report()
     test_preset_change_reseparates()
     test_mixed_sample_rates()
     test_cleanup()

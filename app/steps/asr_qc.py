@@ -49,14 +49,26 @@ hallucination looks exactly as suspicious by these fields as the
 hallucination itself. Parakeet backends don't emit them at all, so nothing
 here may require them.
 
-On a flag, nothing is silenced outright. The flagged span is re-transcribed
-with Parakeet — a transducer model, structurally not prone to this
-particular decoder failure — and the segment's text is only replaced with
-Parakeet's answer if that answer itself looks sane; only when Parakeet's own
-attempt is equally degenerate (or empty) does the segment go silent. This
-mirrors qc.py's "silence is a safer failure than garbage" rule, but applied
-one engine later: deleting a real stitch-count outright is a worse mistake
-on this content than re-transcribing it in a different engine's words.
+A third shape was found later, by review, and it is the one that nearly got
+away: 158 consecutive segments counting numbers, every one exactly 2.00
+seconds long, 316 seconds of it, where the clean decode holds ordinary
+instruction. No text test here could see it — consecutive lines differ by a
+word, and each is two words long — and Whisper's own confidence numbers were
+unremarkable across the whole stretch. What gives it away is the clock: real
+speech does not land on one duration over and over. See GRID_RUN_MIN.
+
+**Nothing in here deletes speech.** A flagged span either takes another
+engine's reading of the same audio, or keeps its own words with the
+repetition collapsed to a single instance. An earlier version silenced a
+span when the second engine could not do better, which reads as prudent and
+is the opposite: the second engine only contradicts a loop when the audio is
+*not* looping, so on a false positive it returns the repetition faithfully,
+is judged degenerate in its turn, and real speech is deleted on the strength
+of two engines agreeing. That was not hypothetical — checked against real
+audio, a genuine one-word goodbye held over 36 seconds was deleted exactly
+so. Collapsing is worse than a good recovery and better than any deletion:
+the failure that started all this, one word spoken 221 times, becomes that
+word spoken once.
 """
 from __future__ import annotations
 
@@ -94,6 +106,46 @@ RATIO_THRESH = 0.25
 # decode, by contrast, checked out as fabricated against the clean decode.
 RUN_MIN = 3
 
+# ---- the metronome: consecutive segments all landing on exactly one duration.
+#
+# The third shape, and the one that nearly got away. Neither test above can see
+# it: the texts differ by a word ("y 65", "y 67", "y 68") so no run of identical
+# lines forms, and each is two words long so the intra-segment floor never
+# admits them. It is 158 consecutive segments of counting, every single one
+# exactly 2.00 seconds, from 2685.84s to 3001.84s of the real source — 316
+# seconds, five minutes of fabricated numbers that skip as they climb, where the
+# clean decode of the same window holds ordinary instruction. It was 71% of the
+# fabricated timeline in that file and every text-shaped test here missed all of
+# it. Whisper's own numbers missed it too: median avg_logprob -0.24 and
+# compression_ratio 1.57 over the stretch, nowhere near its thresholds. The
+# model was confident and wrong.
+#
+# What gives it away is not the words but the clock. Real speech does not land
+# on one duration over and over; when Whisper's timestamp machinery gives up it
+# emits a metronome. Longest identical-duration run in the hallucinated decode:
+# 226 segments. In the clean decode of the same audio: 2.
+#
+# Deliberately well above that 2, and above any run a real cadence might
+# produce, because this fires on text that looks perfectly reasonable — the only
+# evidence is the timing, so it has to be evidence nothing else explains. Note
+# it is a *precursor* as much as a symptom: the grid starts at 2549.84s, about
+# 136 seconds before the text goes bad, so the region it marks is wider than the
+# damage and the words inside it are checked on their own merits.
+GRID_RUN_MIN = 8
+GRID_TOLERANCE_S = 0.02
+
+# And the run has to be *gapless*, which is the half of this that stops it
+# firing on real speech. A metronome is not merely regular, it is unbroken:
+# all 158 gaps inside the real one measure exactly 0.0, because nothing is
+# detecting where speech starts and stops any more — the boundaries are being
+# generated, not found. Somebody genuinely counting at a steady pace leaves air
+# between the numbers. This was not a hypothesis: without the gap test, the
+# suite's own 26-segment "linea 0 / linea 1 / …" fixture — uniform 1.0s
+# durations, near-identical short text, half a second of silence between each,
+# which is exactly what real paced counting looks like — was flagged and
+# collapsed in full. Uniform timing alone is not enough evidence.
+GRID_MAX_GAP_S = 0.02
+
 # A hallucination's own timestamps can be as unreliable as its text — the
 # "¿Vale?"×10 run spans only 0.40s start-to-end, not enough runway to say a
 # single "¿vale?" aloud in. Padding the audio handed to the second engine
@@ -102,17 +154,31 @@ RUN_MIN = 3
 # trustworthy audio.
 PAD_S = 0.3
 
-# Sanity band for Parakeet's second opinion: generous enough that no real
-# line in either decode of the source video falls outside it (the fastest
-# real, non-hallucinated stretch found was ~7.5 words/sec; short flagged
-# spans given only a little padding are the main reason the floor is this
-# forgiving rather than tuned to a "normal" speaking pace).
-MIN_WPS_SANE = 0.15
+# Sanity for the second opinion, as a ceiling only. There was a floor here too
+# — a minimum words-per-second — and it deleted real speech. The run test puts
+# no bound on how long a flagged span may be, so the span is arbitrary, and a
+# floor measured against it demands arbitrarily many words back: six at 36s,
+# forty-five at five minutes. The real "¡Chao!" at the end of the source video
+# is one word over 36.6 seconds, and the floor called the speaker's actual
+# goodbye insane and dropped it. Only an implausibly *fast* answer says anything
+# reliable, and only that is tested now.
 MAX_WPS_SANE = 8.0
-# Below this, a span's own duration is too short for words-per-second to mean
-# anything (a single word can legitimately "clock" at 20+ wps in a 0.1s slice
-# once padding is added) — sanity then rests on non-degeneracy alone.
 MIN_DURATION_FOR_RATE_CHECK = 1.0
+
+# Below this there is not enough audio to be worth a second opinion. A flagged
+# run's own timestamps can be nonsense — the "¿Vale?"×10 run is 0.40s end to
+# end — and asking an engine about four tenths of a second gets an answer with
+# nothing behind it: Parakeet really returns "Yeah." for that span, and
+# "Well fine." for the next one, English words for Spanish audio, which then get
+# written into the transcript as a recovery. Below the floor the repetition is
+# collapsed and no engine is troubled for an opinion it cannot have.
+MIN_SPAN_FOR_OPINION_S = 1.5
+
+# How much a single flag may swallow. Touching units are merged, so without a
+# cap a long stretch of separately-flagged segments becomes one unit, one
+# re-transcribe, and one line standing in for minutes of video.
+MAX_UNIT_SPAN_S = 45.0
+MAX_UNIT_SEGMENTS = 24
 
 _STALE_STATS = ("avg_logprob", "compression_ratio", "no_speech_prob")
 
@@ -151,12 +217,34 @@ def _normalize_line(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _grid_runs(segments: list[dict]) -> list[tuple[int, int]]:
+    """Stretches where consecutive segments all share one duration, as indices.
+
+    See GRID_RUN_MIN. Compared with a tolerance rather than for equality because
+    the durations arrive as floats that have been through a rounding or two, and
+    a metronome that ticks 2.0000001 on one segment is still a metronome.
+    """
+    runs, i, n = [], 0, len(segments)
+    while i < n:
+        j = i
+        span = segments[i]["end"] - segments[i]["start"]
+        while j + 1 < n and span > 0 and abs(
+                (segments[j + 1]["end"] - segments[j + 1]["start"]) - span
+                ) <= GRID_TOLERANCE_S and abs(
+                segments[j + 1]["start"] - segments[j]["end"]) <= GRID_MAX_GAP_S:
+            j += 1
+        if span > 0 and j - i + 1 >= GRID_RUN_MIN:
+            runs.append((i, j))
+        i = j + 1
+    return runs
+
+
 def _find_flags(segments: list[dict]) -> list[dict]:
     """Every span worth a second opinion, as (lo, hi) indices into `segments`.
 
-    Two independent passes — a segment can trip either, or in principle both,
-    which is why overlapping/touching hits are merged before anything acts on
-    them, rather than the same audio being sliced and cross-checked twice.
+    Three independent passes — a segment can trip more than one, which is why
+    overlapping and touching hits are merged before anything acts on them,
+    rather than the same audio being sliced and cross-checked twice.
     """
     hits: list[tuple[int, int, str, dict]] = []
 
@@ -164,6 +252,31 @@ def _find_flags(segments: list[dict]) -> list[dict]:
         degenerate, info = _is_degenerate(seg.get("text") or "")
         if degenerate:
             hits.append((i, i, "one segment repeats itself", info))
+
+    # The metronome, taken one segment at a time rather than as a block. The
+    # grid marks a region the recogniser lost its footing in, and it runs wider
+    # than the damage — 136 seconds of the real one carries text that matches
+    # the clean decode word for word. Flagging the whole run would throw that
+    # away, so inside a grid each segment still has to look wrong on its own,
+    # just against a threshold it can actually reach: two words of counting can
+    # never trip a six-word floor, and does not have to here.
+    for lo, hi in _grid_runs(segments):
+        for i in range(lo, hi + 1):
+            words = [w for w in (_normalize_word(w) for w in
+                                 (segments[i].get("text") or "").split()) if w]
+            if not words:
+                continue
+            neighbours = [_normalize_line(segments[k].get("text") or "")
+                          for k in range(max(lo, i - 2), min(hi, i + 2) + 1)]
+            # A short line inside a metronome, next to near-copies of itself:
+            # "y 65" beside "y 67" beside "y 68". Judged on the words it shares
+            # with its neighbours rather than on repetition inside itself, which
+            # a two-word line cannot show.
+            shared = sum(1 for t in neighbours if t and words[0] in t.split())
+            if len(words) <= 3 and shared >= 3:
+                hits.append((i, i, "counting on a fixed grid, no two lines alike",
+                             {"n": len(words), "grid_s": round(
+                                 segments[i]["end"] - segments[i]["start"], 2)}))
 
     i, n = 0, len(segments)
     while i < n:
@@ -184,12 +297,20 @@ def _find_flags(segments: list[dict]) -> list[dict]:
     hits.sort(key=lambda h: h[0])
     units: list[dict] = []
     for lo, hi, reason, info in hits:
+        # Touching hits become one, so a single re-read covers a stretch that
+        # tripped several tests — but only up to a point. Merging without a cap
+        # lets one flag swallow minutes of video and stand in for all of it,
+        # which is how a safety net turns into the biggest edit in the file.
         if units and lo <= units[-1]["hi"] + 1:
-            units[-1]["hi"] = max(units[-1]["hi"], hi)
-            units[-1]["reasons"].append(reason)
-            units[-1]["info"].append(info)
-        else:
-            units.append({"lo": lo, "hi": hi, "reasons": [reason], "info": [info]})
+            grown_hi = max(units[-1]["hi"], hi)
+            span = segments[grown_hi]["end"] - segments[units[-1]["lo"]]["start"]
+            count = grown_hi - units[-1]["lo"] + 1
+            if span <= MAX_UNIT_SPAN_S and count <= MAX_UNIT_SEGMENTS:
+                units[-1]["hi"] = grown_hi
+                units[-1]["reasons"].append(reason)
+                units[-1]["info"].append(info)
+                continue
+        units.append({"lo": lo, "hi": hi, "reasons": [reason], "info": [info]})
     return units
 
 
@@ -241,38 +362,86 @@ def _parakeet_span(audio: Path, start: float, end: float, use_mlx: bool) -> str:
 
 
 def _is_sane(text: str, duration: float) -> bool:
+    """Whether a second opinion is worth preferring to what is already there.
+
+    Judged from three words up, not six. The floor on flagging exists so a real
+    short interjection is never condemned on its own, which is the right caution
+    when all that is known about a segment is its own text. Here the question is
+    narrower — did the other engine do better than a loop — and "vale vale vale"
+    answers no.
+
+    Note what this is *not* used for any more. It used to decide whether to
+    delete the line, and that was backwards: when the flag is a false positive
+    the audio really is repetitive, so the second engine faithfully returns the
+    repetition, this calls it degenerate, and real speech gets dropped on the
+    strength of an engine agreeing with the recogniser. Failing here now means
+    only that the original text stands.
+    """
     text = (text or "").strip()
     if not text:
         return False
-    # Judged from three words up, not six. The floor above exists so that a
-    # real short interjection is never *flagged* on its own, which is the right
-    # caution when the only thing known about a segment is its own text. Here
-    # the caution runs the other way: Whisper has already produced garbage over
-    # this span, and the only question left is whether the second engine did
-    # any better. At the six-word floor "vale vale vale" answers that question
-    # with a no and still counts as a recovery, which puts a smaller piece of
-    # the same nonsense into the dub instead of the silence it had earned.
     degenerate, _ = _is_degenerate(text, min_words=3)
     if degenerate:
         return False
+    # A ceiling only — see MAX_WPS_SANE. A slow answer is not a wrong one.
     if duration >= MIN_DURATION_FOR_RATE_CHECK:
-        wps = len(text.split()) / duration
-        if not (MIN_WPS_SANE <= wps <= MAX_WPS_SANE):
+        if len(text.split()) / duration > MAX_WPS_SANE:
             return False
     return True
 
 
+def _collapse(text: str) -> str:
+    """The repeated thing said once, keeping the original's spelling.
+
+    What replaces a loop when no second opinion is available or preferable.
+    Whisper said one thing over and over; this keeps the one thing. It is the
+    conservative move in both directions — a real utterance repeated for
+    emphasis survives as itself, and a fabricated loop shrinks to a word or two
+    instead of filling half a minute.
+    """
+    tokens = (text or "").split()
+    if len(tokens) < 2:
+        return (text or "").strip()
+    norm = [_normalize_word(t) for t in tokens]
+    n = len(tokens)
+    for period in range(1, n // 2 + 1):
+        unit = norm[:period]
+        if all(norm[i] == unit[i % period] for i in range(n)):
+            return " ".join(tokens[:period])
+    # Not a clean cycle: drop runs of the same word where they butt together,
+    # which is what a loop that drifted mid-phrase leaves behind.
+    out = [tokens[0]]
+    for i in range(1, n):
+        if norm[i] != norm[i - 1]:
+            out.append(tokens[i])
+    return " ".join(out)
+
+
 def check(segments: list[dict], audio: Path, use_mlx: bool,
-         progress: Progress = None) -> dict:
-    """Flag, cross-check, and repair or silence — mutates `segments` in place.
+         asr_model: str = "whisper", progress: Progress = None) -> dict:
+    """Flag, cross-check, and repair — mutates `segments` in place.
 
     Runs on the raw list straight out of `asr_backend.transcribe()`, before
     diarization or `merge_adjacent()`: the latter would fuse a run of
     degenerate segments into one longer blob and hide the very timing
     signature — many short identical segments — that the cross-segment check
     looks for.
+
+    **Nothing here ever deletes speech.** A flagged span ends up either carrying
+    another engine's transcript of the same audio, or carrying its own text with
+    the repetition collapsed to one instance. That is a deliberate retreat from
+    an earlier version that silenced a span when the second engine could not do
+    better, which sounded prudent and was not: the second engine only disagrees
+    with a loop when the audio *is not* looping, so on a false positive it
+    faithfully returns the repetition, gets called degenerate in turn, and real
+    speech goes in the bin with a log line claiming nothing was there. Verified
+    against real audio — a genuine one-word goodbye over 36 seconds was deleted
+    exactly this way. Collapsing instead is worse than a perfect recovery and
+    better than any deletion: the original disaster, one word spoken 221 times,
+    becomes that word spoken once.
     """
-    report = {"segments": len(segments), "flagged": 0, "recovered": 0, "silenced": 0}
+    report = {"segments": len(segments), "flagged": 0, "recovered": 0,
+              "collapsed": 0, "skipped": 0}
     if not segments:
         return report
 
@@ -307,22 +476,34 @@ def check(segments: list[dict], audio: Path, use_mlx: bool,
         original = " / ".join(dict.fromkeys(
             (segments[k].get("text") or "").strip() for k in range(lo, hi + 1)))
         reason = ", ".join(dict.fromkeys(unit["reasons"]))
-
-        candidate = _parakeet_span(audio, pad_start, pad_end, use_mlx)
         base = {k: v for k, v in segments[lo].items() if k not in _STALE_STATS}
+
+        # Worth asking a second engine at all? Not if the span is too short to
+        # hold an answer, and not if the only other engine is the one that
+        # produced this transcript in the first place — asking Parakeet to check
+        # Parakeet's own work gets agreement, not an opinion.
+        span_ok = (pad_end - pad_start) >= MIN_SPAN_FOR_OPINION_S
+        different_engine = asr_model != "parakeet"
+        candidate = (_parakeet_span(audio, pad_start, pad_end, use_mlx)
+                     if span_ok and different_engine else "")
 
         if _is_sane(candidate, end - start):
             report["recovered"] += 1
-            log.warning("ASR repetition-loop segment recovered with a second engine",
+            log.warning("a looping transcript line was re-read by a second engine",
                        extra={"at": round(start, 1), "why": reason,
                               "was": original[:160], "now": candidate[:160]})
             new_segments.append({**base, "start": start, "end": end, "text": candidate})
         else:
-            report["silenced"] += 1
-            log.warning("ASR repetition-loop segment silenced; the second engine "
-                       "found nothing usable there either",
-                       extra={"at": round(start, 1), "why": reason, "was": original[:160]})
-            new_segments.append({**base, "start": start, "end": end, "text": ""})
+            # No better reading available, so what was said stands — once.
+            collapsed = _collapse(segments[lo].get("text") or "")
+            report["collapsed"] += 1
+            if not (span_ok and different_engine):
+                report["skipped"] += 1
+            log.warning("a looping transcript line was collapsed to one instance",
+                       extra={"at": round(start, 1), "why": reason,
+                              "was": original[:160], "now": collapsed[:160],
+                              "asked_second_engine": bool(span_ok and different_engine)})
+            new_segments.append({**base, "start": start, "end": end, "text": collapsed})
         cursor = hi + 1
     new_segments.extend(segments[cursor:])
     segments[:] = new_segments
@@ -337,13 +518,14 @@ def summarise(report: dict) -> str:
     if not report.get("flagged"):
         return ""
     parts = []
-    if report["recovered"]:
-        parts.append(f"{report['recovered']} where Whisper looped on its own words, "
-                     "fixed by re-transcribing that moment with a second speech engine")
-    if report["silenced"]:
-        parts.append(f"{report['silenced']} where the second engine could not find "
-                     "real speech either, left silent")
+    if report.get("recovered"):
+        parts.append(f"{report['recovered']} re-read with a second speech engine")
+    if report.get("collapsed"):
+        parts.append(f"{report['collapsed']} shortened to a single instance of "
+                     "what was being repeated")
     if not parts:
         return ""
-    return ("The transcript needed patching: " + ", and ".join(parts) +
-            ". This is a known Whisper failure on long recordings, not a setting to change.")
+    return ("The transcript repeated itself in places, and was patched: "
+            + ", and ".join(parts) +
+            ". Nothing was dropped. This is a known Whisper failure on long "
+            "recordings, not a setting to change.")
