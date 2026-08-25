@@ -26,6 +26,27 @@ from ..notes import note
 
 Progress = Optional[Callable[[float, str], None]]
 
+# How many times an engine's decode behaviour has changed enough that the same
+# audio, under the same settings, would come back as a different transcript.
+# pipeline.py folds this into segments.json's fingerprint, so a job resumed
+# across such a change re-transcribes rather than replaying what the old
+# behaviour produced — for condition_on_previous_text below, a transcript that
+# could still carry the repetition-loop hallucination it exists to avoid.
+#
+# Keyed by engine, and an engine absent from here declares nothing. That matters
+# because the fingerprint cascades: the terminology and the translation are both
+# built on top of it, so one blanket version number would make a resumed
+# Parakeet job throw away a finished translation — real money, on a paid
+# translator — over a change that cannot have altered a Parakeet transcript at
+# all. An engine left out keeps the exact fingerprint it had before any of this
+# existed, and so keeps its cached work.
+DECODE_VERSIONS = {"whisper": 2}
+
+
+def decode_version(model: str) -> int:
+    """How many times `model`'s decode behaviour has changed. 0 if never."""
+    return DECODE_VERSIONS.get(model, 0)
+
 MLX_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 ONNX_ASR_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
                 "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2")
@@ -266,14 +287,34 @@ def _transcribe_whisper_mlx(audio: Path, progress: Progress = None) -> list[dict
         _fetch_whisper_mlx()
     if progress:
         progress(0.05, "Transcribing — 0%")
+    # condition_on_previous_text feeds each 30s window's decode the text Whisper
+    # believes it just produced. On a real 52-minute recording that carried a
+    # single garbled window into a self-reinforcing loop — one word repeated for
+    # the rest of the window, sometimes hundreds of times — because a bad guess
+    # became the next window's prompt instead of a fresh start. Two independent
+    # full 52-minute decodes of this exact source file with the flag left on
+    # produced 4 distinct repetition-loop instances between them; the same two
+    # decodes with it off produced none, with *more* words captured overall
+    # (nothing lost at the window boundaries this removes) and a faster decode
+    # besides. Documented further, including what was and wasn't independently
+    # verified, in ~/.claude/scratch/dubbing-studio-asr-hallucination/spec.md.
     with _mlx_whisper_progress(progress, 0.05, 0.98):
         result = mlx_whisper.transcribe(str(audio), path_or_hf_repo=WHISPER_MLX,
-                                        word_timestamps=False, verbose=None)
+                                        word_timestamps=False, verbose=None,
+                                        condition_on_previous_text=False)
     out = []
     for s in result.get("segments", []):
         text = (s.get("text") or "").strip()
         if text:
-            out.append({"start": float(s["start"]), "end": float(s["end"]), "text": text})
+            # Kept rather than dropped: a hallucinated repeat isn't always this
+            # cheap to catch by eye. One real instance of this same failure had
+            # an avg_logprob of -2.12 and a compression_ratio of 21.3 — both far
+            # past Whisper's own thresholds (-1.0, 2.4) — and would have been
+            # visible from these fields alone, discarded here until now.
+            out.append({"start": float(s["start"]), "end": float(s["end"]), "text": text,
+                        "avg_logprob": s.get("avg_logprob"),
+                        "compression_ratio": s.get("compression_ratio"),
+                        "no_speech_prob": s.get("no_speech_prob")})
     if progress:
         progress(1.0, f"Transcribed {len(out)} lines")
     return out
@@ -286,12 +327,22 @@ def _transcribe_whisper_cpu(audio: Path, progress: Progress = None) -> list[dict
         progress(0.05, "Loading Whisper (first run downloads about 1.5 GB)")
     model = WhisperModel(WHISPER_CPU, device="cpu", compute_type=WHISPER_CPU_COMPUTE,
                          cpu_threads=max(2, _cpu_count() - 1))
-    segments, info = model.transcribe(str(audio), vad_filter=True, beam_size=1)
+    # Same flag, same reason, as the MLX path above: condition_on_previous_text
+    # carries a bad decode into the next window as its prompt. vad_filter=True
+    # already resets segmentation at silence, which is real protection this
+    # path had and the MLX one didn't — this is defense in depth alongside it,
+    # not the primary fix, and hasn't had its own full-length real-audio
+    # verification the way the MLX change did.
+    segments, info = model.transcribe(str(audio), vad_filter=True, beam_size=1,
+                                      condition_on_previous_text=False)
     out = []
     for n, s in enumerate(segments):
         text = (s.text or "").strip()
         if text:
-            out.append({"start": float(s.start), "end": float(s.end), "text": text})
+            out.append({"start": float(s.start), "end": float(s.end), "text": text,
+                        "avg_logprob": s.avg_logprob,
+                        "compression_ratio": s.compression_ratio,
+                        "no_speech_prob": s.no_speech_prob})
         if progress and n % 10 == 0:
             progress(min(0.98, 0.1 + s.end / max(1.0, info.duration)),
                      f"Transcribing — {len(out)} lines so far")

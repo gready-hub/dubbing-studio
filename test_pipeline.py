@@ -1571,10 +1571,28 @@ def test_resume():
 
     # Changing the transcription engine must invalidate the cached transcript
     # rather than quietly handing back the other engine's work.
-    from app.pipeline import _fingerprint
-    parakeet = _fingerprint("parakeet", True, True)
-    whisper = _fingerprint("whisper", True, True)
+    from app.pipeline import _asr_fingerprint, _fingerprint
+    parakeet = _asr_fingerprint("parakeet", True, "audio")
+    whisper = _asr_fingerprint("whisper", True, "audio")
     check("a different ASR engine invalidates the cache", parakeet != whisper)
+
+    # Which engine's decode changed is part of the fingerprint, and only that
+    # engine's. This one cascades — the terminology and the translation are
+    # keyed off it in turn — so versioning every engine at once would make a
+    # resumed Parakeet job buy a whole translation over again, on a paid
+    # translator with real money, for a change to how Whisper decodes. So an
+    # engine with nothing to declare has to hash exactly as it did before any
+    # of this existed, and the one that changed must not.
+    from app.backends import asr as _asr_mod
+    check("an engine whose decode never changed keeps its old fingerprint",
+          parakeet == _fingerprint("parakeet", True, "audio"),
+          f"{parakeet} vs {_fingerprint('parakeet', True, 'audio')}")
+    check("while the engine that did changes",
+          whisper != _fingerprint("whisper", True, "audio"))
+    check("and that is what the version table says",
+          _asr_mod.decode_version("parakeet") == 0
+          and _asr_mod.decode_version("whisper") > 0,
+          str(_asr_mod.DECODE_VERSIONS))
 
 
 # ============================== 6. a preset change re-derives the audio
@@ -1937,6 +1955,37 @@ def test_segments_and_voices():
           len(merge_adjacent(spaced)) == 3, str(len(merge_adjacent(spaced))))
     check("ids are renumbered for the translator",
           [s_["i"] for s_ in merge_adjacent(spaced)] == [0, 1, 2])
+
+    # A merged line's per-window decode stats have to survive the merge, and
+    # survive it pessimistically. A repetition loop produces exactly the short
+    # gapless lines this joins, so stats that vanished on a merge would be
+    # missing from the hallucinated lines and present on the clean ones — the
+    # wrong way round for anything later trying to read them. The worst of the
+    # group is kept, and a real instance's numbers (avg_logprob -2.12,
+    # compression_ratio 21.3) sit in the middle of the run here, so taking the
+    # first or the last would fail this rather than pass it by luck.
+    stamped = [{"start": t, "end": t + 0.9, "text": f"line {n}", "speaker": 0,
+                "avg_logprob": lp, "compression_ratio": cr, "no_speech_prob": ns}
+               for n, (t, lp, cr, ns) in enumerate([(0.0, -0.5, 1.2, 0.01),
+                                                    (1.0, -2.12, 21.3, 0.9),
+                                                    (2.0, -0.9, 2.0, 0.02)])]
+    joined = merge_adjacent([dict(s_) for s_ in stamped])
+    check("a merge keeps the worst decode stats of the group it joined",
+          len(joined) == 1 and joined[0]["avg_logprob"] == -2.12
+          and joined[0]["compression_ratio"] == 21.3
+          and joined[0]["no_speech_prob"] == 0.9, str(joined))
+    # A line that never merges with anything is still the ASR's own honest
+    # report of itself, so its stats are real and kept.
+    lone = merge_adjacent([dict(stamped[0])])
+    check("a line that merges with nothing keeps its own stats",
+          lone[0].get("avg_logprob") == -0.5
+          and lone[0].get("compression_ratio") == 1.2, str(lone))
+    # Parakeet reports none of this, so there is nothing to carry and no key to
+    # invent — a merged line must not sprout a diagnostic its engine never gave.
+    bare = merge_adjacent([dict(r) for r in rapid])
+    check("an engine that reports no stats grows none on merging",
+          not any(k in bare[0] for k in
+                  ("avg_logprob", "compression_ratio", "no_speech_prob")), str(bare))
 
     # Pitch, on synthesised tones with a known fundamental.
     sr = 16000

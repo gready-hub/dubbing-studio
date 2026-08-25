@@ -115,6 +115,24 @@ def _fingerprint(*parts) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
+def _asr_fingerprint(asr_model: str, fast_path: bool, audio_dir: str) -> str:
+    """Identify the transcript this engine, machine and audio folder produce.
+
+    Its own function because this is the fingerprint with consequences: the
+    terminology and the translation are both keyed off it in turn, so a change
+    here throws those away as well. That is exactly right when the transcript
+    really would come back different, and an expensive mistake — a finished
+    translation re-bought line by line — when it would not. So an engine whose
+    decode behaviour has not changed contributes nothing and keeps the
+    fingerprint it has always had.
+    """
+    parts = [asr_model, fast_path, audio_dir]
+    decode = asr_backend.decode_version(asr_model)
+    if decode:
+        parts.append(f"decode{decode}")
+    return _fingerprint(*parts)
+
+
 def _cache_valid(workdir: Path, key: str, fingerprint: str) -> bool:
     """True when a cached artefact was made under the settings now in force.
 
@@ -1168,8 +1186,8 @@ class JobRunner:
             # Identify the audio by the folder it came out of rather than by the
             # separation *setting*: that also invalidates the transcript when
             # separation was requested but silently fell back to the full mix.
-            asr_print = _fingerprint(settings.asr_model, machine.fast_path,
-                                     audio_dir.name)
+            asr_print = _asr_fingerprint(settings.asr_model, machine.fast_path,
+                                         audio_dir.name)
             if cache.exists() and _cache_valid(workdir, "segments", asr_print):
                 segments = json.loads(cache.read_text())
                 report(1.0, "Reusing the transcription from the previous run")
