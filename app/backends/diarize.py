@@ -179,7 +179,7 @@ def pick_reference(segments: list[dict], speaker: int, audio: np.ndarray, rate: 
         end = best["start"] + min(span, max_s)
         return audio[int(best["start"] * rate):int(end * rate)]
 
-    # Nothing long enough on its own — join the best few with short gaps.
+    # Fall back: join several shorter segments with brief gaps between them.
     chunks, total = [], 0.0
     for seg in mine:
         piece = audio[int(seg["start"] * rate):int(seg["end"] * rate)]

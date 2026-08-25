@@ -1,17 +1,10 @@
 """One block of text a non-technical user can paste into a message.
 
-The app already knows everything needed to diagnose most failures — which Mac,
-which versions, what the setup check thinks, what the last job did and what the
-failing tool said. None of it was reachable without a terminal, so the best
-advice available was "expand that grey triangle and send a screenshot".
+Plain text, not JSON: this gets pasted into a chat window, where JSON is
+mangled by the client and looks alarming. The log itself stays JSON.
 
-Plain text rather than JSON on purpose. This gets pasted into a chat window,
-where JSON is mangled by the client, looks alarming to the person sending it, and
-is no easier to read at the other end. The log stays JSON; that is machine-read.
-
-No per-job variant and no arguments. The job that just failed is in the recent
-log lines by definition, tagged with its id, so choosing a job would add a
-question for the user and a branch here in exchange for nothing.
+No per-job variant: the job that just failed is already in the recent log
+lines, tagged with its id, so picking a job would add nothing but a question.
 """
 from __future__ import annotations
 
@@ -24,10 +17,8 @@ from dataclasses import asdict
 from . import logs, storage
 from .config import OUTPUT_DIR, Settings, detect_machine, mac_generation
 
-# Never leaves the machine in the clear. /api/state hands these back in full,
-# which is tolerable over localhost and is not tolerable on a clipboard bound for
-# a chat window. Reduced to whether one is set, which is the only part that helps
-# anybody diagnose anything.
+# Reduced to whether one is set: tolerable for /api/state over localhost, not
+# for a clipboard headed to a chat window.
 SECRETS = ("anthropic_key", "openai_key")
 
 LONG_VALUE = 120
@@ -44,11 +35,8 @@ def _tool_version(*cmd: str) -> str:
 def _ytdlp_version() -> str:
     """The version of the yt-dlp the downloader will really run.
 
-    A bug report is worth having only if it names the binary that failed. Read
-    as bare "yt-dlp" this reported whichever copy PATH resolved first, which
-    under the activated venv was not the one doing the downloading — so a report
-    could show a current yt-dlp while a six-week-old one was producing the 403
-    the report was written about.
+    Bare "yt-dlp" resolves whatever PATH finds first, which under the activated
+    venv is not necessarily the copy actually doing the downloading.
     """
     from .steps.download import _ytdlp_cmd
     return _tool_version(*_ytdlp_cmd(), "--version")
@@ -56,19 +44,17 @@ def _ytdlp_version() -> str:
 
 def _settings_lines(settings) -> list[str]:
     rows = []
-    # Everything except the secrets, rather than a list of the interesting ones.
-    # An allowlist drifts: a setting added later is simply missing from every
-    # report and nobody notices until it is the one that explains a failure.
+    # Everything except secrets, not an allowlist of "interesting" ones — an
+    # allowlist drifts silently when a new setting is added.
     for key, value in sorted(asdict(settings).items()):
         if key in SECRETS:
             rows.append(f"  {key}: {'set' if value else 'not set'}")
             continue
-        # Flattened first: a pasted glossary carries newlines, and one setting
-        # spilling over several lines turns a scannable list into a wall.
+        # Flattened: a pasted glossary carries newlines that would otherwise
+        # turn one row into a wall of text.
         text = " ".join(str(value).split()) if value != "" else "(not set)"
         if len(text) > LONG_VALUE:
-            # A pasted glossary can run to pages. Its size is what matters here;
-            # the content is on the user's screen if it is ever needed.
+            # Size matters here, not content — that's on the user's own screen.
             text = f"{text[:LONG_VALUE]}… ({len(text)} characters)"
         rows.append(f"  {key}: {text}")
     return rows
@@ -125,9 +111,8 @@ def report(limit: int = 200) -> str:
     lines.extend(_settings_lines(settings))
     lines.append("")
 
-    # Whatever died below Python — a native crash in a model or in ffmpeg — never
-    # reaches the logger, so the app bundle keeps stderr in a file of its own.
-    # Empty on a healthy machine, and the only evidence there is on a sick one.
+    # A native crash (model, ffmpeg) never reaches the logger, so the app
+    # bundle keeps stderr in a separate file; empty unless something crashed.
     crash = _crash_tail()
     if crash:
         lines.append("Crashes (stderr, most recent last)")
@@ -160,8 +145,8 @@ def _installed_version() -> str:
 def _checks() -> list[dict]:
     """The setup check, asked of the server rather than restated here.
 
-    Imported inside the function because server imports this module; asking at
-    call time keeps that from being a circular import at load time.
+    Imported locally (not at module level) since server also imports this
+    module — avoids a circular import.
     """
     try:
         from .server import doctor

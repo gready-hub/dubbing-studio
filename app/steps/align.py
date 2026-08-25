@@ -59,10 +59,8 @@ def assemble(lines: list[dict], total_duration: float, sample_rate: int,
 
     cursor = 0.0
     for n, line in enumerate(lines):
-        # One rate is applied to every line, so a line recorded at a different
-        # one would be placed and stretched against the wrong clock — a timing
-        # error, which is the failure this whole module exists to prevent. Lines
-        # that declare their rate are checked rather than trusted.
+        # One rate applies to the whole track; a line recorded at a different
+        # rate would be placed and stretched against the wrong clock.
         rate = line.get("rate")
         if rate is not None and int(rate) != int(sample_rate):
             raise ValueError(
@@ -159,8 +157,7 @@ def write_srt(segments: list[dict], dst: Path) -> Path:
         text = seg.get("translation") or seg.get("text", "")
         if not text:
             continue
-        # Nothing upstream promises start <= end; guarded here, once, at the
-        # one place a malformed range would otherwise reach the file.
+        # Nothing upstream guarantees start <= end.
         start, end = seg["start"], max(seg["end"], seg["start"])
         for c_start, c_end, cue in _split_timing(_wrap_into_cues(text), start, end):
             n += 1

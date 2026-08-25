@@ -20,10 +20,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# Must be set before app.config is imported anywhere — it reads these at import
-# time to decide where the job and output folders live. A fixed shared path let
-# concurrent runs corrupt each other's job state, so each run now gets its own
-# directory (removed on exit) unless the caller names one explicitly.
+# Must be set before app.config is imported — it reads these at import time to
+# decide where job/output folders live. Each run gets its own directory (removed
+# on exit) unless the caller names one explicitly, so concurrent runs can't
+# corrupt each other's job state.
 _explicit_home = os.environ.get("DUBBING_STUDIO_HOME")
 if _explicit_home:
     SCRATCH = Path(_explicit_home)
@@ -38,12 +38,11 @@ WORK.mkdir(parents=True, exist_ok=True)
 # Point the scratch model folder at the real one so a test run doesn't re-fetch
 # 700 MB of speech models it already has. Jobs and output stay isolated.
 #
-# The scratch home lives under /var/folders, which macOS purges on its own
-# schedule. It deletes the big model files but leaves the directories, so a
-# plain "does it exist" check kept a hollowed-out models folder in place and the
-# suite failed from deep inside sherpa-onnx with "File doesn't exist" — an
-# environment problem wearing a code regression's clothes. A real directory that
-# is not the symlink we intended is therefore replaced, not respected.
+# macOS purges /var/folders on its own schedule, deleting model files but
+# leaving directories behind — so a plain "does it exist" check could leave a
+# hollowed-out models folder in place and fail deep inside sherpa-onnx with
+# "File doesn't exist". A real directory that isn't the intended symlink is
+# therefore replaced, not respected.
 _real_models = Path.home() / "Library" / "Caches" / "DubbingStudio" / "models"
 _scratch_models = SCRATCH / "cache" / "models"
 if _real_models.is_dir() and not _scratch_models.is_symlink():
@@ -138,7 +137,6 @@ def speech_wav(dst: Path, seconds: float = 75.0) -> Path:
     return dst
 
 
-# ======================================================= 1. alignment maths
 def test_align():
     print("\n[1] Alignment maths")
     from app.steps import align
@@ -175,18 +173,15 @@ def test_align():
     check("drift is recorded when a line overruns", stats["max_drift"] > 0,
           f"{stats['max_drift']}s")
 
-    # Peak normalisation.
     loud = [{"start": 0.0, "end": 2.0, "samples": (tone(1.0) * 20).astype(np.float32)}]
     track, _ = align.assemble(loud, 5.0, sr)
     check("output is normalised, not clipped", 0.85 <= float(np.max(np.abs(track))) <= 0.9,
           f"peak {float(np.max(np.abs(track))):.3f}")
 
-    # atempo chaining for large factors.
     check("atempo chains beyond 2x", align._atempo_chain(3.5).count("atempo") == 2,
           align._atempo_chain(3.5))
     check("atempo single stage under 2x", align._atempo_chain(1.4).count("atempo") == 1)
 
-    # SRT output.
     segs = [{"start": 1.5, "end": 3.25, "translation": "Hello there"},
             {"start": 4.0, "end": 5.0, "translation": "Second line"}]
     out = WORK / "test.srt"
@@ -195,9 +190,8 @@ def test_align():
     check("SRT timestamps are formatted correctly", "00:00:01,500 --> 00:00:03,250" in body,
           body.splitlines()[1] if body else "empty")
 
-    # A cue too long to read at a glance: one run-on merge span, ~220 characters
-    # over 11 seconds, no punctuation to hint at a break.
-    long_text = " ".join(f"word{n}" for n in range(40))  # 40 short words, ~220 chars
+    # A cue too long to read at a glance, with no punctuation to hint at a break.
+    long_text = " ".join(f"word{n}" for n in range(40))
     long_segs = [{"start": 0.0, "end": 11.0, "translation": long_text}]
     out2 = WORK / "test_long.srt"
     align.write_srt(long_segs, out2)
@@ -212,9 +206,9 @@ def test_align():
     check("the words survive the split, in order",
           " ".join(" ".join(lines).replace("\n", " ") for lines in lines_per_cue) == long_text)
 
-    # A single token with no space in it anywhere near the line width — the
-    # case _chunk_text used to wave through untouched, for textwrap to then
-    # hard-break into as many lines as it took, inside one cue.
+    # A single unbreakable token near the line width: _chunk_text used to wave
+    # this through untouched, letting textwrap hard-break it into as many
+    # lines as it took, inside one cue.
     blob = "a" * 300
     blob_segs = [{"start": 0.0, "end": 20.0, "translation": blob}]
     out_blob = WORK / "test_blob.srt"
@@ -239,7 +233,6 @@ def test_align():
     check("and every line of it still respects the width",
           all(len(line) <= align.LINE_CHARS for lines in cjk_lines for line in lines))
 
-    # A short cue is left exactly as it was: no gratuitous split or wrap.
     short_segs = [{"start": 0.0, "end": 2.0, "translation": "Hello there"}]
     out3 = WORK / "test_short.srt"
     align.write_srt(short_segs, out3)
@@ -298,7 +291,6 @@ def test_align():
           "language=eng" in sub_streams, sub_streams.replace("\n", " "))
 
 
-# ==================================================== 2. translation parsing
 def test_translate():
     print("\n[2] Translation handling")
     from app.backends import translate as T
@@ -322,10 +314,8 @@ def test_translate():
           lines("0|Hello | there") == {0: "Hello | there"})
 
     # A model that renumbers hands back fluent translations of *other* lines
-    # under the ids we asked for. Found in a finished 98-minute dub: two slots
-    # carried the pair from two slots earlier, so the voice described a corner
-    # while the picture showed a seam. Every content check passed it, because
-    # nothing compared a translation against the slot it landed in.
+    # under the ids we asked for — content checks alone pass it, because
+    # nothing compares a translation against the slot it landed in.
     check("a reply that lines up is trusted", trusted("0|Hello\n1|Goodbye"))
     check("an id we never asked for makes the whole batch untrustworthy",
           not trusted("1|Hello\n2|Goodbye"))
@@ -338,25 +328,22 @@ def test_translate():
           T._ask(batch, [], "English", "",
                  lambda _p: "0|Hello\n1|Goodbye") == {0: "Hello", 1: "Goodbye"})
 
-    # A translation the model wrapped onto a second physical line. This used to
-    # be dropped: the id was already answered, so it was not a miss, not a
-    # retry, and not counted — the dub spoke a grammatical fragment of roughly
-    # the right length and nothing downstream could tell.
+    # A translation wrapped onto a second physical line used to be dropped: the
+    # id was already answered, so it wasn't a miss or a retry, and nothing
+    # downstream could tell the dub was speaking a truncated fragment.
     check("a wrapped translation is rejoined, not truncated",
           lines("0|Now chain three and turn,\nand then work two together.")
           == {0: "Now chain three and turn, and then work two together."})
-    # Only a genuine wrap. A sentence continued onto a second line carries on in
-    # lower case; anything the model adds of its own starts with a capital.
-    # Without that test the pleasantry was glued on and spoken aloud.
+    # A genuine wrap continues in lower case; anything the model adds of its own
+    # starts with a capital — otherwise a sign-off gets glued on and spoken aloud.
     check("but the model's own sign-off is not glued onto the last line",
           lines("0|Hello\n1|Goodbye\nLet me know if you want any adjustments!")
           == {0: "Hello", 1: "Goodbye"})
 
     prompt = T._build_prompt(batch, ["contexto"], "English", "hola -> hi")
-    # Nothing but the id and the line. A slot marker riding along here came back
-    # spoken aloud on 89 of every 100 Japanese lines: rule 3 renders numbers as
-    # words, and "four point zero seconds" is a translation as far as every
-    # check downstream can tell. What is never sent cannot be echoed.
+    # Nothing but the id and the line: a slot marker riding along here gets
+    # rendered as words ("four point zero seconds") and spoken aloud as if it
+    # were a translation. What is never sent cannot be echoed.
     check("prompt carries no slot marker", "s]" not in prompt and "2.0" not in prompt,
           prompt[-80:])
     check("prompt still carries the line and its id",
@@ -436,15 +423,11 @@ def test_translate():
         check("a local model's own incomplete-translation advice is unchanged",
               "If you are using a local model" in str(exc), str(exc))
 
-    # A tester put a bogus key in Settings, ran a job, and ninety seconds and
-    # thirty retries later was told "Translation only returned 0 of 30 lines.
-    # If you are using a local model, try a larger one in Settings" — despite
-    # having said, ten seconds earlier in its own progress line, that it was
-    # translating with claude-sonnet-5. The words "API key" appeared nowhere.
-    # _call_anthropic() and _call_openai() had no exception handling at all, so
-    # the 401 raised urllib.error.HTTPError, which is not a TranslationError and
-    # was swallowed by _ask()'s "except Exception: return {}" as an ordinary
-    # empty reply — indistinguishable from a slow model, and retried the same way.
+    # A bad API key used to surface as "try a larger local model", never
+    # mentioning the key: _call_anthropic()/_call_openai() had no exception
+    # handling, so the 401's urllib.error.HTTPError was swallowed by _ask()'s
+    # bare "except Exception: return {}" as an ordinary empty reply —
+    # indistinguishable from a slow model, and retried the same way.
     import io
     import urllib.error
     import urllib.request as _urlreq
@@ -476,10 +459,9 @@ def test_translate():
         finally:
             _urlreq.urlopen = real_urlopen
 
-    # OpenAI's own 401 body echoes the key back ("Incorrect API key provided:
-    # sk-..."); Anthropic's does not. Both are exercised so the redaction in
-    # _redact() is tested against a body that actually contains the secret,
-    # not just against one that never had it to begin with.
+    # OpenAI's 401 body echoes the key back; Anthropic's doesn't. Both are
+    # exercised so _redact() is tested against a body that actually contains
+    # the secret, not just one that never had it.
     for provider, build_error in (
             ("anthropic", lambda k: {"type": "error", "error": {
                 "type": "authentication_error", "message": "invalid x-api-key"}}),
@@ -501,19 +483,17 @@ def test_translate():
         check(f"{label} fails on the first request rather than after thirty retries",
               n_calls == 1, f"{n_calls} calls")
 
-    # A whitespace-only key is still truthy, so backend_for()'s "if not
-    # settings.anthropic_key" guard never catches it, and matching it against a
-    # message the ordinary way would replace every run of spaces in the text —
-    # reachable by nothing more than a stray space pasted into Settings.
+    # A whitespace-only key is still truthy, so the "if not settings.anthropic_key"
+    # guard never catches it — and naively matching it against a message would
+    # replace every run of spaces in the text.
     check("a whitespace-only key is not redacted, and doesn't corrupt the message",
           T._redact("Anthropic said the key was invalid.", "   ")
           == "Anthropic said the key was invalid.")
     check("but a real key, however it's padded, still gets redacted",
           "[key redacted]" in T._redact("key: '  sk-test-123  ' is bad", "  sk-test-123  "))
 
-    # A 429 must read differently from a 401 — one is fixed by a different key,
-    # the other by waiting or paying, and conflating them sends someone to
-    # Settings to fix a key that was never the problem.
+    # A 429 must read differently from a 401 — one needs a different key, the
+    # other needs waiting or paying, and conflating them misdirects the fix.
     exc429, n429, _ = hit_provider(
         "anthropic", lambda k: {"error": {"message": "rate limit exceeded"}}, 429)
     check("a 429 is distinguished from a 401",
@@ -558,7 +538,6 @@ def test_translate():
               "If you are using a local model" not in msg, msg)
 
 
-# ============================================================ 3. HTTP layer
 def test_server():
     print("\n[3] Web server")
     from fastapi.testclient import TestClient
@@ -613,21 +592,18 @@ def test_server():
     check("a link with the https:// left off is told what's missing",
           r.status_code == 400 and "https://" in r.json()["detail"],
           str(r.json())[:90])
-    # Telling a host from a folder means knowing "bbc.co.uk" is a domain and
-    # "Mr.Robot" is not, which only a list of domain endings can say — and no
-    # such list is ever finished. So the missing-file answer carries the other
-    # possibility too: a link whose ending is not on the list still gets told
-    # what to do, instead of only being shown a path nobody typed.
+    # Telling a host from a folder needs a list of domain endings, which is
+    # never complete — so the missing-file answer also carries the https://
+    # hint, rather than assuming an unrecognised ending must be a path.
     r = client.post("/api/job", json={"url": "podcast.example.tech/ep.mp3"})
     detail = r.json()["detail"]
     check("an address the list has never heard of is still told about https://",
           r.status_code == 400 and "https://" in detail, detail[:96])
     check("and is still shown the path that was looked for",
           "no file at" in detail, detail[:96])
-    # And the other way round. A folder called "Mr.Robot" reads exactly like a
-    # host, so the link branch catches real files too — answering one of those
-    # with only "put https:// on the front" leaves somebody whose video moved
-    # holding advice for a problem they do not have.
+    # And the reverse: a folder like "Mr.Robot" reads exactly like a host, so
+    # the link branch must still name the path it looked for, not just advise
+    # adding https://.
     guessed = client.post("/api/job", json={"url": "Mr.Robot"}).json()["detail"]
     check("a folder mistaken for an address is still told where it looked",
           "https://" in guessed and "nothing at" in guessed, guessed[:96])
@@ -637,13 +613,11 @@ def test_server():
           str(r.json())[:90])
 
     # Accepted, and normalised on the way in: the file chooser hands over a
-    # tidy path but a person types "~/…", and those have to be one job.
+    # tidy path but a person types "~/…", and those have to resolve to one job.
     real_submit = _pl.runner.submit
     seen = []
-    # The canonical path, not the one that happens to be typed: the scratch
-    # folder lives under /var, which macOS symlinks to /private/var, and
-    # resolving that is the whole point — two spellings of one video have to be
-    # one job over one folder rather than two racing over it.
+    # /var is a macOS symlink to /private/var; resolving it is the point —
+    # two spellings of one video must be one job, not two racing over it.
     settled = str(tiny.resolve())
 
     def fake_submit(source, settings, preview=False):
@@ -662,9 +636,8 @@ def test_server():
     finally:
         _pl.runner.submit = real_submit
 
-    # The file chooser, without a dialog: the endpoint's job is to run the
-    # script and read what comes back, and both answers it has to cope with —
-    # a path, and somebody pressing Cancel — can be produced without one.
+    # The file chooser, without a dialog: the endpoint just runs the script and
+    # reads what comes back, so both a path and a Cancel can be simulated.
     real_script = _srv._CHOOSE_FILE
     try:
         _srv._CHOOSE_FILE = 'return "/Users/x/Movies/a b.mp4"'
@@ -731,9 +704,8 @@ def test_server():
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     # Stands in for the lru_cached real thing, cache_clear() and all: without
-    # that attribute the endpoint dies before it answers, and this test went
-    # green anyway — the pip calls it counts happen before the failure. The
-    # status codes are asserted for exactly that reason.
+    # that attribute the endpoint dies before answering, and the pip-call
+    # count alone wouldn't catch it — hence asserting status codes too.
     _fake_version = lambda: "2026.08.19"                          # noqa: E731
     _fake_version.cache_clear = lambda: None
     _srv.subprocess.run = _slow_pip
@@ -766,11 +738,9 @@ def test_server():
         _srv.subprocess.run = dated(200)
         stale, shown = _srv._ytdlp_age()
         check("one from months ago is", stale is True, shown)
-        # Genuinely undateable: a version that is not three numbers. The fixture
-        # here used to be "2026.07.04.dev0+abc", which splits to 2026/07/04 and
-        # dates perfectly well — it only looked "left alone" because it happened
-        # to fall inside the staleness window, and tightening that window turned
-        # a test that had been asserting nothing into a failure.
+        # Genuinely undateable: a version that isn't three numbers. A fixture
+        # that merely parsed to a recent date would pass by coincidence rather
+        # than by actually being undateable.
         _srv.subprocess.run = lambda *a, **k: _Out("stable@2026.07.04\n")
         check("a build with an undateable version is left alone",
               _srv._ytdlp_age() == (False, "stable@2026.07.04"))
@@ -784,10 +754,9 @@ def test_server():
     finally:
         _srv.subprocess.run = real_run
 
-    # Open folder sends the path the panel is holding, and until the first state
-    # arrives that is the empty string the store starts with. An empty string is
-    # a key that exists, so a get() default never fired and Path("") is ".",
-    # which opened whatever folder the app was running from.
+    # Before the first state arrives, the panel holds the empty-string path it
+    # starts with — an empty string is a key that exists, so a get() default
+    # never fires and Path("") resolves to ".", opening the working directory.
     opened = []
     _srv.subprocess.run = lambda cmd, **k: opened.append([str(c) for c in cmd])
     try:
@@ -806,20 +775,18 @@ def test_server():
     finally:
         _srv.subprocess.run = real_run
 
-    # What a failed download actually says to the person reading it. The failed
-    # panel shows this verbatim, so anything yt-dlp phrases for itself ends up
-    # in front of someone who cannot act on it.
+    # The failed-job panel shows this verbatim, so yt-dlp's own wording must
+    # not end up in front of someone who can't act on it.
     from app.steps.download import _friendly
     dead = _friendly("ERROR: [generic] nope: Unable to download webpage: HTTP Error "
                      "404: File not found (caused by <HTTPError 404: File not found>)")
     check("a dead link is explained in plain English",
           "typed correctly" in dead and "ERROR" not in dead, dead)
 
-    # A pinned format that cannot be fetched must not end the run. The ids come
-    # from probe(), which is its own negotiation, so YouTube can list a stream to
-    # the lookup and refuse it to the fetch — seen three different ways on one
-    # video inside six minutes: a 403, the ids missing from the second list, and
-    # the tv client refusing outright.
+    # A pinned format that can't be fetched must not end the run. probe()'s
+    # listing is its own negotiation, so YouTube can list a stream and then
+    # refuse it to the fetch — via a 403, missing ids on retry, or an outright
+    # refusal from the client.
     import app.steps.download as _dl
     for label, failure in (
             ("a 403 on the pinned stream",
@@ -866,10 +833,10 @@ def test_server():
             _dl.stream, _dl.probe = real_stream, real_probe
             _dl._looks_like_media = real_media
 
-    # A declined exchange is not a format problem. Asking again immediately asks
-    # a rate-limited host to serve twice as fast, so this one fails on the spot,
-    # and what it says has to be something a person can act on — yt-dlp's own
-    # words tell them to reload a page that does not exist.
+    # A declined exchange is not a format problem, so it fails on the spot
+    # rather than retrying — retrying immediately just asks a rate-limited host
+    # to serve twice as fast. yt-dlp's own wording ("reload the page") isn't
+    # actionable, so it must be rephrased.
     reload_said = _friendly("ERROR: [youtube] x: The page needs to be reloaded.")
     check("a declined exchange is explained as a wait, not a reload",
           "reload" not in reload_said.lower() and "Try again" in reload_said,
@@ -926,10 +893,8 @@ def test_server():
         check("and is not retried with another format", len(seen2) == 1, str(seen2))
     finally:
         _dl.stream, _dl.probe = real_stream, real_probe
-    # Two files have to agree about which model a given Mac gets: config.py
-    # suggests it and the setup check reports it, while Install.command is what
-    # actually downloads it. A comment asks them to be kept in step; this is what
-    # notices when they aren't.
+    # config.py suggests a model and Install.command actually downloads it —
+    # they must be kept in step; this notices when they drift apart.
     import re as _re
     from app.config import suggest_ollama_model
     ladder = _re.findall(r"RAM_GB >= (\d+) \)\); then LADDER=\(([^)]+)\)",
@@ -948,8 +913,8 @@ def test_server():
     check("no tier defaults to the 32B model",
           all("32b" not in suggest_ollama_model(r) for r in (8, 16, 24, 48, 64, 128)))
 
-    # Nobody outside this code knows model tags exist, and a machine whose
-    # installer pulled a different size used to die on a 404 mid-translation.
+    # A machine whose installer pulled a different model size used to die on a
+    # 404 mid-translation; usable_model() must substitute instead.
     from app.backends import translate as T
     real_installed = T.installed_models
     T.installed_models = lambda host="": [{"name": "qwen3:8b", "size": 5_000_000_000},
@@ -970,14 +935,10 @@ def test_server():
     finally:
         T.installed_models = real_installed
 
-    # A substituted model is off the finished run's report entirely. It began as
-    # a warning there, was softened to information, and was still the wrong
-    # place for it: which local models are installed is a property of this Mac
-    # rather than of this video, it does not change from one dub to the next,
-    # and it was restated on every finished job — twice, because the translation
-    # and the terminology pass each resolve a backend and each recorded it. A
-    # note is for what this run did differently. Setup check is the one place it
-    # is said now, on the row named for the model, where the fix is actionable.
+    # A substituted model is off the finished run's report entirely: which
+    # local models are installed is a property of the Mac, not of this video,
+    # so it doesn't belong on a per-job note. Setup check is the one place it's
+    # said now, on the row named for the model, where the fix is actionable.
     import inspect as _inspect
     from app.config import Settings as _Settings, Machine as _Machine
     T.installed_models = lambda host="": [{"name": "qwen3:8b", "size": 5_000_000_000}]
@@ -1020,21 +981,16 @@ def test_server():
     check("an offline machine is told so",
           "internet connection" in _friendly("ERROR: unable to open: "
                                              "nodename nor servname provided"))
-    # Said honestly: by the time this reaches anyone the download has already
-    # been retried as several different player clients, so "try again in a
-    # minute" is advice that has been taken on their behalf and failed.
+    # By the time this reaches anyone, the download has already been retried
+    # as several player clients, so "try again in a minute" has already failed.
     forbidden = _friendly("ERROR: unable to download: HTTP Error 403: Forbidden")
     check("a 403 says what to actually do about it",
           "Sign in as" in forbidden and "every attempt" in forbidden, forbidden[:80])
     check("and no longer claims it is temporary", "temporary" not in forbidden.lower())
-    # The advice that was confidently wrong. A public video which plays fine in a
-    # browser was refused with a 403, and this message sent the user off to
-    # configure browser cookies and suggested the video might be private or
-    # members-only. It was none of those: the copy of yt-dlp asking was 51 days
-    # old, every player client it knew had been retired, and the one that still
-    # served the video was added after it was built. When the copy is old enough
-    # to be the cause, it is named first — and it is a one-click fix, which the
-    # cookie advice is not.
+    # A public video refused with a 403 used to send the user off to configure
+    # browser cookies, when the real cause was an old yt-dlp whose known player
+    # clients had all been retired. When the copy is old enough to be the
+    # cause, name that first — it's a one-click fix, unlike the cookie advice.
     import app.steps.download as _dlm
     _real_version = _dlm.ytdlp_version
     try:
@@ -1058,20 +1014,16 @@ def test_server():
         silent = _dlm._friendly("ERROR: unable to download: HTTP Error 403: Forbidden")
         check("nor is one that will not say its version at all",
               not silent.startswith("This copy of yt-dlp is"), silent[:70])
-        # Named as the cause of the refusal it produces, rather than as a
-        # diagnosis of its own. YouTube signs its media URLs with a parameter
-        # that has to be computed by running its JavaScript, and a yt-dlp that
-        # cannot do that is handed a URL which serves a few tens of MB and is
-        # then refused — so the challenge failure and the 403 are in the same
-        # stderr every time. Asserted against the real captured output, because
-        # testing each message on its own is exactly how a branch for this got
-        # shipped unreachable: the 403 matched first and the cause was never
-        # once reported.
-        # Dated from today rather than written down. A literal version is a
-        # test with an expiry date on it: pinned to a real release, these
-        # assertions pass until it drifts past YTDLP_STALE_DAYS and then start
-        # failing on a change nobody made, because _stale_lead() begins
-        # answering and the message no longer opens the way it expects.
+        # YouTube signs media URLs with a JS-computed parameter; a yt-dlp that
+        # can't run that JS gets handed a URL that serves briefly and then gets
+        # refused — so the challenge failure and the 403 land in the same
+        # stderr every time. Tested against the combined output, not each
+        # message alone, because testing them separately is how a branch here
+        # shipped unreachable (the 403 matched first).
+        #
+        # Version computed relative to today rather than hardcoded, so the
+        # assertion doesn't start failing once a pinned release drifts past
+        # YTDLP_STALE_DAYS.
         _fresh = (_dt.date.today() - _dt.timedelta(days=1)).strftime("%Y.%m.%d")
         _dlm.ytdlp_version = lambda: _fresh              # current, so no stale lead
         challenge = ("WARNING: [youtube] [jsc] Remote components challenge solver "
@@ -1085,11 +1037,10 @@ def test_server():
               both.startswith("yt-dlp couldn't answer"), both[:70])
         check("and it points at where the answer is without promising it",
               "Setup check" in both and "error details" in both, both[:120])
-        # Deliberately not "press Update yt-dlp": this branch is only reached
-        # when the copy is *not* old — the age lead above takes it otherwise —
-        # so what is usually left is a machine with no JavaScript runtime to
-        # answer the check with, which updating does not change. The button
-        # would report "already current" and make the rest look wrong too.
+        # Deliberately not "press Update yt-dlp": this branch is reached only
+        # when the copy isn't old, so the usual cause is a missing JS runtime,
+        # which updating doesn't fix — the button would just say "already
+        # current".
         check("and does not send them to a button that will say 'already current'",
               "Press “Update yt-dlp”" not in both, both[:120])
         _dlm.ytdlp_version = lambda: "2020.01.01"
@@ -1105,13 +1056,11 @@ def test_server():
         check("a 403 with no challenge behind it still gets the sign-in advice",
               _dlm._friendly("ERROR: HTTP Error 403: Forbidden")
               .startswith("YouTube described the video"))
-        # Why it is a lead and not a branch of its own, which is what it was
-        # first written as. yt-dlp emits this warning on every extraction on a
-        # machine with no JavaScript runtime, so it does not tell one failure
-        # from another at all: tested first, it swallowed everything under it,
-        # and a download that died because the network dropped was answered
-        # with "press Update yt-dlp". Each of these has its own advice, and one
-        # of them is the opposite of retrying.
+        # This is a lead, not a standalone branch: the warning fires on every
+        # extraction on a machine with no JS runtime, so tested first it would
+        # swallow every other failure underneath it (e.g. a dropped network
+        # answered with "press Update yt-dlp"). Each case below has its own
+        # advice, and some are the opposite of "try again".
         for said, want in (
                 ("ERROR: <urlopen error nodename nor servname provided, or not known>",
                  "internet connection"),
@@ -1122,11 +1071,9 @@ def test_server():
             answered = _dlm._friendly(challenge + said)
             check(f"a challenge warning does not swallow {want!r}",
                   want in answered, answered[:70])
-        # Kept as a branch at the very bottom as well as used as a lead above,
-        # but only where there is nothing else to say. These lines match far
-        # more stderr than they explain, so an error beside them is the answer
-        # even when this function has no name for it — testing them first hid a
-        # disk that filled up behind "press Update yt-dlp".
+        # Kept as a fallback branch as well as a lead, only where nothing else
+        # matched: these lines match far more stderr than they explain, and
+        # testing them first once hid a full disk behind "press Update yt-dlp".
         real = _dlm._friendly(challenge + "ERROR: unable to open for writing: "
                                           "[Errno 28] No space left on device")
         check("a real error is not hidden behind an unanswered check",
@@ -1135,21 +1082,18 @@ def test_server():
         check("but a stderr of nothing but warnings is still explained",
               warnings_only.startswith("yt-dlp couldn't answer")
               and "WARNING" not in warnings_only, warnings_only[:70])
-        # "Nothing else" means every line a warning. Asking instead whether any
-        # line *started* with ERROR was too narrow by half — plenty of real
-        # failures announce themselves some other way, and each of these came
-        # back as a failed download check while that was the test.
+        # "Nothing else" means every line is a warning — checking only whether
+        # a line *started* with ERROR was too narrow, since real failures can
+        # announce themselves other ways.
         for other in ('Traceback (most recent call last):\n  File "x", line 1\n'
                       "OSError: [Errno 28] No space left on device",
                       "yt-dlp: error: unrecognized arguments: --bogus"):
             answered = _dlm._friendly(challenge + other)
             check("a failure that does not say ERROR is still not masked",
                   not answered.startswith("yt-dlp couldn't answer"), answered[:70])
-        # "age" is three letters that also sit inside "package", and the
-        # advisory says "NPM package" every time. It cost nothing while warnings
-        # were suppressed and started answering the moment they were not, so a
-        # restricted video came back as an age-restricted one — a different
-        # thing, with different advice.
+        # "age" is a substring of "package", which the advisory always
+        # contains — a naive substring match turned a restricted video into an
+        # age-restricted one, a different thing with different advice.
         restricted = _dlm._friendly(
             "WARNING: [youtube] [jsc] Remote components challenge solver script "
             "(deno) and NPM package (deno) were skipped.\n"
@@ -1162,26 +1106,20 @@ def test_server():
             check("while a real age restriction still is one",
                   _dlm._friendly(real_age).startswith("That video is age-restricted"),
                   _dlm._friendly(real_age)[:60])
-        # Never says the copy is old, because it does not know that: the check
-        # is answered by running JavaScript, and a machine with nothing to run
-        # it with fails it while perfectly up to date — where the claim would
-        # be one the user disproves in a click.
+        # Never claims the copy is old here: the check needs a JS runtime, and
+        # a machine without one fails it while perfectly up to date — a claim
+        # the user could disprove in a click.
         check("and it does not guess at why, only at what to try",
               "older copy" not in _dlm._friendly(challenge + "ERROR: HTTP Error 403: Forbidden"))
-        # The one refusal that is never led. Every lead ends in "try again", and
-        # this message exists to say that retrying straight away makes the wait
-        # longer — so a lead here would ask for the one thing the sentence after
-        # it warns against.
+        # This refusal is never given a lead: every lead ends in "try again",
+        # but this message exists specifically to warn against retrying now.
         declined = _dlm._friendly(challenge + "ERROR: [youtube] x: The page needs to be reloaded.")
         check("the wait-it-out refusal is not told to try again first",
               declined.startswith("YouTube declined the request"), declined[:70])
-        # The advisory on its own, which is a different line from the failure
-        # and can be the only thing in a stderr. It must not lead a refusal —
-        # it is emitted on runs that succeed — but at the bottom, where nothing
-        # else has matched, it is still a better answer than handing somebody
-        # "WARNING: [youtube] [jsc] Remote components challenge solver script
-        # (deno) …" as the explanation. _tidy() would not even take the
-        # WARNING: off it, knowing only about ERROR:.
+        # The advisory can appear on its own with no failure, even on runs that
+        # succeed, so it must not lead a refusal — but as a last-resort answer
+        # it beats handing someone the raw WARNING: line verbatim, which
+        # _tidy() wouldn't even strip (it only knows about ERROR:).
         advisory_only = _dlm._friendly(
             "WARNING: [youtube] [jsc] Remote components challenge solver script "
             "(deno) and NPM package (deno) were skipped. These may be required "
@@ -1203,10 +1141,9 @@ def test_server():
     r = client.get("/api/job/nope/video")
     check("missing job video 404s", r.status_code == 404)
 
-    # The preset is read back off the switches rather than stored as an
-    # assertion about them. It used to be the latter, so choosing Balanced and
-    # then turning separation off left it saying "balanced" and the segmented
-    # control in the interface claiming a preset the settings no longer were.
+    # The preset is read back off the switches, not stored as an assertion
+    # about them — otherwise choosing Balanced and turning separation off left
+    # it still saying "balanced" while the switches no longer matched it.
     from app.config import PRESETS, Settings
     for name in PRESETS:
         check(f"{name} settings identify as {name}",
@@ -1246,13 +1183,11 @@ def test_server():
 
     # --- values the app cannot honour, on the way out as well as the way in
     #
-    # A language with no voice behind it is translated into and then read aloud in
-    # English, which sounds fluent and is nonsense; an unrecognised glossary
-    # contributes no terms while still claiming to. Both were caught when a saved
-    # file was read and nowhere else, so this endpoint assigned onto a live
-    # instance, wrote the value to disk and echoed it back — and only the next
-    # load put it right. Normalisation belongs to the model, so every write path
-    # is covered by construction rather than by remembering.
+    # A language with no voice falls back to English silently (fluent, but
+    # wrong); an unrecognised glossary contributes no terms while still
+    # claiming to. Both used to be caught only on the next load, since
+    # normalisation lived in the loader rather than the model — so every write
+    # path is now covered by construction instead.
     from app.config import SETTINGS_FILE
     r = client.post("/api/settings", json={"data": {"target_language": "French"}})
     check("a language no voice can speak is not echoed back as accepted",
@@ -1312,9 +1247,9 @@ def test_server():
           and got["diarize"] is False, str(got["keep_video_quality"]))
     check("and the preset follows the switches back",
           got["preset"] == Settings().preset, got["preset"])
-    # A key is pasted in from an account somewhere else and cannot be read back
-    # out of this app. Everything else here can be chosen again in seconds, so
-    # "reset" must not be able to destroy one by implication.
+    # An API key can't be read back out of this app once pasted in. Everything
+    # else here can be re-chosen in seconds, so a blanket reset must not
+    # destroy a key by implication.
     check("a blanket reset does not throw away an API key",
           got["anthropic_key"] == "sk-ant-RESET-CANARY", got["anthropic_key"][:12])
     r = client.post("/api/settings/reset", json={"keys": ["anthropic_key"]})
@@ -1333,12 +1268,11 @@ def test_server():
 
     # --- what a blanket reset is allowed to destroy
     #
-    # Both confirm dialogs promise that API keys and finished videos survive, and
-    # the promise has to be kept here rather than in the wording in front of it. A
-    # glossary of someone's own terms is unbounded text typed by hand with no undo
-    # anywhere in the app, which is not something that "can be chosen again in
-    # seconds". Checked as the rule: everything moved off its default, then a
-    # blanket reset, and exactly the spared fields are the ones still moved.
+    # The confirm dialogs promise that API keys and finished videos survive,
+    # and the promise must be kept in code, not just in the dialog's wording.
+    # A hand-typed glossary has no undo anywhere in the app, so it can't be
+    # "chosen again in seconds" either. Checked as a rule: move everything off
+    # its default, reset, and confirm exactly the spared fields stayed moved.
     moved = {"voice": "bf_lily", "speed": 1.4, "keep_video_quality": "720",
              "asr_model": "parakeet", "write_srt": True, "diarize": True,
              "translator": "openai", "keep_awake": False,
@@ -1378,10 +1312,9 @@ def test_server():
 
     # --- a settings file written by an earlier build
     #
-    # settings.json outlives the build that wrote it, and this one names a setting
-    # that no longer exists. Unknown keys are dropped before the constructor sees
-    # them, so an old file loads with the fields it still shares rather than
-    # raising and losing every one of them.
+    # settings.json outlives the build that wrote it. Unknown keys must be
+    # dropped before the constructor sees them, so a file naming a removed
+    # setting still loads the fields it shares rather than raising.
     from app.config import SETTINGS_FILE as _SF
     saved = _SF.read_text() if _SF.exists() else None
     try:
@@ -1402,7 +1335,6 @@ def test_server():
             _SF.write_text(saved)
 
 
-# ======================================================= 4. full pipeline run
 def test_end_to_end():
     print("\n[4] Full pipeline (real ASR, real TTS, real mux)")
     from app import pipeline
@@ -1476,16 +1408,13 @@ def test_end_to_end():
           f"{s.get('drift_seconds')}s")
     check("lines were spoken", s.get("lines_spoken", 0) > 0, str(s.get("lines_spoken")))
     check("timing drift stayed small", s.get("max_drift", 99) < 2.0, f"{s.get('max_drift')}s")
-    # "Voices used" used to hold the compute engine's name (identical to the
-    # separate "Engine" row below it) rather than which voice actually spoke.
+    # "Voices used" used to duplicate the separate "Engine" row's value.
     check("voices used names the voice, not the compute engine",
           s.get("voices") == "Emma", str(s.get("voices")))
     check("the engine is still reported, just under its own row",
           s.get("engine") in ("Apple GPU (MLX)", "Portable (CPU)"), str(s.get("engine")))
-    # The undubbed-time figure used to be labelled "silent stretches", as if a
-    # gap in an otherwise-present track were the fault, when the raw dub holds
-    # only the spoken lines and everything between them is silence by
-    # construction.
+    # Renamed from "silent stretches", which implied a fault — the raw dub
+    # holds only spoken lines, so the gaps are silence by construction.
     check("undubbed time is reported under its new name",
           "no_line_seconds" in s and "no_line_share" in s, str(sorted(s)))
     # What produced this file, kept with the file. Settings are free to change
@@ -1509,8 +1438,7 @@ def test_end_to_end():
 
     check("subtitle file was saved", out.with_suffix(".srt").exists())
 
-    # Prove the audio actually contains the English we asked for, using the app's
-    # own portable recogniser rather than a separate copy of one.
+    # Uses the app's own portable recogniser rather than a separate copy.
     from app.backends import asr as asr_backend
     check_wav = work / "check.wav"
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(out),
@@ -1526,7 +1454,6 @@ def test_end_to_end():
     E2E_JOB_ID = job.id
 
 
-# ========================================================== 5. resuming a link
 E2E_JOB_ID = ""
 
 
@@ -1569,20 +1496,17 @@ def test_resume():
     check("translation was reused, not redone",
           any("Reusing the translation" in m for m in messages))
 
-    # Changing the transcription engine must invalidate the cached transcript
-    # rather than quietly handing back the other engine's work.
+    # A changed ASR engine must invalidate the cached transcript, not quietly
+    # hand back the other engine's work.
     from app.pipeline import _asr_fingerprint, _fingerprint
     parakeet = _asr_fingerprint("parakeet", True, "audio")
     whisper = _asr_fingerprint("whisper", True, "audio")
     check("a different ASR engine invalidates the cache", parakeet != whisper)
 
-    # Which engine's decode changed is part of the fingerprint, and only that
-    # engine's. This one cascades — the terminology and the translation are
-    # keyed off it in turn — so versioning every engine at once would make a
-    # resumed Parakeet job buy a whole translation over again, on a paid
-    # translator with real money, for a change to how Whisper decodes. So an
-    # engine with nothing to declare has to hash exactly as it did before any
-    # of this existed, and the one that changed must not.
+    # Only the engine whose decode actually changed gets a new fingerprint —
+    # this cascades into translation cost, so bumping every engine at once
+    # would make a resumed Parakeet job re-buy translation on a paid API for
+    # an unrelated change to how Whisper decodes.
     from app.backends import asr as _asr_mod
     check("an engine whose decode never changed keeps its old fingerprint",
           parakeet == _fingerprint("parakeet", True, "audio"),
@@ -1595,7 +1519,6 @@ def test_resume():
           str(_asr_mod.DECODE_VERSIONS))
 
 
-# ============================== 6. a preset change re-derives the audio
 def _tone(hz: float, seconds: float, rate: int) -> np.ndarray:
     t = np.linspace(0, seconds, int(seconds * rate), endpoint=False)
     return (0.4 * np.sin(2 * np.pi * hz * t)).astype(np.float32)
@@ -1612,12 +1535,10 @@ def _dominant_hz(path: Path) -> float:
 def test_asr_repetition_reaches_the_report():
     """A looping transcript has to be repaired by the real pipeline, and said.
 
-    asr_qc has its own suite; this is about the wiring, which had none. The
-    stage runs the check between transcribe and merge_adjacent, stores its
-    report in stats, and adds a note — and a real run of a real video only
-    exercises that when the recogniser actually loops, which the synthesised
-    speech in this suite never does. So the recogniser is replaced by one that
-    returns a known loop, and the finished job is asked what it did about it.
+    asr_qc has its own suite; this is about the wiring, which had none. A real
+    video's synthesised speech never actually loops, so the recogniser here is
+    replaced by one that returns a known loop, and the finished job is asked
+    what it did about it.
     """
     print("\n[6] A looping transcript, repaired and reported by the pipeline")
     from app import pipeline
@@ -1638,8 +1559,8 @@ def test_asr_repetition_reaches_the_report():
     pipeline.download.probe, pipeline.download.download = stub_download(
         clip, "Looping Clip", 30.0, replace=True)
 
-    # Ten identical lines butted together, exactly the shape the real failure
-    # took, plus real lines either side that must come through untouched.
+    # Ten identical lines butted together, the shape the real failure took,
+    # plus real lines either side that must come through untouched.
     def fake_transcribe(audio_wav, use_mlx, model="parakeet", progress=None):
         segs = [{"start": 0.0, "end": 4.0, "text": "This is the first real line."}]
         segs += [{"start": 4.0 + i * 0.04, "end": 4.04 + i * 0.04, "text": "Vale."}
@@ -1708,9 +1629,8 @@ def test_preset_change_reseparates():
 
     MIX_HZ, STEM_HZ, RATE = 200.0, 800.0, 44100
     URL = "https://example.com/preset-change"
-    # From a clean folder: a link maps to a stable job id, so leftovers from a
-    # previous run of this suite would be reused and the test would be asserting
-    # against whatever the last run happened to leave.
+    # A link maps to a stable job id, so leftovers from a previous run of this
+    # suite must be cleared or the test asserts against stale state.
     shutil_rmtree(JOBS / pipeline._job_id(URL))
     work = WORK / "preset"
     work.mkdir(parents=True, exist_ok=True)
@@ -1759,10 +1679,9 @@ def test_preset_change_reseparates():
     pipeline.download.download = fake_download
     pipeline.separate_backend.separate = fake_separate
     pipeline.asr_backend.transcribe = fake_transcribe
-    # Pruning after a successful job removes the derived audio, which would hide
-    # this bug rather than fix it — and only for jobs that succeed. A run that
-    # failed or was cancelled keeps everything, and is then exactly the stale
-    # folder the next run reads from, so that is the state to test against.
+    # Pruning after success would remove the derived audio and hide this bug —
+    # but a failed/cancelled run keeps everything, which is the stale folder
+    # the next run actually reads from, so that's the state tested here.
     pipeline.prune_workdir = lambda workdir: 0
     T._call_ollama = fake_llm
 
@@ -1792,7 +1711,6 @@ def test_preset_change_reseparates():
               len(heard) == 2 and heard[1] == int(STEM_HZ),
               f"heard {heard}, wanted [{int(MIX_HZ)}, {int(STEM_HZ)}]")
 
-        # The two runs must not be sharing derived audio at all.
         derived = sorted((JOBS / fast.id / "derived").iterdir())
         check("each set of settings got its own derived audio folder",
               len(derived) >= 3, f"{len(derived)} folders")
@@ -1810,7 +1728,6 @@ def test_preset_change_reseparates():
         pipeline.prune_workdir = real_prune
 
 
-# ================================ 7. one sample rate across the whole track
 def test_mixed_sample_rates():
     """A voice that dies mid-job must not leave two rates in one track.
 
@@ -1827,8 +1744,8 @@ def test_mixed_sample_rates():
     from app.config import Settings
     from app.steps import align
 
-    # Directly: assemble() is told one rate, so a line that declares another is
-    # refused rather than placed against the wrong clock.
+    # assemble() is told one rate; a line declaring another must be refused,
+    # not placed against the wrong clock.
     sr = 24000
     lines = [{"start": 0.0, "end": 1.0, "samples": _tone(440, 0.5, sr), "rate": 24000},
              {"start": 2.0, "end": 3.0, "samples": _tone(440, 0.5, sr), "rate": 32000}]
@@ -1842,9 +1759,8 @@ def test_mixed_sample_rates():
     # forcing the real mid-job fallback to the 24 kHz portable voice.
     STARTS = [(1.0, 3.0), (5.0, 7.0)]
     URL = "https://example.com/rate-switch"
-    # Cached lines from an earlier run of this suite would be read straight back
-    # and the engine never called, so the fallback this test exists to trigger
-    # would never happen.
+    # Cached lines from an earlier run would skip the engine entirely, so the
+    # fallback this test exists to trigger would never happen.
     from app.config import JOBS as JOBS_DIR
     shutil_rmtree(JOBS_DIR / pipeline._job_id(URL))
     work = WORK / "rates"
@@ -1946,13 +1862,11 @@ def test_mixed_sample_rates():
         pipeline.prune_workdir = real_prune
 
 
-# ==================================== 8. a finished job drops its bulk
 def test_cleanup():
     """Keep what makes a re-run cheap; drop the rest.
 
-    A job folder held the download, the full-band audio, the stems and the
-    rendered track — about 1.5 GB for an hour of video, under Application
-    Support where nobody would find it.
+    Unpruned, a job folder holds the download, full-band audio, stems and
+    rendered track — roughly 1.5 GB/hour, hidden under Application Support.
     """
     print("\n[8] Clearing up after a finished job")
     from app.pipeline import prune_workdir
@@ -2004,7 +1918,6 @@ def shutil_rmtree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
-# =============================== 9. reshaping and matching the voices
 def test_segments_and_voices():
     """Two ideas taken from other dubbing projects, checked against real numbers."""
     print("\n[9] Joining run-on lines, and matching voices by pitch")
@@ -2036,14 +1949,12 @@ def test_segments_and_voices():
     check("ids are renumbered for the translator",
           [s_["i"] for s_ in merge_adjacent(spaced)] == [0, 1, 2])
 
-    # A merged line's per-window decode stats have to survive the merge, and
-    # survive it pessimistically. A repetition loop produces exactly the short
-    # gapless lines this joins, so stats that vanished on a merge would be
-    # missing from the hallucinated lines and present on the clean ones — the
-    # wrong way round for anything later trying to read them. The worst of the
-    # group is kept, and a real instance's numbers (avg_logprob -2.12,
-    # compression_ratio 21.3) sit in the middle of the run here, so taking the
-    # first or the last would fail this rather than pass it by luck.
+    # A merged line's decode stats must survive the merge pessimistically: the
+    # worst of the group is kept, since a repetition loop produces exactly the
+    # short gapless lines this joins, and losing the worst stats on merge would
+    # hide the hallucinated lines rather than flag them. Real-world numbers
+    # (avg_logprob -2.12, compression_ratio 21.3) sit in the *middle* of the
+    # run here, so taking the first or last item would pass by luck.
     stamped = [{"start": t, "end": t + 0.9, "text": f"line {n}", "speaker": 0,
                 "avg_logprob": lp, "compression_ratio": cr, "no_speech_prob": ns}
                for n, (t, lp, cr, ns) in enumerate([(0.0, -0.5, 1.2, 0.01),
@@ -2080,8 +1991,8 @@ def test_segments_and_voices():
 
     # --- matching a whole speaker to a voice, not one clip of them
     #
-    # A speaker's voice must follow the majority of what they said, whether
-    # the minority is one long clip or many short ones.
+    # A speaker's voice follows the majority of what they said, whether the
+    # minority is one long clip or many short ones.
     from app.pipeline import _voice_map
 
     def tone(hz, seconds, sr=16000):
@@ -2094,13 +2005,11 @@ def test_segments_and_voices():
 
     with tempfile.TemporaryDirectory() as td:
         wav_path = Path(td) / "speech16k.wav"
-        # Speaker 1: uniformly low-pitched. Speaker 2: uniformly high-pitched.
-        # Speaker 3: one long low-pitched segment (5s) against six shorter
-        # high-pitched ones (12s total) — a single unrepresentative clip must
-        # not outweigh the rest. Speaker 4: the reverse shape — one dominant
-        # high-pitched segment (25s, 71%) against ten short low-pitched
-        # interjections (10s, 29%) — many short clips must not outvote one
-        # long one either.
+        # Speakers 1-2: uniformly low/high-pitched. Speaker 3: one long
+        # low-pitched clip outweighed by several shorter high-pitched ones —
+        # a single unrepresentative clip must not dominate. Speaker 4: the
+        # reverse shape, one long high-pitched clip against many short
+        # low-pitched interjections — many short clips must not outvote it.
         chunks = [
             tone(110.0, 4.0), tone(115.0, 4.0),
             tone(230.0, 4.0), tone(225.0, 4.0),
@@ -2144,9 +2053,8 @@ def test_segments_and_voices():
 
     # --- naming the voices actually used, for the report
     #
-    # stats["voices"] used to hold the compute engine's name, which read as
-    # "Voices used: Apple GPU (MLX)" on every built-in-voice run — identical to
-    # the separate "Engine" row and naming no voice at all.
+    # stats["voices"] used to hold the compute engine's name instead, e.g.
+    # "Voices used: Apple GPU (MLX)" — duplicating the "Engine" row.
     from app.pipeline import _voice_names
 
     s_ = Settings()
@@ -2174,9 +2082,9 @@ def test_segments_and_voices():
     def note(count, sample=False):
         return _speaker_note(count, sample)
 
-    # Over-segmentation of a single presenter, which is how this step actually
-    # fails. The real run that prompted the guard reported 28 speakers for a
-    # 10m35s film with about seven characters and said so without comment.
+    # Over-segmentation of a single presenter is how this step actually fails
+    # in practice — a real run once reported 28 speakers for a film with about
+    # seven characters, and said so without comment.
     for count in (3, 4, 5):
         check(f"one presenter split into {count} voices is flagged", bool(note(count)))
     check("28 speakers in a ten-minute film is flagged", bool(note(28)))
@@ -2185,14 +2093,13 @@ def test_segments_and_voices():
     check("a two-person interview is left alone", not note(2))
     check("a single-voice dub is left alone", not note(1))
 
-    # Length is not evidence either way — a 90-minute craft tutorial has one or
-    # two speakers and a ten-minute film can have seven — so it is not an input
-    # at all, and no video is long enough to talk the guard out of firing.
+    # Video length is not evidence either way, so it is not an input to the
+    # guard at all, and no video is long enough to talk it out of firing.
     #
-    # Nor is a stated speaker count: the clustering is never told how many people
-    # to find, so the count it reports is evidence rather than an instruction
-    # played back. A count the guard was measured against could never be exceeded
-    # by one it had itself fixed, which is what made this silent.
+    # Nor is a stated speaker count: the clustering is never told how many
+    # people to find, so the count it reports is evidence, not an instruction
+    # played back — a count the guard measured against itself could never
+    # exceed it, which is what would make failures silent.
     import inspect
     check("the count found is the only evidence the guard weighs",
           list(inspect.signature(_speaker_note).parameters) == ["found", "sample"],
@@ -2230,16 +2137,13 @@ def test_segments_and_voices():
     check("the choice still avoids the primary voice", female != "bf_emma", female)
 
 
-# ======================= 10. a 30-second sample before the whole video
 def test_preview():
     """A sample must be cheap to take and must not pretend to be the real thing.
 
-    Three things make it worth having, and each is a way it can silently stop
-    being worth having: the window has to land on speech rather than on the
-    title card, the download it pays for has to survive for the full run behind
-    it, and its output must not leak into the finished videos or the history —
-    a thirty-second stub filed beside real output is a mess the user cannot
-    reason their way out of.
+    Three things make it worth having: the window must land on speech rather
+    than the title card, the download it pays for must survive for the full
+    run behind it, and its output must not leak into the finished videos or
+    history.
     """
     print("\n[10] A sample before committing to the whole video")
     from app import pipeline
@@ -2280,9 +2184,9 @@ def test_preview():
 
     # ------------------------------------------- weighting the progress bar
     # A sample shrinks every stage but the download, which still fetches the
-    # whole video. Left at its full-run share the bar sat near zero for most of
-    # the wait and then sprinted, which is the one thing a progress bar must not
-    # do to someone deciding whether to give up.
+    # whole video. At its full-run share the bar would sit near zero for most
+    # of the wait and then sprint — the one thing a progress bar must not do to
+    # someone deciding whether to give up.
     balanced = Settings().apply_preset("balanced")
     plain = pipeline.runner._plan(balanced)
     heavy = pipeline.runner._plan(balanced, 6.0)
@@ -2325,9 +2229,8 @@ def test_preview():
         s.translator = "ollama"
 
         # Elapsed time is time spent working, not time since the link was
-        # pasted. A job that sat behind another and then ran reported the wait
-        # as part of its own duration, which made "Took" wrong and the estimate
-        # of the time remaining wrong by the same margin.
+        # pasted — a queued job used to fold its wait into "Took", skewing the
+        # time-remaining estimate by the same margin.
         waiting = pipeline.Job(id="x", url="u")
         check("a job that has not started reports no elapsed time",
               waiting.public()["elapsed"] == 0)
@@ -2343,8 +2246,8 @@ def test_preview():
 
         job = pipeline.runner.submit(URL, s, preview=True)
         # An impatient second click is the same job, not two racing over one
-        # folder. The buttons are disabled while a submission is in flight, but
-        # that is a courtesy; this is the guarantee.
+        # folder. Disabling the buttons mid-submission is a courtesy; this is
+        # the actual guarantee.
         check("a second click while it runs is the same job",
               pipeline.runner.submit(URL, s, preview=True) is job)
         t0 = time.time()
@@ -2404,9 +2307,8 @@ def test_preview():
                   Path(brief.output).parent == OUTPUT_DIR, brief.output)
 
         # ------------------------------------------ nothing to hear at all
-        # A video with no speech in it — a music video, a silent screencast —
-        # should fail plainly and in a minute, which is most of the argument for
-        # sampling in the first place.
+        # A video with no speech (music video, silent screencast) should fail
+        # plainly and fast — most of the argument for sampling in the first place.
         SILENT_URL = "https://example.com/all-quiet"
         shutil_rmtree(JOBS_DIR / pipeline._link_id(SILENT_URL))
         silent = work / "silent.mp4"
@@ -2438,7 +2340,6 @@ def test_preview():
         pipeline.asr_backend.transcribe = real_transcribe
 
 
-# ============================== 11. knowing where the disk went
 def test_storage():
     """Filling the boot disk does not just fail a job — macOS stops working too.
 
@@ -2450,9 +2351,8 @@ def test_storage():
     from app.config import JOBS, OUTPUT_DIR
 
     # --- sizes as the user reads them
-    # One formatter for the disk warning and the download alike. The small end
-    # matters: a first, cautious try is a short video, and it used to be
-    # announced as "about 0.0 GB" of "0 MB".
+    # One formatter shared by the disk warning and the download. The small end
+    # matters: a short first try used to be announced as "about 0.0 GB".
     check("gigabytes keep one decimal", store.human_size(1_828_000_000) == "1.7 GB")
     check("past 100 MB a decimal is dropped", store.human_size(660_000_000) == "629 MB")
     check("a few megabytes keep theirs", store.human_size(5_000_000) == "4.8 MB")
@@ -2473,9 +2373,9 @@ def test_storage():
     check("an unknown quality is treated as the largest",
           store.estimate_needed(600, "??") == store.estimate_needed(600, "best"))
 
-    # The real download size, where the site published one, beats the per-second
-    # guess — and the case it rescues is the preview, where the duration passed
-    # in is the 30-second sample but the whole video is fetched to cut it out of.
+    # A published source size beats the per-second guess — this rescues the
+    # preview case, where the duration is the 30s sample but the whole video
+    # still gets fetched to cut it from.
     big = 1_800_000_000                                  # a 1.7 GB source
     check("a known source size is used when it exceeds the guess",
           store.estimate_needed(30, "best", source_bytes=big) > 2 * big,
@@ -2488,38 +2388,32 @@ def test_storage():
     check("and no size at all leaves the estimate exactly as it was",
           store.estimate_needed(3600, "720", source_bytes=0) == hour)
 
-    # A file already on this disk is read where it lies rather than copied into
-    # the job folder, so the fetch comes out of the estimate. The dub does not:
-    # mux copies the picture through rather than re-encoding it, so the finished
-    # file lands about the size of the one it came from, and a source that isn't
-    # already H.264 gets a converted copy beside it before that one takes over.
-    # Dropping the source term outright estimated a 12 GB file at 600 MB and
-    # sailed past the guard that exists to stop a full disk taking the machine
-    # down with it.
+    # A local file is read where it lies, not copied into the job folder, so
+    # the fetch term drops out — but mux copies the picture through rather than
+    # re-encoding, so the finished file lands about the source's size, and a
+    # non-H.264 source gets a converted copy too. Dropping the source term
+    # outright once estimated a 12 GB file at 600 MB, sailing past the
+    # full-disk guard.
     huge = 12 * 1024**3                                  # 20 minutes of 4K
     local = store.estimate_needed(1200, "best", source_bytes=huge, local_source=True)
     check("a local file still reserves room for the dub written back out",
           local > 2 * huge, f"{local / 1024**3:.1f} GB for a {huge / 1024**3:.0f} GB file")
-    # Where the two differ is the fetch. At this bitrate they happen to agree —
-    # both are then dominated by picture-sized files, a fetched copy in the job
-    # folder in one case and the dub written out in the other — so the ordinary
-    # video is what shows it: there, the download falls back to its per-second
-    # guess for a source it has to hold as well as write.
+    # A remote and local source differ only in the fetch term — an ordinary
+    # video shows it, since there the download falls back to its per-second
+    # guess for a source it must hold as well as write.
     ordinary = store.estimate_needed(3600, "best", source_bytes=big, local_source=True)
     check("but is not charged for a download it never makes",
           ordinary < store.estimate_needed(3600, "best", source_bytes=big),
           f"{ordinary / 1024**3:.1f} GB against "
           f"{store.estimate_needed(3600, 'best', source_bytes=big) / 1024**3:.1f} GB")
-    # A sample writes a cut of the picture, not a copy of it, and the caller
-    # scales what it passes accordingly — so the same file sampled must not
-    # reserve the room its full run would.
+    # A sample writes a cut of the picture, not a copy, so it must not reserve
+    # the room a full run of the same file would.
     sample = store.estimate_needed(30, "best", source_bytes=huge // 40, local_source=True)
     check("and a sample of it reserves a sample's worth",
           sample < local / 10, f"{sample / 1024**3:.2f} GB against "
                                f"{local / 1024**3:.1f} GB")
-    # A file that will not say how big it is falls back to the per-second guess
-    # rather than to the derived figure alone, which would leave nothing for the
-    # dub at all.
+    # An unsized file falls back to the per-second guess, not the derived
+    # figure alone, which would leave nothing for the dub itself.
     check("a local file of unknown size still leaves room for one",
           store.estimate_needed(3600, "best", source_bytes=0, local_source=True)
           > 3600 * store.DERIVED_PER_SECOND * 2,
@@ -2540,8 +2434,8 @@ def test_storage():
           not by_key["output"]["clearable"])
     check("the translation model is shown but not deletable",
           not by_key["ollama"]["clearable"])
-    # Deleting it would remove the interpreter running the request. It is in the
-    # list because it is one of the largest things on disk; Uninstall removes it.
+    # Deleting it would remove the interpreter running the request; it's
+    # listed only because it's one of the largest things on disk.
     check("the Python environment is shown but not deletable",
           not by_key["venv"]["clearable"])
 
@@ -2583,9 +2477,8 @@ def test_storage():
     check("clearing them all empties the folder",
           not any(p.is_dir() for p in JOBS.iterdir()))
 
-    # Someone short of space may well keep the models on an external drive, and
-    # that folder is not this app's to empty. The suite itself symlinks it, so
-    # this also stops a test run deleting the real 700 MB.
+    # Models may live on an external drive that isn't this app's to empty.
+    # This also guards against the test's own symlink deleting the real models.
     if store.MODELS.is_symlink():
         target = store.MODELS.resolve()
         check("a symlinked models folder is left alone", store.clear("models") == 0)
@@ -2636,13 +2529,11 @@ def test_storage():
         store.free_bytes = real_free
 
 
-# ================================ 12. not letting the Mac doze off mid-job
 def test_keep_awake():
     """An hour of video is an hour of work, and a laptop left alone sleeps.
 
-    The job survives it — everything resumes when somebody touches the trackpad
-    — but to whoever started it and walked away, a run that stopped at 40% for
-    half an hour is indistinguishable from one that hung.
+    The job survives sleep — it resumes when the trackpad is touched — but to
+    whoever walked away, a stall at 40% is indistinguishable from a hang.
     """
     print("\n[12] Staying awake while there is work")
     import platform
@@ -2686,11 +2577,10 @@ def test_keep_awake():
     r.awake.start()
     time.sleep(0.4)
     released = r.sync_keep_awake(False) is False
-    # Against the baseline rather than against False, and after a moment: the
-    # assertion is dropped when caffeinate exits, which is not the instant it is
-    # signalled, and anything else on the Mac may be holding one of its own —
-    # Time Machine and a Homebrew build both do. Asserting "nothing at all is
-    # awake" made a passing app look broken.
+    # Checked against the baseline, not against False, and after a moment: the
+    # assertion drops when caffeinate exits, not the instant it's signalled,
+    # and something else on the Mac (Time Machine, a Homebrew build) may hold
+    # one of its own — asserting "nothing at all is awake" would be wrong.
     time.sleep(0.5)
     check("switching it off releases the one being held right now",
           released and held() == was, f"before={was} after={held()}")
@@ -2708,13 +2598,12 @@ def test_keep_awake():
         _sp.Popen = real
 
 
-# ============== 13. catching a translation that went wrong before it is spoken
 def test_translation_qc():
-    """A real 52-minute dub read out "id: 63" and then several minutes of Spanish.
+    """A real dub once read out "id: 63" and then several minutes of Spanish.
 
-    Nothing downstream could tell: the audio check heard speech, the frame check
-    saw the picture survive, and the file was the right length. The failure is
-    upstream of everything that looks at the finished article.
+    Nothing downstream could tell: the audio check heard speech, the frame
+    check saw the picture survive, and the file was the right length. The
+    failure is upstream of everything that looks at the finished article.
     """
     print("\n[13] Catching a translation that went wrong")
     from app.backends.translate import _looks_untranslated, _parse, _strip_echo
@@ -2722,10 +2611,9 @@ def test_translation_qc():
 
     SRC = "Blusa de verano facil en todas las tallas paso a paso"
 
-    # Scaffolding the model echoes back into its own answer.
-    # The slot marker goes out as "[2.0s]" but comes back with the opening
-    # bracket dropped often enough to matter: 25 of 83 lines in a real run, each
-    # one spoken aloud as "two point oh ess" in front of its sentence.
+    # Scaffolding the model echoes back into its own answer. The slot marker
+    # goes out as "[2.0s]" but comes back with the opening bracket dropped
+    # often enough to matter, spoken aloud as "two point oh ess".
     for raw, want in [("id: 63 Now we chain three.", "Now we chain three."),
                       ("[2.0s] Now we chain three.", "Now we chain three."),
                       ("2.0s] Now we chain three.", "Now we chain three."),
@@ -2736,16 +2624,13 @@ def test_translation_qc():
         got = _strip_echo(raw)
         check(f"stripped: {raw[:26]!r}", got == want, got)
 
-    # The reply format spelled back at us instead of filled in. Found by
-    # translating the same batches with a stronger model and diffing: 72 of 448
-    # lines in a real 98-minute dub came back like this, 16% of the video, and
-    # every check passed them — a line of pure template resembles neither its
-    # Portuguese source nor an empty string.
-    # Checked through the parser rather than on the helper, because rejection is
-    # the behaviour that matters: a miss is what makes the halving retry ask
-    # again, and asking again is the only thing that can turn a template into an
-    # actual translation. Some of these empty out and some stay recognisably
-    # template — either way none may reach the audio.
+    # The reply format spelled back at us instead of filled in — a line of
+    # pure template resembles neither its source nor an empty string, so
+    # ordinary checks passed it.
+    # Checked through the parser, not the helper alone, because rejection is
+    # what matters: a miss is what makes the halving retry ask again, the only
+    # way a template ever becomes a real translation. Whether it empties out or
+    # stays recognisably template, either way none may reach the audio.
     from app.backends.translate import _is_scaffolding
     one = [{"i": 1, "text": "As duas correntinhas para finalizar."}]
     for template in ("<id>|<translation>", "<translation>", "<id>|", "<text>"):
@@ -2756,9 +2641,9 @@ def test_translation_qc():
         check(f"and a real line is not: {real[:28]!r}",
               not _is_scaffolding(real) and _parse(f"1|{real}", one)[0] == {1: real})
 
-    # With the batch in hand the slot marker does not have to be guessed at: the
-    # value that went out is known, so every mangling of it comes back off, and
-    # a sentence that merely opens on the same number does not.
+    # With the batch in hand, the slot marker's value is known rather than
+    # guessed, so every mangling of it comes off while a sentence that merely
+    # opens on the same number stays intact.
     for raw, slot in [("[5.1s] Why do we do this?", 5.1),
                       ("5.1s] Why do we do this?", 5.1),
                       ("5.1s Why do we do this?", 5.1),
@@ -2798,9 +2683,9 @@ def test_translation_qc():
     check("a batch carrying no timings still parses",
           _parse("1|Chain three.", [{"i": 1, "text": "hola"}])[0] == {1: "Chain three."})
 
-    # Numbers that belong to the sentence must survive. These are the shapes a
-    # crochet or cookery tutorial actually produces, and eating the front of one
-    # would corrupt a good translation silently.
+    # Numbers that belong to the sentence must survive — these are shapes a
+    # tutorial actually produces, and eating the front of one would corrupt a
+    # good translation silently.
     for keep in ("3 chain stitches, then turn.",
                  "3. Chain three stitches.",
                  "Line 5 of the pattern is a chain.",
@@ -2811,9 +2696,9 @@ def test_translation_qc():
     check("a real translation is not", not _looks_untranslated("A summer blouse.", SRC))
     check("a short line unchanged is left alone", not _looks_untranslated("OK", "OK"))
 
-    # And the parser refuses it, which turns a wrong answer into a missing one —
-    # so the retry above it gets a go, and the 5% ceiling can fail the job rather
-    # than deliver an hour of the original language.
+    # The parser refuses it, turning a wrong answer into a missing one — so the
+    # retry gets a go, and the ceiling can fail the job rather than deliver an
+    # hour of the original language.
     check("the parser rejects an untranslated line",
           _parse(f"63|{SRC}", [{"i": 63, "text": SRC}])[0] == {})
     check("and repairs an echoed one",
@@ -2839,11 +2724,11 @@ def test_translation_qc():
     check("a clean translation says nothing at all",
           qc.summarise(qc.check([{"text": "Hola", "translation": "Hello there."}])) == "")
 
-    # The cached path is the one that matters for a video already translated
-    # once: the parser's guards run at translation time, but translated.json is
-    # replayed straight past them. Stripping "<id>|" left "<translation>", which
-    # is not empty and does not resemble its source — so it was spoken, and
-    # counted as a repair, telling the user a fix had happened.
+    # The cached path matters for a video already translated once: the
+    # parser's guards run at translation time, but translated.json replays
+    # straight past them. Stripping "<id>|" left "<translation>", which is
+    # non-empty and doesn't resemble its source — so it got spoken, wrongly
+    # counted as a repair.
     cached = [{"text": SRC, "translation": "<id>|<translation>"},
               {"text": SRC, "translation": "<id>|Now we chain three."}]
     tmpl = qc.check(cached)
@@ -2857,7 +2742,7 @@ def test_translation_qc():
     check("the sentence does not claim it came back in the original language",
           "reply format" in qc.summarise(tmpl))
 
-    # A batch the model cannot manage whole is halved until it can. Twenty-five
+    # A batch the model can't manage whole is halved until it can. A run of
     # missing lines used to fall outside the "small prompts land" rule, so the
     # identical question was asked twice and then given up on.
     from app.backends import translate as _T
@@ -2908,9 +2793,8 @@ def test_translation_qc():
     check("an unrecognised quality is treated as best, not as an empty cap",
           fsel("nonsense") == fsel("best"))
 
-    # Chosen from the format list the site actually published, rather than from a
-    # selector string and hope — so the codec and the size are known before
-    # anything is fetched.
+    # Chosen from the format list the site actually published, not from a
+    # selector string and hope — so codec and size are known before fetching.
     LISTING = {"formats": [
         {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none",
          "height": 1080, "filesize": 1733_000_000},
@@ -2944,12 +2828,11 @@ def test_translation_qc():
     check("a cap nothing satisfies is dropped rather than returning nothing",
           choose_format(above_cap, "720") is not None)
 
-    # The seam that broke: choose_format was correct and never ran, because
-    # probe() built a fresh dict and dropped the format list on the way out. It
-    # is checked here rather than only through a synthetic listing, since a
-    # synthetic listing is exactly what hid it.
-    # Bounded by the next definition rather than by a character count, which a
-    # comment or a guard added inside probe() silently pushes the return past.
+    # choose_format was correct and never ran, because probe() built a fresh
+    # dict and dropped the format list on the way out — checked against the
+    # real probe() source, since a synthetic listing is exactly what hid it.
+    # Bounded by the next definition, not a character count, which a comment
+    # or guard added inside probe() could silently push the return past.
     _p = src.index("def probe(")
     _end = src.index("\ndef ", _p + 1)
     probe_out = src[_p:_end]
@@ -2957,9 +2840,8 @@ def test_translation_qc():
     check("probe returns the format list, rather than only fetching it",
           '"formats"' in kept, kept[:60].replace("\n", " "))
 
-    # "Highest bitrate" on its own picks the 5.1 track where a video has one:
-    # three times the bytes for audio that is replaced outright or downmixed to
-    # mono for the transcriber.
+    # "Highest bitrate" alone picks the 5.1 track where a video has one — far
+    # more bytes for audio that gets replaced outright or downmixed to mono.
     SURROUND = {"formats": LISTING["formats"] + [
         {"format_id": "258", "vcodec": "none", "acodec": "mp4a", "ext": "m4a",
          "tbr": 388, "audio_channels": 6, "filesize": 285_000_000},
@@ -2970,19 +2852,17 @@ def test_translation_qc():
     check("and the surround track's bytes are not counted against the disk check",
           choose_format(SURROUND, "best")["bytes"] == 1733_000_000 + 95_000_000)
 
-    # Which file the pipeline is handed after the download. This was
-    # sorted(glob("source.*"))[0], which is right until an attempt is
-    # interrupted: a refused try leaves source.f137.mp4.part behind, the retry
-    # writes source.mp4, and the stub sorts first. On a real run that turned a
-    # complete 1.7 GB download into "the video is in a format that can't be read".
+    # Which file the pipeline is handed after the download. Naive
+    # sorted(glob("source.*"))[0] breaks once an attempt is interrupted: a
+    # refused try leaves source.f137.mp4.part behind, the retry writes
+    # source.mp4, and the stub sorts first — turning a complete download into
+    # "the video is in a format that can't be read".
     from app.steps.download import _finished_file
 
     def _tiny_media(seconds: float) -> bytes:
-        """A few KB of genuinely decodable video and audio, for cases where
-        _finished_file() now has to ask ffprobe rather than trust a name — a
-        plain run of repeated bytes used to stand in for "the video" until
-        that check existed, and it fails ffprobe the same way a thumbnail
-        does, which is exactly the distinction being tested here.
+        """Genuinely decodable video/audio, since _finished_file() asks ffprobe
+        rather than trust a name — a run of repeated bytes fails ffprobe the
+        same way a thumbnail does, which is exactly the distinction tested here.
         """
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             dst = Path(tmp.name)
@@ -2996,11 +2876,9 @@ def test_translation_qc():
         dst.unlink()
         return data
 
-    # ffprobe doesn't care what the file is named — it sniffs the container
-    # from the bytes, same as it would on a real download — so one small real
-    # clip and one larger one, copied under whatever filename each case below
-    # needs, cover every "is this actually media" question without a separate
-    # ffmpeg encode per container.
+    # ffprobe sniffs the container from the bytes regardless of filename, so
+    # one small and one larger real clip, copied under whatever filename each
+    # case needs, cover every case without a separate ffmpeg encode each time.
     SMALL_MEDIA = _tiny_media(1)
     LARGE_MEDIA = _tiny_media(3)
     check("the two fixture clips are genuinely different sizes",
@@ -3027,10 +2905,9 @@ def test_translation_qc():
     check("a folder holding only working files reports nothing finished",
           _finished_file(shed) is None)
 
-    # The container allowlist this replaced only knew five extensions, so a
-    # complete download in anything else — a Wikimedia .ogv, an archive.org
-    # .mpg, both of which ffmpeg reads without complaint — was invisible to it
-    # and thrown away as if the fetch had failed, after every byte had arrived.
+    # The container allowlist this replaced knew only five extensions, so a
+    # complete download in anything else ffmpeg reads fine (.ogv, .mpg, …) was
+    # invisible to it and thrown away as if the fetch had failed.
     for leftover in shed.iterdir():
         leftover.unlink()
     (shed / "source.ogv").write_bytes(LARGE_MEDIA)
@@ -3042,24 +2919,19 @@ def test_translation_qc():
           _finished_file(shed).name == "source.ogv")
     for leftover in shed.iterdir():
         leftover.unlink()
-    # No standalone check that a lone fragment reports nothing finished: any
-    # fragment name ends in -Frag<n>, which never matches a five-extension
-    # allowlist either, so that alone would have passed before this fix too.
-    # What actually distinguishes the new behaviour is that the real file
-    # sitting beside the fragment is still found, in a container the old
-    # allowlist would have refused outright regardless of the fragment.
+    # A lone fragment reporting nothing finished would have passed even before
+    # this fix (its name never matches the old allowlist either). What actually
+    # distinguishes the new behaviour is that the real file beside it is still
+    # found, in a container the old allowlist would have refused outright.
     (shed / "source.f303.mp4.part-Frag12").write_bytes(b"x" * 500_000)
     (shed / "source.mpg").write_bytes(LARGE_MEDIA)
     check("a genuinely finished download is picked over a lingering fragment of an interrupted attempt",
           _finished_file(shed).name == "source.mpg")
 
-    # Excluding scratch state was not enough on its own: the reviewer who
-    # caught this demonstrated a workdir with --write-thumbnail set in the
-    # user's own yt-dlp config (left readable — see download()) producing
-    # source.mp4 (633,710 bytes) and source.webp (23,038 bytes) side by side,
-    # neither a .part nor a .ytdl. A sidecar reachable this way is asked about
-    # by ffprobe like everything else, not waved through because its name or
-    # size happened to fit.
+    # Excluding scratch state wasn't enough on its own: --write-thumbnail in
+    # the user's yt-dlp config can leave source.mp4 and source.webp side by
+    # side, neither a .part nor a .ytdl. A sidecar reachable this way must be
+    # asked about by ffprobe like everything else, not waved through by name.
     for leftover in shed.iterdir():
         leftover.unlink()
     (shed / "source.jpg").write_bytes(b"\xff\xd8\xff" + b"not actually a jpeg" * 50)
@@ -3078,9 +2950,9 @@ def test_translation_qc():
           len(big_sidecar) > len(SMALL_MEDIA) and _finished_file(shed).name == "source.mp4",
           (len(big_sidecar), len(SMALL_MEDIA)))
 
-    # The merge postprocessor's own scratch file: FFmpegMergerPP builds the
-    # merged output at source.temp.mp4 before renaming it over source.mp4, so
-    # for as long as a mux is running both names exist and only one is finished.
+    # FFmpegMergerPP builds the merged output at source.temp.mp4 before
+    # renaming it over source.mp4, so while a mux runs both names exist and
+    # only one is finished.
     for leftover in shed.iterdir():
         leftover.unlink()
     (shed / "source.temp.mp4").write_bytes(LARGE_MEDIA)
@@ -3090,18 +2962,13 @@ def test_translation_qc():
     check("and the real file is picked once it exists, even though the temp file is still larger",
           _finished_file(shed).name == "source.mp4")
 
-    # The regression a duration floor reintroduced: a completely genuine,
-    # fully downloaded video-only remux can report no duration at all. A
-    # container's duration is normally patched in by seeking back once the
-    # last frame is known; a mux that was piped to a non-seekable output, or
-    # simply never reached a clean close, never gets that pass, even though
-    # every frame it wrote decodes correctly. Reproduced here the same way —
-    # ffmpeg started with no fixed length, so there is no total to write up
-    # front, and killed the moment real video data exists rather than let it
-    # reach the shutdown that would patch a duration in — and a duration
-    # floor threw this away exactly the way the container allowlist threw
-    # away a .ogv: proof was demanded of a file that never had a reason to
-    # carry it.
+    # A fully downloaded video-only remux can genuinely report no duration at
+    # all: a container's duration is normally patched in by seeking back once
+    # the last frame is known, and a mux piped to a non-seekable output or
+    # killed before a clean close never gets that pass, even though every
+    # frame decodes correctly. A duration floor threw this away exactly like
+    # the old allowlist threw away a .ogv — demanding proof a file never had
+    # reason to carry.
     def _tiny_video_only(unfinalized: bool) -> bytes:
         with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
             dst = Path(tmp.name)
@@ -3136,9 +3003,9 @@ def test_translation_qc():
     check("and a video-only remux that does report a duration is accepted too",
           _finished_file(shed) is not None and _finished_file(shed).name == "source.webm")
 
-    # Real thumbnails, not just the corrupt bytes used above — the discriminator
-    # is which demuxer ffprobe read the file through, so it has to hold for a
-    # well-formed image too, not merely for one already too broken to decode.
+    # Real thumbnails, not just the corrupt bytes used above — the check hinges
+    # on which demuxer ffprobe read the file through, so it must hold for a
+    # well-formed image too, not just one already too broken to decode.
     def _tiny_image(suffix: str) -> bytes:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             dst = Path(tmp.name)
@@ -3159,11 +3026,10 @@ def test_translation_qc():
     check("and a real PNG thumbnail is rejected the same way",
           _finished_file(shed) is None)
 
-    # A probe that cannot answer is not evidence of anything and must not be
-    # treated as one — the earlier duration floor turned "ffprobe timed out"
-    # into "throw the completed download away", silently, which is the same
-    # mistake as the two checks just above, just with the probe itself failing
-    # instead of merely being unable to read a duration.
+    # A probe that can't answer is not evidence and must not be treated as
+    # one — the earlier duration floor silently turned "ffprobe timed out"
+    # into "throw the completed download away", the same mistake as above but
+    # with the probe itself failing rather than just missing a duration.
     import app.steps.download as _dl_module
 
     class _DeadProbe:
@@ -3189,8 +3055,8 @@ def test_translation_qc():
     # The same bug through a new door: ffmpeg reads a one-frame thumbnail and
     # a genuinely animated GIF through the identical "gif" demuxer, so
     # rejecting on format_name alone (as jpeg_pipe/png_pipe correctly can)
-    # would throw away a real animated GIF, and yt-dlp's own Imgur extractor
-    # really does offer one as a download when a post has no video transcode.
+    # would throw away a real animated GIF — which yt-dlp's Imgur extractor
+    # can genuinely offer as a download.
     def _tiny_gif(frames: int) -> bytes:
         with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
             dst = Path(tmp.name)
@@ -3212,11 +3078,10 @@ def test_translation_qc():
           _finished_file(shed) is not None and _finished_file(shed).name == "source.gif",
           str(_finished_file(shed)))
 
-    # _explain_missing_video() only ever runs once download() has already
-    # decided to fail, and nothing in it may itself raise — an unhandled
-    # exception there would replace the friendly "no video file appeared"
-    # message with a raw traceback in the generic handler in app/pipeline.py,
-    # which is a worse failure than the one this whole item exists to fix.
+    # _explain_missing_video() runs only after download() has already decided
+    # to fail, and nothing in it may itself raise — an unhandled exception
+    # there would replace the friendly message with a raw traceback in
+    # app/pipeline.py's generic handler, a worse failure than this exists to fix.
     from app.steps.download import _explain_missing_video
 
     locked = SCRATCH / "locked-workdir"
@@ -3276,13 +3141,11 @@ def test_translation_qc():
           vanish_ok, vanish_detail)
 
     # --- retrying and client choice, which are yt-dlp's job and not ours
-    # What was here was a ladder of our own: three identical attempts, then two
-    # more as different player clients, with the decision to continue taken by
-    # substring-matching yt-dlp's error text. It got that decision wrong — the
-    # error the fallback clients provoke was not on the "transient" list, so a
-    # fallback rung ended the ladder — and every part of it is something yt-dlp
-    # already does properly. Now it is asked once, for all the clients at once,
-    # with yt-dlp's own exponential backoff.
+    # This replaced a homegrown retry ladder that decided whether to continue
+    # by substring-matching yt-dlp's error text — and got it wrong, since the
+    # error a fallback client provokes wasn't on its "transient" list. yt-dlp
+    # already does all of this properly, so it's now asked once, with its own
+    # exponential backoff.
     from app.steps.download import _RETRY_ARGS
     import app.steps.download as dlmod
 
@@ -3291,24 +3154,20 @@ def test_translation_qc():
           "--retry-sleep" in args and "exp=" in args, args)
     check("extraction gets its own retry count, not just the HTTP fetch",
           "--extractor-retries" in args and "extractor:exp=" in args)
-    # The seam that broke: the probe is where concrete format ids are chosen, so
-    # a download that asked a client the probe never spoke to could be told to
-    # fetch ids that client has not got — which is the "Requested format is not
-    # available" that used to end the ladder. It used to be held by pinning the
-    # same client list on both commands; that list then went stale, and a video
-    # which plays fine in a browser was refused with "HTTP Error 403" about
-    # 20 MB in because every client it named had been retired. Neither command
-    # names one now, so both get yt-dlp's own current defaults: same binary,
-    # same defaults, same ids, and the invariant holds by omission.
+    # The probe is where concrete format ids are chosen, so a download asking
+    # a client the probe never spoke to could be told to fetch ids that client
+    # doesn't have — the "Requested format is not available" that used to end
+    # the ladder. This used to be held by pinning the same client list on both
+    # commands, but that list went stale and a browser-playable video got a
+    # 403 because every named client had been retired. Neither command pins a
+    # client now, so both get yt-dlp's current defaults: same binary, same
+    # defaults, same ids — the invariant holds by omission.
     #
-    # Asserted against the argv actually built, not against the source text — the
-    # comment explaining why no client is pinned contains the word
-    # "player_client" and would satisfy any grep for it.
-    # A clean copy of the module: earlier sections of the suite leave probe() and
-    # download() stubbed out, and a stub builds no argv at all — which is how
-    # this first went green while checking nothing (both commands reported
-    # "<never built>" and passed the "pins no player client" test on a string
-    # that was never a command).
+    # Asserted against the argv actually built, not the source text — a
+    # comment mentioning "player_client" would satisfy any grep for it.
+    # A clean copy of the module is used because earlier sections leave probe()
+    # and download() stubbed, and a stub builds no argv at all — which is how
+    # this first went green while checking nothing.
     import importlib.util as _ilu
     _argv_spec = _ilu.spec_from_file_location(
         "app.steps._download_argv_check", ROOT / "app" / "steps" / "download.py")
@@ -3363,19 +3222,17 @@ def test_translation_qc():
     check("the probe and the download run the very same yt-dlp",
           built.get("probe", [])[:3] == built.get("download", [])[:3]
           == dlargv._ytdlp_cmd(), str(built.get("probe", [])[:3]))
-    # The copy inside .venv, reached through the interpreter already running —
-    # not whichever yt-dlp PATH resolves. The launcher activates .venv, so a
-    # bare "yt-dlp" found the pip copy there while the installer kept a
-    # different, newer one on PATH freshened; the app ran the stale one.
+    # Reaches the copy inside .venv through the running interpreter, not
+    # whichever yt-dlp PATH resolves — a bare "yt-dlp" could find a stale
+    # copy on PATH while .venv's own is kept current.
     check("and it is this environment's own yt-dlp, not one found on PATH",
           dlargv._ytdlp_cmd()[0] == sys.executable
           and dlargv._ytdlp_cmd()[1:] == ["-m", "yt_dlp"], str(dlargv._ytdlp_cmd()))
-    # Demonstrated on a real job through the real UI: a --write-thumbnail left
-    # in a user's yt-dlp config turned an ordinary download into source.mp4
-    # *and* source.webp sitting in the same working directory _finished_file()
-    # scans. Checked on both commands built here, not just the download, since
-    # a probe that reads the same config could just as easily have its listing
-    # reshaped by a format or extractor option it was never asked for.
+    # A --write-thumbnail left in a user's yt-dlp config turns an ordinary
+    # download into source.mp4 *and* source.webp in the same working directory
+    # _finished_file() scans. Checked on both commands, not just the download,
+    # since a probe reading the same config could have its listing reshaped
+    # by an option it was never asked for.
     from app.steps.download import _NO_CONFIG_ARGS
     check("neither yt-dlp invocation reads the user's own configuration",
           "--ignore-config" in _NO_CONFIG_ARGS
@@ -3383,10 +3240,10 @@ def test_translation_qc():
     check("and nothing decides what to retry by reading yt-dlp's error text",
           "_looks_transient" not in src and "_TRANSIENT" not in src
           and "_looks_terminal" not in src)
-    # Seen in the field before this was fixed: a real 403 logged with
-    # "detail": "DUBPROG|64512|3..." — the progress template had filled the tail
-    # stream() keeps, so the pasteable detail held no error at all. A clean copy
-    # of the module, because earlier sections leave download() stubbed.
+    # Before this was fixed, a real 403's logged detail was just filled with
+    # progress-template lines, since the progress output had filled the tail
+    # stream() keeps — a clean module copy is used because earlier sections
+    # leave download() stubbed.
     import importlib.util
     _spec = importlib.util.spec_from_file_location(
         "app.steps._download_under_test", ROOT / "app" / "steps" / "download.py")
@@ -3420,12 +3277,10 @@ def test_translation_qc():
     check("and the message the user reads is the plain-English one",
           "refused to send it" in str(err), str(err)[:60])
 
-    # The other way a download can fail to hand back a video: yt-dlp exits 0
-    # — it thinks it succeeded — but _finished_file() finds nothing usable in
-    # the working directory. This used to raise a bare RuntimeError, the one
-    # failure in this file with nothing for the UI's "what the downloader
-    # actually said" pane or Copy details to show. It has to fail the same way
-    # every other download failure does.
+    # The other way a download can fail: yt-dlp exits 0, thinking it
+    # succeeded, but _finished_file() finds nothing usable. This used to raise
+    # a bare RuntimeError with nothing for the UI's error pane or Copy details
+    # to show, so it must fail the same way every other download failure does.
     def vanished_download():
         """Run the real download() against a yt-dlp that reports success but leaves nothing behind."""
         def fake_stream(cmd, on_line=None, tail_lines=30):
@@ -3454,12 +3309,10 @@ def test_translation_qc():
     check("specifically, what was actually sitting in the working directory",
           "vanished" in getattr(err2, "detail", ""), getattr(err2, "detail", ""))
 
-    # The point of every _explain_missing_video() "does not crash" check
-    # above: none of that matters if the crash it used to produce simply
-    # moved one call up the stack. This runs the real download() end to end
-    # against an unreadable working directory and confirms what actually
-    # reaches the caller is still the plain-English DownloadError, not a
-    # PermissionError escaping into app/pipeline.py's generic handler.
+    # The "does not crash" checks above don't matter if the crash simply moved
+    # one call up the stack. This runs the real download() end to end against
+    # an unreadable working directory and confirms the caller still gets the
+    # plain-English DownloadError, not a PermissionError escaping upward.
     def locked_workdir_download():
         def fake_stream(cmd, on_line=None, tail_lines=30):
             return 0, ""
@@ -3495,9 +3348,9 @@ def test_translation_qc():
           and "Settings" in dlmod._friendly(
               "ERROR: [youtube] x: Requested format is not available."))
 
-    # The progress counter cannot be trusted alone across a retry: yt-dlp answers
-    # a resumed attempt with "Resuming download at byte N" and what it counts
-    # from there depends on the format. The file on disk has no such opinion.
+    # The progress counter can't be trusted alone across a retry: a resumed
+    # attempt's count depends on the format. The file on disk has no such
+    # opinion.
     check("the bytes on disk are used as a floor under the reported count",
           "def fetched()" in src and "max(done[\"before\"] + got_b, fetched())" in src)
 
@@ -3543,14 +3396,11 @@ def test_translation_qc():
           "downloaded_bytes" in src and "total_bytes" in src)
 
     # Whisper on the Apple GPU is one blocking call that swallows the whole
-    # file. It reported 5% and then nothing until it was done — on a measured
-    # 52-minute video that was 5m50s of frozen bar, under a label still reading
-    # "Loading Whisper (first run downloads about 3 GB)", which it printed
-    # whether or not anything was being downloaded. It does publish its
-    # position, to a tqdm bar rather than to a callback, so the meter is
-    # borrowed. Exercised against a stand-in module rather than by transcribing
-    # something, which would put a 3 GB model and a minute of GPU in the way of
-    # a unit test.
+    # file, reporting 5% and then nothing until done — leaving a frozen bar
+    # under a stale "Loading Whisper" label. It publishes position to a tqdm
+    # bar rather than a callback, so the meter is borrowed here. Exercised
+    # against a stand-in module rather than transcribing for real, which would
+    # put a multi-GB model and real GPU time in the way of a unit test.
     from app.backends import asr as _asr
     import types as _types
     stand_in = _types.ModuleType("mlx_whisper.transcribe")
@@ -3560,11 +3410,10 @@ def test_translation_qc():
     try:
         seen = []
         with _asr._mlx_whisper_progress(lambda f, m: seen.append((f, m)), 0.05, 0.98):
-            # Built and driven exactly as mlx_whisper's decode loop does it:
-            # a context manager over a frame total, updated by however far the
-            # read head moved. disable=True is passed because it passes it —
-            # and is ignored, which is the point. A tqdm subclass could not be
-            # used here: its update() returns early when disabled, so the
+            # Driven exactly as mlx_whisper's decode loop does it: a context
+            # manager over a frame total, updated by however far the read head
+            # moved. disable=True is passed and ignored deliberately — a real
+            # tqdm subclass returns early from update() when disabled, so the
             # counter would never move.
             with stand_in.tqdm.tqdm(total=100, unit="frames", disable=True) as bar:
                 bar.update(25)
@@ -3576,9 +3425,8 @@ def test_translation_qc():
               seen and all("Transcribing" in m for _, m in seen), str(seen))
         check("the borrowed meter is handed back afterwards",
               stand_in.tqdm.tqdm is object)
-        # It reaches into another package's internals, so the failure that
-        # matters is the one where those internals have moved: it must lose the
-        # progress reporting and nothing else.
+        # This reaches into another package's internals, so if they move it
+        # must lose only the progress reporting, nothing else.
         del stand_in.tqdm
         ran = []
         with _asr._mlx_whisper_progress(lambda f, m: ran.append(f), 0.05, 0.98):
@@ -3590,11 +3438,10 @@ def test_translation_qc():
         with _asr._mlx_whisper_progress(lambda f, m: ran2.append(f), 0.05, 0.98):
             ran2.append("body ran")
         check("and so does one that is not imported at all", ran2 == ["body ran"])
-        # The stand-in answers anything the decode loop asks a bar for, not just
-        # the three calls this version of mlx_whisper makes. The requirement is
-        # not pinned, and a method it had never heard of would otherwise raise
-        # inside the transcription — dropping the whole job onto the portable
-        # engine, which is the opposite of the quiet degradation promised above.
+        # The stand-in answers anything the decode loop might ask a bar for,
+        # not just today's calls — an unrecognised method would otherwise
+        # raise inside transcription, dropping the whole job onto the portable
+        # engine instead of degrading quietly as promised above.
         sys.modules["mlx_whisper.transcribe"] = stand_in
         stand_in.tqdm = _types.SimpleNamespace(tqdm=object)
         moved = []
@@ -3642,13 +3489,12 @@ def test_translation_qc():
           "NEVER COPY" in tsrc)
 
 
-# ============================ 14. something to paste when it goes wrong
 def test_observability():
     """The whole point is a non-technical user having one thing to send.
 
-    Before this the app wrote nothing anyone could use: the log named in the
-    README held twenty-two lines of the same deprecation warning, and the
-    installer's held pip's "Requirement already satisfied" 136 times.
+    Before this the app wrote nothing anyone could use: its log held nothing
+    but a repeated deprecation warning, and the installer's held nothing but
+    pip's "Requirement already satisfied".
     """
     print("\n[14] Something to paste when it goes wrong")
     import importlib
@@ -3683,9 +3529,8 @@ def test_observability():
     check("a record made outside a job carries no job id",
           "job_id" not in json.loads(lines[2]))
 
-    # The translation retry and the quality check sit several layers below the
-    # pipeline and are handed no job id. They are also the two places whose
-    # records matter most, so the job rides on the thread instead.
+    # The translation retry and QC sit several layers below the pipeline and
+    # get no job id handed to them, so the job rides on the thread instead.
     logs_mod.current_job.set("job-99")
     logs_mod.get().warning("translation batch incomplete, halving",
                            extra={"asked": 25})
@@ -3694,8 +3539,8 @@ def test_observability():
           tagged.get("job_id") == "job-99", str(tagged))
     logs_mod.current_job.set("")
 
-    # A field named after one of LogRecord's own attributes used to raise, which
-    # turned a failed job into a second failure inside the call reporting it.
+    # A field named after one of LogRecord's own attributes used to raise,
+    # turning a failed job into a second failure inside the call reporting it.
     logs_mod.get("j").error("job failed", extra={"message": "boom", "name": "x"})
     last = json.loads([l for l in logs_mod.LOG_FILE.read_text().splitlines() if l][-1])
     check("a field clashing with LogRecord's own names is renamed, not fatal",
@@ -3721,15 +3566,15 @@ def test_observability():
     settings.save()
     text = diagnostics.report(limit=20)
 
-    # The one check that must never fail. /api/state returns these in full, which
-    # is tolerable over localhost and is not tolerable on a clipboard.
+    # The one check that must never fail: /api/state returns these in full,
+    # tolerable over localhost but not on a clipboard.
     check("no API key ever reaches the clipboard",
           "LEAK-CANARY" not in text, "both keys were set")
     check("but whether one is set is still reported",
           "anthropic_key: set" in text and "openai_key: set" in text)
-    # Everything except the secrets, rather than a hand-kept list of the
-    # interesting ones — an allowlist quietly omits each setting added after it,
-    # and the missing one is always the one that explains the failure.
+    # Everything except the secrets, not a hand-kept allowlist — an allowlist
+    # silently omits each setting added after it, and the missing one is
+    # always the one that would have explained the failure.
     from dataclasses import asdict as _asdict
     block = text.split("Settings\n")[1].split("\n\n")[0].splitlines()
     check("every setting reaches the report, not a chosen few",
@@ -3747,9 +3592,9 @@ def test_observability():
     settings.save()
 
     # Whatever dies below Python never reaches the logger, so the bundle keeps
-    # stderr — but in its own file. Appending it to the rotating log gave two
-    # writers one path, and the redirect holds the old inode the moment the
-    # handler rotates, so each quietly overwrites the other's work.
+    # stderr in its own file — appending it to the rotating log gave two
+    # writers one path, and rotation would leave the redirect holding a stale
+    # inode, each quietly overwriting the other's work.
     launcher = (ROOT / "packaging" / "build_app.sh").read_text()
     check("stderr is not appended to the file the log handler rotates",
           "DubbingStudio-crash.log" in launcher
@@ -3780,12 +3625,11 @@ def test_observability():
     check("the running stage's elapsed is worked out on this machine's clock",
           "stage_elapsed" in Job(id="x", url="u").public())
 
-    # The silence warning must not cry wolf. It decides on the share of the
-    # track that is quiet, and that share is also just what a time-fitted dub
-    # looks like: lines start on their original timestamps and English is
-    # shorter than most of what it replaces. Measured on a real 98-minute run —
-    # 92% speech in the original, 38% in the dub, all 448 lines spoken — and the
-    # report told the user it was "what a half-failed run looks like".
+    # The silence warning must not cry wolf: a large quiet share is also just
+    # what a time-fitted dub looks like, since lines start on their original
+    # timestamps and English is typically shorter than what it replaces. A
+    # fully spoken real run was once reported as "what a half-failed run
+    # looks like" purely on that ratio.
     psrc = (ROOT / "app" / "pipeline.py").read_text()
     check("a share-of-silence warning is gated on something actually failing",
           "everything_spoken" in psrc and "checked.get(\"untranslated\")" in psrc)
@@ -3814,9 +3658,9 @@ def test_observability():
 
     # install.sh has no app to ask, and Uninstall.command's own question to it
     # can fail, so both carry a literal copy of the rule config.py computes via
-    # platformdirs. Checked against platformdirs directly rather than against
-    # app.config, since this process's DUBBING_STUDIO_HOME is the scratch
-    # override above, not the real default the literals are meant to match.
+    # platformdirs. Checked against platformdirs directly, not app.config,
+    # since this process's DUBBING_STUDIO_HOME is the scratch override above,
+    # not the real default the literals must match.
     from platformdirs import user_cache_dir, user_data_dir
     _home = str(Path.home())
     _real_base = user_data_dir("DubbingStudio", appauthor=False).replace(_home, "$HOME")
@@ -3847,9 +3691,9 @@ def test_observability():
     api_js = (ROOT / "app" / "static" / "js" / "api.js").read_text()
     check("a failed job can hand over the details",
           'diagnostics-panel")?.open()' in failed_js, "failed panel")
-    # "It finished but the voice is wrong" is a report worth sending too, so the
-    # details have to be reachable when nothing has visibly failed. They live in
-    # Settings now rather than in the header.
+    # "It finished but the voice is wrong" is a report worth sending too, so
+    # the details must be reachable even with nothing visibly failed — hence
+    # living in Settings rather than the header.
     check("and they are reachable when nothing has failed, from Settings",
           'diagnostics-panel")?.open()' in settings_js
           and "copyBtn" not in header_js, "settings panel")
@@ -3860,8 +3704,8 @@ def test_observability():
     check("and it goes through main.js and api.js like a save does",
           '"reset-settings"' in main_js and "resetSettings" in api_js
           and "/api/settings/reset" in api_js)
-    # A blanket reset already spares the keys server-side; naming one in a
-    # per-tab list would clear it by the back door.
+    # A blanket reset already spares keys server-side; naming one in a
+    # per-tab reset list would clear it by the back door.
     tabs_block = settings_js.split("const TABS = ", 1)[1].split("];", 1)[0]
     check("no tab's reset list names an API key",
           "anthropic_key" not in tabs_block and "openai_key" not in tabs_block)
@@ -3869,13 +3713,11 @@ def test_observability():
     check("the three settings a preset owns say so beside the field",
           settings_js.count("${PRESET_TAG}") == len(_S.PRESET_KEYS)
           and all(f'"{k}"' in settings_js for k in _S.PRESET_KEYS))
-    # A creator set Original audio to keep the original quietly underneath,
-    # meaning to keep the music bed, and got his original speech back too —
-    # established from outside by holding everything else constant and
-    # flipping only that one select. The panel used to just make the "mix it
-    # back" control disappear when that happens, which told him nothing; it
-    # has to say so in Settings, at the moment of choice, not only in a report
-    # row read after the run.
+    # Setting Original audio to "keep quietly underneath" (meaning to keep
+    # the music bed) brings the original speech back too. The panel used to
+    # just make the "mix it back" control disappear when that happens, saying
+    # nothing — it must explain itself in Settings at the moment of choice,
+    # not only in a report row read after the run.
     check("the panel explains itself instead of just disappearing when the "
           "music-and-effects mix-back is overridden",
           "keepMusicTag" in settings_js and "keepMusicHint" in settings_js
@@ -3884,30 +3726,24 @@ def test_observability():
           "new voices without the original speech",
           "Set Original audio " in settings_js
           and "to Replace completely for the music and effects" in settings_js)
-    # A disabled control drops out of the tab order outright: tabbing from
-    # "Music and effects" landed straight on "Speaking speed" and a keyboard
-    # user never reached this field, its tag or its hint at all — the one
-    # control this item exists to make legible was the one control a keyboard
-    # user could not reach. The reviewer sided against disabling it for
-    # exactly that reason, so the fix has to stay operable while inert rather
-    # than frozen.
+    # A disabled control drops out of the tab order outright, so a keyboard
+    # user tabbing past it would never reach this field, its tag, or its
+    # hint at all — the one control this item exists to make legible would be
+    # the one a keyboard user can't reach. So it stays operable while inert.
     check("the control stays enabled while overridden — dimmed, not disabled, "
           "so a keyboard user still reaches it",
           '.disabled = overridden' not in settings_js
           and '$("#keep_music").classList.toggle("dim", overridden)' in settings_js)
-    # Sighted-only was the same complaint one layer up: a tag and a hint that
-    # only ever sat on screen told a screen reader nothing when it landed on
-    # the control they are about. Both ids ride on the one attribute assistive
-    # tech already reads for every other hint in this panel.
+    # A tag and hint that only ever sat on screen told a screen reader nothing
+    # when it landed on the control they're about. Both ids ride on the one
+    # attribute assistive tech already reads for every other hint in this panel.
     check("the tag and the hint are both reachable from the control itself, "
           "not merely present on screen",
           'aria-describedby="keepMusicTag keepMusicHint"' in settings_js)
-    # "changed" and "Not in force" side by side contradicted each other, and
-    # the dialog's own total counted a setting it had just said was inert.
-    # shown() already keeps a hidden field out of that accounting; overridden()
-    # is the same idea for a field that is on screen but not acting on
-    # anything, and markChanged() has to consult it or the contradiction is
-    # back the moment the control is visible rather than hidden.
+    # "changed" and "Not in force" side by side contradicted each other, since
+    # the dialog's total counted a setting it had just said was inert. shown()
+    # already excludes a hidden field from that count; overridden() is the
+    # same idea for a field on screen but not acting on anything.
     check("an overridden field is excluded from the changed count and flag "
           "the same way a hidden one already is",
           "&& this.shown(key) && !this.overridden(key)" in settings_js)
@@ -3916,12 +3752,10 @@ def test_observability():
           "data-override=" in settings_js
           and "overridden(key){" in settings_js)
 
-    # That mirror is close to structurally necessary — the panel has to react
-    # to unsaved changes without a server round trip — but nothing checked the
-    # two conditions actually agree, so a third condition added to one side
-    # could silently desync from the other. Extracted verbatim from the
-    # component rather than reimplemented, and run against the real
-    # keep_music_applies() across every meaningful combination.
+    # The panel needs its own mirror of keep_music_applies() to react without
+    # a server round trip, but nothing checked the two agree — a change to one
+    # side could silently desync from the other. Extracted verbatim from the
+    # component and run against the real function across every combination.
     mirror = "\n".join(l.strip() for l in settings_js.splitlines()
                        if l.strip().startswith(("const replacing", "const separating",
                                                  "const overridden")))
@@ -3944,23 +3778,20 @@ def test_observability():
               f"separate_audio={row['sep']} audio_mode={row['mode']}",
               (row["sep"] and not row["overridden"]) == applies, row)
 
-    # The truncation fix was giving the control room, not shorter words — this
-    # is the property that actually did that, and until now nothing asserted
-    # it, so the rejected "shorten the labels" fix could have silently come
-    # back in its place.
+    # The truncation fix gave the control room rather than shortening words;
+    # this is the property that actually did it, and nothing asserted it
+    # before now, so the rejected "shorten the labels" fix could silently
+    # come back in its place.
     grid_full_block = settings_js.split('class="grid-full"', 1)[1][:200]
     check("Original audio spans the full grid row rather than sharing a half "
           "column, which is what actually fixed the truncation",
           'for="audio_mode"' in grid_full_block)
-    # Duck mode ducks the whole original track, its own speech included, not
-    # only the music riding along in it — the exact misreading that put a
-    # creator's original speech under his dub when all he asked for was the
-    # crowd noise. Saying so inside the option label pushed the dB figure —
-    # the only thing telling the three duck levels apart — past what a closed
-    # <select> shows, trading one unreadable thing for another; the labels
-    # stay at their shipped length and the disambiguation lives in a hint
-    # under the control instead, shown whenever there is a whole original in
-    # the running to talk about.
+    # Duck mode ducks the whole original track, speech included, not just the
+    # music riding along in it — a misreading that once put original speech
+    # under a dub when only the crowd noise was wanted. Saying so inside the
+    # option label would push the dB figure — the only thing distinguishing
+    # the three duck levels — past what a closed <select> shows, so the
+    # disambiguation lives in a hint under the control instead.
     check("the Original-audio option labels stay short enough that the "
           "chosen one — duck level included — is still readable closed",
           "Keep quietly underneath — quiet (-12 dB)" in settings_js
@@ -3970,25 +3801,19 @@ def test_observability():
           "not folded into every option label",
           "audioModeHint" in settings_js
           and "not just its music" in settings_js)
-    # Settings and the Quality report used to name this same option two
-    # different ways once the Settings label grew a qualifier the report's own
-    # copy never got — one control with two names in one product is exactly
-    # the kind of thing that let the original bug hide. Reusing the shipped
-    # option wording keeps them in step without the report needing its own
-    # copy of the rule.
+    # Settings and the Quality report used to name this option two different
+    # ways once the Settings label grew a qualifier the report's copy never
+    # got — one control with two names is exactly what let the original bug
+    # hide. Reusing the shipped wording keeps them in step.
     report_js = (ROOT / "app" / "static" / "js" / "run-report.js").read_text()
     check("the Quality report names Original audio the same way Settings does",
           "Keep quietly underneath" in report_js
           and "Keep as a second track" in report_js)
     # "Voice" (which built-in voice speaks) and "Voices" (built-in versus
-    # cloned) were a tester's own reported confusion in the audit that
-    # produced this whole item, one letter apart and easy to mistake even
-    # while a row apart. Making Original audio span the full grid row to fix
-    # the truncation above closed that gap and put them side by side, which
-    # would have sharpened the exact confusion already on file rather than
-    # waiting for it to be renamed separately. "Cloning" is reused from
-    # wording the app already uses for this same choice elsewhere, so nothing
-    # new is coined and nothing shares a stem with "Voice" left to misread.
+    # cloned) are one letter apart and easy to confuse, and the truncation fix
+    # above put them side by side — sharpening the confusion rather than fixing
+    # it. "Cloning" reuses wording the app already uses elsewhere for this
+    # choice, so nothing new is coined and nothing shares a stem with "Voice".
     check("the built-in-versus-cloned field is named apart from \"Voice\", "
           "not \"Voices\"",
           'label for="voice_mode">Cloning<' in settings_js
@@ -3998,8 +3823,8 @@ def test_observability():
     check("the engine is stated where the machine is described, not in the header",
           "engine" in doctor_js and "ram_gb" in doctor_js
           and 'class="engine"' not in header_js, "setup check")
-    # Nine green-or-not rows never answered "is my machine the problem?" in
-    # words. /api/doctor already computed the answer; the panel just had
+    # A row of green-or-not dots never answered "is my machine the problem?"
+    # in words. /api/doctor already computed the answer; the panel just had
     # nowhere to say it.
     check("Setup check states the verdict `ready` already computed, not just "
           "nine dots",
@@ -4021,12 +3846,10 @@ def test_observability():
     check("durations reuse the existing formatter rather than a new one",
           "fmtShort" not in format_js and "fmtShort" not in active_js)
 
-    # A run stays "current" — the success card keeps naming it — for as long as
-    # nothing else has taken its place there, which can be indefinitely if
-    # nobody starts another job. Filtering the dubbed-videos list on that same
-    # flag meant a finished run waited for someone to move on before it showed
-    # up below its own success message; a reload "fixed" it only because
-    # reloading forgets what was current.
+    # A run stays "current" indefinitely until another job replaces it.
+    # Filtering the dubbed-videos list on that same flag meant a finished run
+    # waited for someone to move on before appearing in its own list; a reload
+    # only "fixed" it by forgetting what was current.
     hist_js = (ROOT / "app" / "static" / "js" / "components" / "history-list.js").read_text()
     check("a finished run is listed the moment it's done, not once something "
           "else takes its place as the current job",
@@ -4043,14 +3866,13 @@ def test_observability():
           '"cancelled"' in settled_block and '"error"' in settled_block)
 
     # A failed run used to have nowhere to be after a reload: /api/events
-    # replays every known job, but main.js only ever took the view for one that
-    # was running, already current, or queued with nothing else current — so an
-    # errored job arrived over the wire and was never shown. Reachable after a
-    # reload or a restart means not depending on "current" at all, the same way
-    # the dubbed-videos list already does not.
+    # replays every known job, but main.js only ever took the view for a job
+    # that was running, current, or queued — so an errored job arrived over
+    # the wire and was never shown. Reachable after a reload means not
+    # depending on "current" at all, same as the dubbed-videos list.
     manage_js = (ROOT / "app" / "static" / "js" / "components" / "manage-panel.js").read_text()
     failed_list_js = (ROOT / "app" / "static" / "js" / "components" / "failed-list.js").read_text()
-    # A past bug force-selected a tab from doctor data and walked over a
+    # A past bug force-selected a tab from doctor data, overriding a
     # hand-picked one; the verdict line lives inside doctor-panel and must not
     # bring that back.
     check("the readiness verdict still leaves tab selection to manage-panel's "
@@ -4074,28 +3896,25 @@ def test_observability():
     check("a failed run's disclosure says what settings it ran under, since a "
           "retry runs under whatever Settings holds now instead",
           "job.preset" in failed_list_js and "presetLabel" in failed_list_js)
-    # A third tab would need its own logic to decide when to jump to it, and a
-    # commit already had to undo exactly that kind of code walking over a
-    # tab the user picked by hand. Sitting inside History instead means the
-    # existing tab switch is the only thing that can show or hide it.
+    # A third tab would need its own logic to decide when to jump to it, and
+    # that kind of code walking over a hand-picked tab has already had to be
+    # undone once. Sitting inside History means the existing tab switch is
+    # the only thing that shows or hides it.
     check("a failed run sits inside the History tab rather than a tab of its "
           "own that would need its own switch-to logic",
           '"failed-list"' not in manage_js.split("const TABS = ", 1)[1].split("];", 1)[0])
     check("and shares that tab's visibility switch outright",
           '$("failed-list").hidden = key !== "history"' in manage_js)
-    # update() is what auto-picks a tab, and it must never learn about jobs —
-    # that is exactly the door a failure walking in and stealing the tab would
-    # open back up.
+    # update() auto-picks a tab, and it must never learn about jobs — that's
+    # exactly the door a failure could walk through to steal the tab again.
     update_block = manage_js.split("update(s){", 1)[1].split("\n  }", 1)[0]
     check("a job failing never drives the auto-picked tab",
           "s.jobs" not in update_block, update_block.strip()[:200])
 
     # A finished sample has no list of its own the way a dubbed video or a
-    # failure does, so reloading used to lose it outright: /api/events replays
-    # every known job, but main.js only ever took the view for one that was
-    # running, already current, or queued with nothing else current — a
-    # finished sample matched none of those and sat in the store unseen, the
-    # player, the report and "Dub it" gone.
+    # failure does, so reloading used to lose it outright — it matched none of
+    # the states main.js took the view for, and sat in the store unseen: the
+    # player, the report, and "Dub it" all gone.
     check("a finished sample can reclaim the view on reload, not just a job "
           "that is running or already queued",
           "function latestSample(jobs)" in main_js
@@ -4117,11 +3936,10 @@ def test_observability():
           "if(live) store.setCurrent(live.id);\n  else {" in boot_block
           and "latestSample(jobs)" in boot_block)
 
-    # The "Won't sleep" / "May sleep" pill read as a status badge rather than a
-    # control: a tester clicked it just to see what it was and silently gave up
-    # the thing keeping her Mac awake through a long dub. An info-tip beside it,
-    # the same device Settings already uses to explain a control before it's
-    # changed, says what it is and what turning it off means before that click.
+    # The "Won't sleep" / "May sleep" pill read as a status badge rather than
+    # a control — a curious click could silently give up the thing keeping the
+    # Mac awake through a long dub. An info-tip, the same device Settings uses
+    # elsewhere, explains what clicking it off means before that click happens.
     check("the awake pill has an info-tip beside it, the same device Settings "
           "uses to explain a control before it's changed",
           'id="awakeTip"' in header_js and "info-tip" in header_js)
@@ -4130,18 +3948,16 @@ def test_observability():
           "kept awake while a video is dubbing" in header_js
           and "pauses" in header_js and "until you wake it" in header_js)
 
-    # A history row said e.g. "August 19 · 52s" beside the title — the time the
-    # dub took, read next to a title as if it were the video's own length.
+    # A history row used to show e.g. "August 19 · 52s" beside the title — the
+    # time the dub took, easily misread as the video's own length.
     check("a history row's duration says it is how long the dub took, not the "
           "video's own length",
           '`Took ${fmt(j.elapsed)}`' in hist_js)
 
-    # The sample screen's note explaining what a 30-second sample can and
-    # cannot promise is good, honest writing — styling it in the same amber
-    # box as a real problem made a successful sample read as a second error.
-    # pipeline.py now tags that note (and every other explanation-or-good-news
-    # note) "info" at the source, rather than the panel guessing which one it
-    # was by popping the last entry off the list.
+    # The sample screen's note about what a 30-second sample can and can't
+    # promise used to be styled in the same amber warning box as a real
+    # problem, making success read as an error. pipeline.py now tags that
+    # note "info" at the source, rather than the panel guessing by position.
     done_js = (ROOT / "app" / "static" / "js" / "components" / "done-panel.js").read_text()
     check("an info-tagged note is read by its kind, not by its position in "
           "the list",
@@ -4156,10 +3972,9 @@ def test_observability():
           'class="banner info" style="margin:0 0 12px">`\n          + warnings.map'
           in done_js)
 
-    # Proven against the panel's own classifier, extracted verbatim, rather
-    # than reimplemented here: a stored job or a history.json written before
-    # this change holds notes as bare strings, and one of those must still
-    # come out a warning instead of crashing the panel or vanishing.
+    # Proven against the panel's own classifier, extracted verbatim: a
+    # history.json written before this change holds notes as bare strings,
+    # and one of those must still come out a warning, not crash or vanish.
     classifier = "\n".join(l.strip() for l in done_js.splitlines()
                            if l.strip().startswith(("const isInfo", "const text")))
     script = classifier + """
@@ -4183,12 +3998,10 @@ console.log(JSON.stringify({
           and result["taggedText"] == "This is a 30-second sample...", str(result))
 
     # A finished sample can sit on screen after a reload while its working
-    # files are gone underneath it — Storage -> Clear, or ordinary tidying.
-    # "Dub it" promotes a sample without downloading again only while those
-    # files are still there, so the button must not be offered once the panel
-    # is already telling the user, via SAMPLE_GONE, that they are not — and
-    # it must read that from `here`, the flag the panel computes once for
-    # that message, not from a second check of its own.
+    # files are gone underneath it (Storage -> Clear, or ordinary tidying).
+    # "Dub it" promotes a sample without re-downloading only while those files
+    # exist, so the button must read the same `here` flag the panel already
+    # computed for its SAMPLE_GONE message, not a second check of its own.
     check("Dub it is gated on the same `here` the panel uses for the "
           "gone-away message, not on the sample flag alone",
           'sample\n        ? (here ? `<button class="primary" id="dEscalate">'
@@ -4222,15 +4035,14 @@ console.log(JSON.stringify({
               "dReset" in row["html"])
 
 
-# ============================ 15. terminology lifted from the video itself
 def test_terminology():
     """The glossary the app ships is Spanish; the videos need not be.
 
-    Measured on a real Portuguese job: not one built-in term matched, and the
-    model still got 87-100% of the craft vocabulary right on its own. Where it
-    did not know a word — "amêndoa" — it called the stitch "amaranth" 18 times
-    and "shell" 15 times across one video. Asked directly, with the transcript
-    in front of it, the same model names it correctly and identically every run.
+    On a real Portuguese job, not one built-in term matched, yet the model got
+    most of the craft vocabulary right on its own. Where it didn't know a
+    word, it named the stitch inconsistently across the video — but asked
+    directly, with the transcript in front of it, the same model names it
+    correctly and identically every run.
     """
     print("\n[15] Terminology lifted from the video")
     from app.backends import translate as T
@@ -4253,14 +4065,14 @@ def test_terminology():
               runs({"ponto amêndoa": "shell stitch"},
                    {"ponto amêndoa": "cluster stitch"}), TX))
 
-    # The dominant noise is not wrong terms, it is compositional phrases built
-    # around them, which vary run to run and are not terms at all.
+    # The dominant noise is not wrong terms but compositional phrases built
+    # around them, which vary run to run and aren't terms at all.
     phrase = {"iniciar com dois pontos altos": "start with two doubles"}
     check("a phrase built around a term is dropped",
           T._agreed(runs(phrase, dict(phrase)), TX) == {})
 
-    # The first real run came back with "3 -> Today's lesson is about..." for
-    # every line, because the model was enumerating rather than extracting.
+    # A model enumerating lines rather than extracting terms once produced
+    # "3 -> Today's lesson is about..." for every line.
     numbered = {"3": "Today's lesson is about making the second piece"}
     check("an enumerated transcript line is dropped",
           T._agreed(runs(numbered, dict(numbered)), TX) == {})
@@ -4282,9 +4094,9 @@ def test_terminology():
           T._merge_glossaries("a -> b", "") == "a -> b")
 
     # The terminology pass asks the same model a different question, so the
-    # backends must carry their own system prompt. They did not: the first real
-    # run inherited the translation prompt — "one line per input line,
-    # id|translation" — and dutifully numbered 106 transcript lines.
+    # backends must carry their own system prompt — they once didn't, and
+    # inherited the translation prompt, dutifully numbering every transcript
+    # line instead of extracting terms.
     seen = {}
 
     def spy(prompt, model=None, host=None, key=None, system=None, **_):
@@ -4325,7 +4137,6 @@ def test_terminology():
 
 
 
-# ===================== 16. what a finished run keeps about itself
 def test_job_record():
     """A finished run has to answer for a file the app cannot watch.
 
@@ -4372,12 +4183,10 @@ def test_job_record():
 
     # --- which fields get recorded, asserted as a rule and not as a sample
     #
-    # A hand-kept list of them drifts in the unsafe direction: add a setting that
-    # changes the output, forget the list, and it is silently absent from every
-    # entry written from then on with nothing anywhere to raise. Naming four of
-    # them here would not catch that either — a hand-written expectation only
-    # ever agrees with itself. So the record is the complement of a short list of
-    # exclusions, and that is what is checked.
+    # A hand-kept list of recorded fields drifts unsafely: add a setting that
+    # changes the output, forget the list, and it's silently absent from every
+    # entry from then on with nothing to raise. So the record is checked as
+    # the complement of a short exclusion list instead.
     import dataclasses as _dc
     declared = {f.name for f in _dc.fields(Settings)}
     missing = declared - set(Settings.recorded_keys()) - set(Settings.UNRECORDED_KEYS)
@@ -4401,10 +4210,10 @@ def test_job_record():
 
     # --- a setting that had no bearing on the run is left out of the record
     #
-    # Whether the separated music was mixed back is only a question when there was
-    # separated music and the original audio was being replaced. Answered by
-    # whether the key is there at all, so a panel that shows the row does not need
-    # its own copy of the rule to decide.
+    # Whether separated music was mixed back is only a question when there was
+    # separated music and the original was being replaced. Answered by whether
+    # the key is there at all, so a panel showing the row needs no copy of the
+    # rule to decide.
     applied = Settings()
     applied.separate_audio, applied.audio_mode = True, "replace"
     applied.keep_music = False
@@ -4460,10 +4269,9 @@ def test_job_record():
         # --- entries written before any of this existed
         check("an old entry with no settings block is served without complaint",
               (rows["rec-here"].get("stats") or {}).get("settings") is None)
-        # A history file outlives the build that wrote it, and these entries name
-        # a setting the app no longer has. Snapshots are carried through as they
-        # were found rather than validated against today's fields, so a run
-        # recorded under a setting since removed still describes itself.
+        # A history file outlives the build that wrote it. Snapshots are
+        # carried through as found, not validated against today's fields, so
+        # a run recorded under a since-removed setting still describes itself.
         HISTORY_FILE.write_text(json.dumps(
             [{"id": "rec-legacy", "output": str(here), "started": 7, "finished": 8,
               "stats": {"preset": "balanced",
@@ -4496,17 +4304,15 @@ def test_job_record():
 
         # --- a failed run has to survive exactly as far as a finished one does
         #
-        # The four-session audit this shipped to fix found the same complaint
-        # from two testers who never spoke to each other: reload the page after
-        # a failure and it is gone — no error, no Try again, no Copy details,
-        # and nothing in the history panel, even though jobs/*/error.log sat on
-        # disk the whole time. A fresh JobRunner stands in for a restart: its
-        # self.jobs is empty exactly the way the real one is on every launch.
+        # Reloading the page after a failure used to lose it entirely — no
+        # error, no Try again, no Copy details, nothing in the history panel —
+        # even though jobs/*/error.log sat on disk the whole time. A fresh
+        # JobRunner stands in for a restart: its self.jobs is empty exactly the
+        # way the real one is on every launch.
         #
-        # Every access below goes through .get() rather than [] — a regression
-        # here has to be reported by check() and let the rest of the suite keep
-        # running, not abort the whole function on the first KeyError or
-        # IndexError it happens to hit.
+        # Every access below goes through .get() rather than [], so a
+        # regression is reported by check() and doesn't abort the whole
+        # function on the first KeyError or IndexError.
         HISTORY_FILE.write_text("[]")
         r = pipeline.JobRunner()
         failed = pipeline.Job(id="rec-failed", url="https://example.com/broke",
@@ -4555,14 +4361,12 @@ def test_job_record():
 
         # --- a failure and a success are not the same kind of claim
         #
-        # A repeat failure of the same link used to pile up as its own row —
-        # three genuine failures of one link left three duplicate rows sitting
-        # in the panel after a real restart. A failure is "what happened, most
-        # recently", not "what happened, once" — so a later one replaces the
-        # earlier rather than sitting beside it, and a later success replaces it
-        # too: the link did finish in the end, and a "didn't finish" row next to
-        # a "dubbed video" row for the very same run is two contradictory claims
-        # about one thing, not two things that both happened.
+        # A repeat failure of the same link used to pile up as its own row, one
+        # duplicate per attempt. A failure is "what happened, most recently",
+        # not "what happened, once" — so a later one replaces the earlier
+        # rather than sitting beside it, and a later success replaces it too:
+        # a "didn't finish" row beside a "dubbed video" row for the same run
+        # would be two contradictory claims about one thing.
         again = pipeline.Job(id="rec-failed", url="https://example.com/broke")
         again.began, again.finished = failed.finished + 1, failed.finished + 5
         again.status, again.error = "error", "A different failure this time."
@@ -4618,12 +4422,10 @@ def test_job_record():
         #     the same failure
         #
         # The suppression in public_jobs() used to fire for a live job in *any*
-        # state at that id. Retrying a link and then cancelling the retry made
-        # the earlier, still-true failure disappear the instant the cancel
-        # landed — as if the link had never failed — and it only came back after
-        # the app was restarted. Nothing about the earlier failure changed by
-        # being retried, so nothing but another live failure at that id should
-        # be able to hide it.
+        # state at that id, so retrying and then cancelling made a still-true
+        # earlier failure vanish as if it never happened, until a restart.
+        # Nothing about the earlier failure changes on retry, so only another
+        # live failure at that id should be able to hide it.
         HISTORY_FILE.write_text("[]")
         r2 = pipeline.JobRunner()
         stale = pipeline.Job(id="rec-stale", url="https://example.com/stale")
@@ -4654,13 +4456,11 @@ def test_job_record():
 
         # --- the two kinds do not compete for the same shelf space
         #
-        # Before failures were recorded at all, HISTORY_LIMIT was 50 finished
-        # videos, full stop. Recording failures into the same flat, truncated
-        # list would let a long enough losing streak — a stale yt-dlp, a host
-        # that keeps refusing this machine, the exact shape of the audit this
-        # item answers to — silently push every one of those videos off the
-        # end, which is backwards: a losing streak is exactly when the history
-        # panel, and the finished file it points at, matters most.
+        # Recording failures into the same flat, truncated list as finished
+        # videos would let a long losing streak (a stale yt-dlp, a host that
+        # keeps refusing this machine) silently push finished videos off the
+        # end — backwards, since a losing streak is exactly when the history
+        # panel matters most.
         HISTORY_FILE.write_text("[]")
         for i in range(3):
             done = pipeline.Job(id=f"rec-succ-{i}", url=f"https://example.com/ok{i}")
@@ -4721,16 +4521,13 @@ def test_job_record():
             HISTORY_FILE.write_text(backup)
 
 
-# =================================== 17. a run that dubbed almost nothing
 def test_near_empty_dub():
     """A run can succeed completely and still have found almost nothing to say.
 
     The app already speaks up, unprompted, about a speaker count that is
-    probably wrong and about a translation model that is probably too weak.
-    A run where the whole file carries one line and no dubbing anywhere else
-    deserves the same rather than a plain "Done" — real audit case: a 1m59s
-    clip came back with one line spoken, 97% of it with no dubbed line over
-    it, and nothing in the report said so.
+    probably wrong and a translation model that's probably too weak. A run
+    where nearly the whole file carries no dubbed line deserves the same
+    treatment rather than a plain "Done".
     """
     print("\n[17] A run that dubbed almost nothing")
     from app import pipeline
@@ -4819,7 +4616,6 @@ def test_near_empty_dub():
         pipeline.prune_workdir = real_prune
 
 
-# ================== 18. a translation failure leaves finished lines behind
 def test_translate_resume():
     """A translation that dies part way must not throw the finished lines away.
 
@@ -4841,10 +4637,9 @@ def test_translate_resume():
         def say(self, text, voice="", speed=1.0, speaker=0):
             return _tone(300, 0.3, 24000), 24000
 
-    # Spaced well past merge_adjacent's gap threshold, so a change to
-    # merge_lines (used below to invalidate the cache) changes the fingerprint
-    # without changing which lines it applies to — the two settings this test
-    # cares about are kept independent of each other.
+    # Spaced well past merge_adjacent's gap threshold, so toggling merge_lines
+    # below changes the fingerprint without changing which lines it applies to
+    # — keeping the two things this test cares about independent.
     N = 26
     DURATION = 42.0
 
@@ -5003,12 +4798,11 @@ def test_translate_resume():
 def test_translate_resume_respects_settings_change():
     """A partial left by one run's settings must never be adopted by another's.
 
-    The cache-meta stamp used to be written the moment a translation started,
-    not when its content actually changed on disk. A run under new settings
-    that stamped its own fingerprint and then died before its first batch
-    landed left the *previous* settings' lines on disk claiming the *new*
-    fingerprint — so the next attempt under the new settings resumed from
-    them and would have quietly mixed two runs' translations into one dub.
+    The cache-meta stamp used to be written when a translation started, not
+    when its content actually changed on disk. A run under new settings that
+    stamped its fingerprint and died before its first batch landed would leave
+    the *previous* settings' lines on disk claiming the *new* fingerprint —
+    so the next attempt would resume from them and mix two runs together.
     """
     print("\n[19] A settings change must not adopt another run's stale partial")
     from app import pipeline
@@ -5140,12 +4934,11 @@ def test_translate_resume_respects_settings_change():
 def test_preview_failure_is_superseded_by_a_later_success():
     """A sample that fails and then succeeds must not stay listed as failed.
 
-    _fail() recorded a history row for a preview job just as it does for a
-    full run, but the success path deliberately skips previews (a finished
-    sample gets no history row — it is not a thing the user asked to have).
-    Nothing later could ever supersede that failure row, so a sample that
-    failed once and then worked kept sitting under "Runs that didn't finish"
-    even after it worked.
+    _fail() recorded a history row for a preview job just like a full run,
+    but the success path deliberately skips previews (a finished sample gets
+    no history row). Nothing later could then supersede that failure row, so
+    a sample that failed once and later worked kept sitting under "Runs that
+    didn't finish".
     """
     print("\n[20] A failed sample does not stay listed as failed once it works")
     from app import pipeline
@@ -5218,7 +5011,6 @@ def test_preview_failure_is_superseded_by_a_later_success():
         T._call_ollama = real_ollama
 
 
-# ================================================= N. a video already on this Mac
 def test_local_file():
     """Dubbing a file off the disk rather than a link off a site.
 
@@ -5243,8 +5035,8 @@ def test_local_file():
         ("~/Movies/a.mp4", f"{home}/Movies/a.mp4", True),
         ("file:///Users/x/My%20Video.mp4", "/Users/x/My Video.mp4", True),
         ('"/Users/x/My Video.mp4"', "/Users/x/My Video.mp4", True),
-        # Quotes come off whatever is inside them. Asking about http:// first
-        # read this as a filename and reported "no file at .../https:/www…".
+        # Quotes come off whatever is inside them — checking http:// first
+        # avoided misreading this as a filename.
         ('"https://www.youtube.com/watch?v=abc"',
          "https://www.youtube.com/watch?v=abc", False),
         ("'https://youtu.be/abc'", "https://youtu.be/abc", False),
@@ -5271,12 +5063,9 @@ def test_local_file():
     check("nor is anything that starts like a path",
           not dl.looks_like_bare_link("/Users/me/a.b.mp4")
           and not dl.looks_like_bare_link("~/a.b.mkv"))
-    # A media suffix argues against a link only when the string is a lone name.
-    # Vetoing on the suffix alone meant a URL pasted without its scheme, whose
-    # last segment is simply named like a video — which is most direct media
-    # links — was reported as "there's no file at
-    # /Users/…/dubbing-studio/cdn.example.com/talks/keynote.mp4": a path the
-    # person never typed, and nothing they can act on.
+    # A media suffix argues against a link only when the string is a lone
+    # name. Vetoing on the suffix alone misread a scheme-less URL ending in a
+    # video-like segment — most direct media links — as a missing local path.
     check("a scheme-less link to a media file is still a link",
           dl.looks_like_bare_link("cdn.example.com/talks/keynote.mp4"))
     check("and one whose query is what gives it away",
@@ -5285,31 +5074,26 @@ def test_local_file():
           not dl.looks_like_bare_link("my.holiday.video.mp4"))
     check("and a relative folder path is still not a link",
           not dl.looks_like_bare_link("Movies/clip.mp4"))
-    # The separator alone was not enough to tell the two apart: a folder with a
-    # dot in its name reads exactly like a host, and calling one a link tells
-    # somebody whose file has moved to put https:// on the front of it. What a
-    # domain ends in is word-shaped; what a season folder ends in is a number.
+    # The separator alone can't tell the two apart: a folder with a dot in its
+    # name reads exactly like a host. What a domain ends in is word-shaped;
+    # what a season folder ends in is a number.
     check("a dotted folder name is a path, not a host",
           not dl.looks_like_bare_link("Season.1/ep01.mkv"))
-    # _BARE_LINK allows a port, so the host test has to take one off before it
-    # looks at what the address ends in — and an address that is numbers all the
-    # way through is a host too, which is how a video on a box on the shelf is
-    # reached.
+    # _BARE_LINK allows a port, so the host test must strip one before looking
+    # at what the address ends in — and an all-numeric address is a host too.
     check("a port does not stop it being an address",
           dl.looks_like_bare_link("example.com:8080/clip.mp4"))
     check("and neither does being written as numbers",
           dl.looks_like_bare_link("192.168.1.5/video.mp4"))
-    # No shape-based rule can separate these from a real host — they are words
-    # either side of a dot, exactly like one — and they are how people really
-    # name the folders their videos live in. What the last part is decides it,
-    # and anything unrecognised is read as a folder on purpose.
+    # No shape-based rule can separate these from a real host — they're words
+    # either side of a dot, exactly like one, and how people really name their
+    # video folders. What the last part is decides it, and anything
+    # unrecognised is read as a folder on purpose.
     for folder in ("Mr.Robot/s01e01.mkv", "Final.Cut/render.mp4",
                    "holiday.video/a.mp4",
-                   # The ones this app is actually pointed at. A release folder
-                   # ends in the group's name and a shared drive in a country,
-                   # and "am", "us" and "no" are all real domains — so listing
-                   # the short endings turned the commonest folder names here
-                   # into web addresses.
+                   # Release-tag and shared-drive endings ("AM", "US", "NO")
+                   # that are also real domains — the commonest folder names
+                   # here would otherwise read as web addresses.
                    "The.Movie.2020.1080p.WEB.YTS.AM/movie.mp4",
                    "Marketing.Assets.US/promo.mp4",
                    "Some.Show.S01.NO/ep.mkv"):
@@ -5317,30 +5101,26 @@ def test_local_file():
               not dl.looks_like_bare_link(folder))
     check("and a name with a separator but nothing after it is still a name",
           not dl.looks_like_bare_link("clip.mov/"))
-    # The host test is only consulted for names that look like media, so an
-    # extension missing from that set skipped it entirely and went straight back
-    # to "this is a link". A folder holding an .mp3 is no more a web address
-    # than one holding an .mkv.
+    # The host test only runs for names that look like media, so an unlisted
+    # extension used to skip it and default straight to "this is a link". A
+    # folder holding an .mp3 is no more a web address than one holding .mkv.
     for other in ("Season.1/ep01.vob", "Mr.Robot/s01e01.mp3",
                   "Final.Cut/render.m4a"):
         check(f"{other.rsplit('.', 1)[-1]} is media too, so {other.split('/')[0]!r} is a folder",
               not dl.looks_like_bare_link(other))
     check("while the same extension on a real host is still a link",
           dl.looks_like_bare_link("cdn.example.com/podcast/ep.mp3"))
-    # Case is what makes the two-letter endings safe to recognise at all. The
-    # same letters end a domain and a release tag — anchor.fm against YTS.AM,
-    # example.io against Assets.US — and the difference is that nobody writes a
-    # domain in capitals or a scene tag in lower case. Matching either way round
-    # meant choosing which of the two to get wrong.
+    # Case is what makes two-letter endings safe to recognise: the same
+    # letters end a domain and a release tag, but nobody writes a domain in
+    # capitals or a scene tag in lower case.
     for link in ("anchor.fm/show/ep.mp3", "example.io/a.mp4", "some.tv/ep.mkv"):
         check(f"{link.split('/')[0]!r} is a link", dl.looks_like_bare_link(link))
     for shouty in ("The.Movie.2020.1080p.WEB.YTS.AM/movie.mp4",
                    "Marketing.Assets.US/promo.mp4", "Some.Show.S01.NO/ep.mkv"):
         check(f"{shouty.split('/')[0]!r} is not, for all it ends the same way",
               not dl.looks_like_bare_link(shouty))
-    # Most of the world's links are not .com. Leaving the country codes out sent
-    # "bbc.co.uk/v/clip.mp4" back as "there's no file at /Users/…/bbc.co.uk/v/
-    # clip.mp4" — the invented path this whole test exists to stop printing.
+    # Most of the world's links are not .com — omitting country codes would
+    # misread these as missing local paths instead of links.
     for abroad in ("bbc.co.uk/v/clip.mp4", "media.example.de/a.mp4",
                    "site.com.au/x.mkv"):
         check(f"{abroad.split('/')[0]!r} is a link too",
@@ -5412,8 +5192,8 @@ def test_local_file():
     check("the same footage under another name is another job",
           pipeline._source_key(str(moved), True) != key)
 
-    # The case this exists for: an export written again over the top of the last
-    # one. Every cached stage in that folder was made from the old footage.
+    # The case this exists for: an export written again over the last one —
+    # every cached stage in that folder was made from the old footage.
     rewritten = work / "rewritten.mp4"
     shutil.copy(clip, rewritten)
     before = pipeline._source_key(str(rewritten), True)
@@ -5463,11 +5243,9 @@ def test_local_file():
         return job
 
     try:
-        # "Try 30 seconds" is the first button on the panel, so it is the first
-        # thing to work. Deliberately submitted the way somebody would type it
-        # rather than pre-resolved: submit() is where that is settled, and a
-        # feature that only works when handed a tidy path is one that only works
-        # from the file chooser.
+        # Deliberately submitted the way somebody would type it, not
+        # pre-resolved — submit() is where that gets settled, and a feature
+        # that only works with a tidy path only works from the file chooser.
         typed = f"~{str(clip)[len(home):]}" if str(clip).startswith(home) else str(clip)
         sample = run(typed, preview=True)
         check("a sample of a local file dubs", sample.status == "done",
@@ -5501,10 +5279,10 @@ def test_local_file():
               abs(pipeline.download.media_duration(out) - info["duration"]) < 2.0,
               str(pipeline.download.media_duration(out)))
 
-        # The whole reason nothing is copied: the source is the largest thing a
-        # job touches, and this app refuses to start when the disk is tight.
-        # Judged by size rather than by absence, because the sample cut its own
-        # 30 seconds out into a source.mp4 of its own and that one is earned.
+        # The source is the largest thing a job touches, and this app refuses
+        # to start when the disk is tight, so nothing should copy it. Judged
+        # by size rather than absence, since the sample's own 30-second cut
+        # into a source.mp4 is legitimate.
         whole = clip.stat().st_size
         sizes = {p.name: p.stat().st_size for p in (JOBS / job.key).rglob("source.*")}
         check("the video itself was never copied into the job folder",

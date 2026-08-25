@@ -9,17 +9,14 @@ set -uo pipefail
 BOLD=$'\033[1m'; DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'
 RED=$'\033[31m'; RESET=$'\033[0m'
 
-# Everything verbose goes to a log rather than the screen, so the installer stays
-# readable but a failure is still diagnosable after the fact.
+# Verbose output goes to a log, not the screen, so the installer stays readable
+# but failures are still diagnosable.
 LOG="$HOME/Library/Logs/DubbingStudio-install.log"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 
-# Every line the user is told also goes to the log, timestamped and without the
-# colour codes. Before this the log held only what individual commands redirected
-# into it, which in practice was pip: on this machine 136 of its 142 lines were
-# "Requirement already satisfied", and none of them said which step was running
-# when something went wrong.
+# Timestamped, colour-code-free copy of everything said, so the log shows which
+# step was running when something failed (not just raw command output).
 note() { printf '%s  %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"; }
 say()  { printf "%s\n" "$*";                       note "$*"; }
 step() { printf "\n${BOLD}%s${RESET}\n" "$*";      note "== $*"; }
@@ -28,10 +25,8 @@ WARNINGS=()
 warn() { WARNINGS+=("$*"); printf "  ${YELLOW}!${RESET} %s\n" "$*"; note "WARN $*"; }
 bad()  { printf "  ${RED}✗${RESET} %s\n" "$*";     note "FAIL $*"; }
 
-# Put the details straight on the clipboard rather than naming a file. Asking
-# somebody to find ~/Library/Logs — a folder Finder hides by default — and attach
-# the right one of two files is the point at which most people give up and say
-# only "it didn't work". pbcopy is on every Mac.
+# Copies details to the clipboard instead of naming the log file — Finder hides
+# ~/Library/Logs by default, and that's usually where a bug report dies.
 copy_details() {
   local summary
   summary="$(
@@ -46,9 +41,8 @@ copy_details() {
     printf '\nLast 40 lines of the log:\n'
     tail -n 40 "$LOG" 2>/dev/null | sed 's/^/  /'
   )"
-  # Printed rather than say()'d: this is talking *about* the log, and writing it
-  # into the log puts the previous run's "copied to your clipboard" inside the
-  # next run's summary.
+  # printf, not say(): logging this line would put the previous run's "copied to
+  # clipboard" message inside the next run's summary.
   if printf '%s\n' "$summary" | pbcopy 2>/dev/null; then
     printf '  The details are on your clipboard — paste them into a message\n'
     printf '  to whoever helps you with this.\n\n'
@@ -58,11 +52,8 @@ copy_details() {
   fi
 }
 
-# One ending for every way this can fail. The checks that stop the install had a
-# "press return" of their own, which is where the clipboard needs to happen too —
-# a missing Homebrew is far likelier than an unexpected crash. Routed through
-# here so each of them gets it without repeating itself, and so the trap below
-# cannot prompt a second time on the way out.
+# Shared exit path for every failure, so the clipboard copy and prompt aren't
+# duplicated at each check, and the EXIT trap below doesn't fire a second time.
 HANDLED=0
 finish_badly() {
   (( HANDLED )) && return 0
@@ -71,8 +62,8 @@ finish_badly() {
   read -r -p "Press return to close this window."
 }
 
-# And a failure nowhere near a check. Without this an installer that died
-# mid-step closed the window leaving nothing behind at all.
+# Catches failures with no check nearby, so a mid-step crash doesn't just close
+# the window and leave nothing behind.
 trap 'code=$?; (( code )) && { bad "Setup stopped unexpectedly (error $code)."; finish_badly; }' EXIT
 
 clear
@@ -88,20 +79,37 @@ BANNER
 
 if [[ "$(uname)" != "Darwin" ]]; then
   bad "This app is for macOS only."
-  # Handled here, so the exit trap does not add a second prompt and a clipboard
-  # summary to a message that is already the complete answer.
-  HANDLED=1
+  HANDLED=1  # avoid a second prompt from the EXIT trap
   read -r -p "Press return to close."
   exit 1
 fi
 
-ARCH="$(uname -m)"
+# uname -m reports this process's architecture, not the chip — under Rosetta it
+# says x86_64 even on Apple Silicon. hw.optional.arm64 asks the kernel about the
+# real CPU instead, and stays accurate even when we're the ones being translated
+# (proc_translated), which we treat as fatal: continuing would silently install
+# the Intel/portable engine, including Ollama.
+if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" == "1" ]]; then
+  ARCH="arm64"
+  if [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" == "1" ]]; then
+    bad "This is an Apple Silicon Mac, but this Terminal window is running"
+    bad "translated through Rosetta — installing from here would quietly give"
+    bad "you the slower Intel version of everything, including Ollama."
+    say "  To fix it: close this window, select the app that opened it (usually"
+    say "  Terminal, in Applications > Utilities) in Finder, press Cmd+I, and"
+    say "  uncheck \"Open using Rosetta\" if it's checked. Then re-run this installer."
+    HANDLED=1
+    read -r -p "Press return to close this window."
+    exit 1
+  fi
+else
+  ARCH="$(uname -m)"
+fi
 RAM_GB=$(( $(sysctl -n hw.memsize) / 1073741824 ))
 
-# macOS refuses to let an app bundle read Downloads, Desktop or Documents unless
-# it has been granted access, and for a locally-built bundle like ours it denies
-# outright rather than prompting. The app would install and then fail to open, so
-# say so now while the user is still here to act on it.
+# A locally-built app bundle can't get the Downloads/Desktop/Documents access
+# macOS gates behind a prompt — it's denied outright instead. Flag it now, while
+# the user is still here, rather than after install when the app just won't open.
 PROTECTED=""
 case "$PWD/" in
   "$HOME"/Downloads/*)                PROTECTED="Downloads" ;;
@@ -115,7 +123,6 @@ ok "$( [[ "$ARCH" == "arm64" ]] && echo "Apple Silicon — the fast path is avai
                                 || echo "Intel Mac — will use the portable engine" )"
 ok "${RAM_GB} GB memory"
 
-# ---------------------------------------------------------------- 1. Xcode
 step "1 of 8  Apple developer tools"
 if xcode-select -p >/dev/null 2>&1; then
   ok "Already installed"
@@ -127,13 +134,10 @@ else
   ok "Installed"
 fi
 
-# ------------------------------------------------------------- 2. Homebrew
 step "2 of 8  Homebrew (installs the other tools)"
 
-# Pick up an existing Homebrew *before* deciding whether to install one. This
-# script runs under bash, so it never sees the PATH that Homebrew adds to
-# ~/.zprofile — without this, a Mac that already has Homebrew looks bare and we
-# try to install it a second time.
+# This script's bash session never sees the PATH that Homebrew's installer adds
+# to ~/.zprofile, so pick up an existing install before assuming there isn't one.
 brew_shellenv() {
   for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do
     [[ -x "$p" ]] && eval "$("$p" shellenv)" && return 0
@@ -153,12 +157,20 @@ fi
 command -v brew >/dev/null 2>&1 || { bad "Homebrew still not found."; finish_badly; exit 1; }
 ok "Homebrew ready"
 
-# ------------------------------------------------------- 3. ffmpeg, yt-dlp
+# Homebrew's prefix is arch-pinned: /usr/local only ever builds x86_64, even
+# from an untranslated arm64 shell. /opt/homebrew is always the arm64 one.
+if [[ "$ARCH" == "arm64" && "$(brew --prefix 2>/dev/null)" != "/opt/homebrew" ]]; then
+  warn "Homebrew is installed at $(brew --prefix 2>/dev/null), which only ever"
+  warn "builds Intel packages — even on this Apple Silicon Mac. Ollama and"
+  warn "other tools installed below will be slower than they should be."
+  warn "Fix: install Homebrew's Apple Silicon build alongside it —"
+  warn '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+  warn "— then re-run this installer from a fresh Terminal window."
+fi
+
 step "3 of 8  Video tools"
-# The command each formula is expected to put on PATH. python@3.12 provides
-# "python3.12", not "python" — checking for the latter would skip the install on
-# any Mac with a pyenv or conda shim, and leave us building the venv from an
-# older interpreter than the packages support.
+# The command each formula puts on PATH — python@3.12 provides "python3.12", not
+# "python", so checking for the latter would wrongly skip the install.
 check_cmd_for() {
   case "$1" in
     python@3.12) echo "python3.12" ;;
@@ -166,12 +178,8 @@ check_cmd_for() {
   esac
 }
 
-# Being on PATH is not the same as being usable. A pyenv shim for a version
-# pyenv has not selected sits on PATH, satisfies `command -v`, and then exits
-# non-zero with "command not found" the moment it is run. Testing with
-# `command -v` therefore skipped the Homebrew install here and left step 4
-# building the environment from an interpreter that cannot start — so for the
-# interpreters, ask whether it actually runs.
+# On PATH isn't the same as usable: an unselected pyenv shim passes `command -v`
+# but exits "command not found" when run. For interpreters, check it actually runs.
 tool_usable() {
   case "$1" in
     python3.12|python3) "$1" -c 'import sys' >/dev/null 2>&1 ;;
@@ -184,27 +192,20 @@ for tool in ffmpeg python@3.12; do
   if brew list --formula "$tool" >/dev/null 2>&1 || tool_usable "$name"; then
     ok "$name already installed"
   else
-    # Braced deliberately: bash treats the bytes of a following multi-byte
-    # character as part of an unbraced name, so "$name…" expands the variable
-    # "name…", which set -u then kills the installer over. This line only runs
-    # when a tool is actually missing, so it survived every re-run on a machine
-    # that already had them.
+    # ${name} braced deliberately: "$name…" would expand the variable "name…"
+    # (bash treats the following multi-byte char's bytes as part of the name),
+    # which set -u then kills the installer over.
     say "  Installing ${name}…"
     brew install "$tool" >/dev/null 2>&1 && ok "$name installed" || warn "$name may have failed — check below"
   fi
 done
-# yt-dlp is deliberately not installed here any more. It used to be, and was
-# kept fresh here with `brew update && brew upgrade yt-dlp` — but the app runs
-# `python -m yt_dlp` from inside .venv, and pip had put a second, older copy
-# there. Activating the venv puts .venv/bin first on PATH, so the copy this
-# section so carefully upgraded was the one that never ran. It is upgraded in
-# section 4 now, where the venv it lives in actually exists.
+# yt-dlp is deliberately not brew-installed here: the app runs the venv's
+# `python -m yt_dlp` copy, which .venv/bin on PATH always shadows anyway. It's
+# upgraded in section 4, once that venv exists.
 
-# ------------------------------------------------------------- 4. Python
 step "4 of 8  Python environment"
-# Resolve the interpreter by running it, and try Homebrew's own path before
-# whatever PATH happens to resolve first: a pyenv or conda shim earlier in PATH
-# shadows a perfectly good python3.12 and then refuses to start.
+# Resolve by running it, preferring Homebrew's own path over whatever PATH
+# resolves first — a pyenv/conda shim can shadow a working python3.12.
 pick_python() {
   local candidate resolved
   for candidate in "$(brew --prefix 2>/dev/null)/opt/python@3.12/bin/python3.12" \
@@ -224,10 +225,8 @@ if ! PY="$(pick_python)"; then
 fi
 ok "Using $("$PY" -V 2>&1)"
 
-# A half-built .venv is worse than none: it has the directory layout but no
-# working interpreter, so `source activate` succeeds and every later step runs
-# against the wrong python. Failing to build one is fatal, not a warning —
-# continuing past it is what turned a bad interpreter into four more errors.
+# A half-built .venv (dir exists, no working interpreter) lets `activate`
+# succeed and every later step run against a broken python — worse than none.
 if [[ -d .venv && ! -x .venv/bin/python ]]; then
   warn "Removing an incomplete .venv left by an earlier attempt"
   rm -rf .venv
@@ -256,22 +255,16 @@ else
     || { bad "Python setup failed. See $LOG"; finish_badly; exit 1; }
 fi
 
-# yt-dlp separately and always upgraded, because it is the one dependency with a
-# deadline. YouTube changes something every few weeks and the fix ships within
-# days; a requirements pin of ">=" is satisfied by whatever is already installed,
-# so re-running the installer — which otherwise preserves .venv precisely because
-# rebuilding it costs gigabytes and minutes — would leave the stale copy in place
-# forever. That is not hypothetical: a copy 51 days old described a video happily
-# and then refused to download it, because every player client it knew about had
-# been retired and the one that still worked was added after it was built.
+# Always force-upgraded: YouTube breaks yt-dlp every few weeks, and the ">="
+# pin in requirements is satisfied by whatever's already installed, so a
+# re-run would otherwise never pick up the fix.
 say "  Updating yt-dlp…"
 python -m pip install --quiet --upgrade yt-dlp >>"$LOG" 2>&1 \
   && ok "yt-dlp $(python -m yt_dlp --version 2>/dev/null || echo '?')" \
   || warn "Could not update yt-dlp — downloads may fail. Details: $LOG"
 
-# The Apple-GPU voice phonemises English through spacy and fetches this model the
-# first time it speaks. Do it now, so the first dub isn't quietly running a
-# download part way through the job.
+# Pre-fetch the pronunciation model the Apple-GPU voice needs, so the first dub
+# doesn't stall mid-job downloading it.
 if python -c "import misaki" 2>/dev/null && ! python -c "import en_core_web_sm" 2>/dev/null; then
   say "  Fetching the pronunciation model…"
   python -m spacy download en_core_web_sm >>"$LOG" 2>&1 \
@@ -279,7 +272,6 @@ if python -c "import misaki" 2>/dev/null && ! python -c "import en_core_web_sm" 
     || warn "Could not fetch the pronunciation model; it will download on first use."
 fi
 
-# ---------------------------------------------------- 5. Quality extras
 step "5 of 8  Quality extras"
 say "  Music separation, speaker detection and voice cloning. Around 3 GB."
 if python -c "import demucs" 2>/dev/null && python -c "import chatterbox" 2>/dev/null; then
@@ -292,16 +284,14 @@ else
   warn "Details: $LOG"
 fi
 
-# --------------------------------------------------------- 6. Speech models
 step "6 of 8  Speech models"
 say "  Fetched now so the first video doesn't stop to download them."
-# Not piped through grep: `||` binds to the last command in a pipeline, so the
-# warning was keyed on grep's exit status and could never fire.
+# Not piped through grep: `||` would bind to grep's exit status, which is
+# never nonzero here, so the warning could never fire.
 if ! python -m app.warmup 2>&1 | tee -a "$LOG"; then
   warn "Some speech models could not be fetched; they'll download on first use."
 fi
 
-# -------------------------------------------------------------- 7. Ollama
 step "7 of 8  Local translation model"
 if command -v ollama >/dev/null 2>&1; then
   ok "Ollama already installed"
@@ -313,33 +303,30 @@ fi
 
 if command -v ollama >/dev/null 2>&1; then
   open -a Ollama 2>/dev/null || true
-  # Wait for the server to actually answer rather than guessing at a sleep. A
-  # first launch has to unpack and start the helper, which takes well over the
-  # four seconds this used to allow, and `ollama pull` just errors if it is early.
+  # Poll rather than sleep a fixed amount: first launch can take well over a
+  # few seconds to unpack and start, and `ollama pull` errors if run too early.
   ollama_up() { curl -fsS --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; }
   say "  Waiting for Ollama to start…"
   for _ in $(seq 1 90); do ollama_up && break; sleep 1; done
 
-  # If the app is stuck behind a first-run window, run the server directly. The
-  # command-line server is the same binary and needs no interaction.
+  # Fall back to the CLI server directly in case the app is stuck behind a
+  # first-run window — same binary, no interaction needed.
   if ! ollama_up; then
     say "  Starting the Ollama server directly…"
     nohup ollama serve >>"$LOG" 2>&1 &
     for _ in $(seq 1 30); do ollama_up && break; sleep 1; done
   fi
-  # Largest first, then smaller ones. The top tier is a 20 GB download, which on
-  # a home connection is a long time to be exposed to a dropped one — measured
-  # here, it died at 6% with "unexpected EOF". A smaller model that arrives beats
-  # a better one that doesn't, and the app translates instructional speech well
-  # with any of them. Keep the first entry of each tier in step with
+  # Largest-first per RAM tier, falling back smaller on failure: a 20 GB download
+  # dropping mid-transfer is worse than arriving with a smaller model, and all of
+  # them translate instructional speech well. Keep tier-1 entries in sync with
   # suggest_ollama_model() in app/config.py.
   if   (( RAM_GB >= 24 )); then LADDER=(qwen3:14b qwen3:8b)
   elif (( RAM_GB >= 16 )); then LADDER=(qwen3:8b qwen3:4b)
   else                          LADDER=(qwen3:4b); fi
 
   if ollama_up; then
-    # Anything on the ladder already there is the answer: re-running this
-    # installer must not re-download twenty gigabytes to arrive where it is.
+    # Anything already on the ladder is good enough — a re-run must not
+    # re-download twenty gigabytes to arrive where it already is.
     HAVE=""
     for m in "${LADDER[@]}"; do
       if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$m"; then HAVE="$m"; break; fi
@@ -367,7 +354,6 @@ if command -v ollama >/dev/null 2>&1; then
   fi
 fi
 
-# ------------------------------------------------------------ 8. Build app
 step "8 of 8  Building the app"
 python -m pip install --quiet pywebview pillow 2>/dev/null || \
   warn "Native window support unavailable — the app will open in your browser instead."
@@ -406,9 +392,8 @@ if (( ${#WARNINGS[@]} == 0 )); then
 
 DONE
 else
-  # Don't claim success when something was skipped — the app may still open and
-  # then fail on the one thing that didn't install, which is far more confusing
-  # than being told here.
+  # Don't claim success when something was skipped — better to say so here than
+  # have the app open and fail later on whatever didn't install.
   cat <<'DONE'
 
   ┌──────────────────────────────────────────┐

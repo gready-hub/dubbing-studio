@@ -24,13 +24,9 @@ step() { printf "\n${BOLD}%s${RESET}\n" "$*"; }
 ok()   { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
 warn() { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
 
-# Removal means the Bin, not unlink. /usr/bin/trash arrived in macOS 14, so on 12
-# and 13 the move is made by hand; ~/.Trash is on the same volume as everything
-# below, which makes it a rename. The hand-rolled move loses the Put Back that
-# Finder offers, which is why it is the fallback and not the method. Anything
-# that will not go is left exactly where it is and named at the end — an
-# uninstall that misses a folder is a nuisance, one that erases the wrong folder
-# is not.
+# /usr/bin/trash arrived in macOS 14; on 12/13 the move is done by hand instead
+# (losing Finder's Put Back, which is why it's the fallback not the method).
+# Anything that won't move is left in place and named at the end.
 HAVE_TRASH=""
 [[ -x /usr/bin/trash ]] && HAVE_TRASH="yes"
 
@@ -40,10 +36,8 @@ bin_it() {
   for path in "$@"; do [[ -e "$path" ]] && existing+=("$path"); done
   (( ${#existing[@]} )) || return 0
 
-  # One call for everything that still exists, rather than one process per
-  # path — trash(1) moves what it can even when the batch as a whole reports
-  # failure, so a non-zero exit here just means the loop below has fewer
-  # paths left to pick up than it started with.
+  # trash(1) moves what it can even when the batch overall reports failure, so
+  # a non-zero exit here just leaves fewer paths for the loop below to retry.
   if [[ -n "$HAVE_TRASH" ]] && /usr/bin/trash "${existing[@]}" 2>/dev/null; then
     return 0
   fi
@@ -62,11 +56,9 @@ bin_it() {
 
 APP_DIR="$PWD"
 
-# The app's own Python already knows these two roots — asking it is the one
-# source of truth for the rule, rather than a second copy of it in bash that
-# a future change to config.py has no way to reach. Falls back to the same
-# computation platformdirs makes only when the venv itself can't answer,
-# which is exactly when this script tends to get run.
+# Ask the app's own Python for these roots rather than duplicating the rule in
+# bash, where a future change to config.py couldn't reach it. Falls back to the
+# same computation platformdirs makes only when the venv can't answer.
 _paths=""
 if [[ -x "$APP_DIR/.venv/bin/python3" ]]; then
   _paths="$(cd "$APP_DIR" && "$APP_DIR/.venv/bin/python3" -c '
@@ -88,18 +80,16 @@ else
     CACHE="$HOME/Library/Caches/DubbingStudio"
   fi
 fi
-# Trimmed either way: a trailing slash on DUBBING_STUDIO_HOME would otherwise
-# survive into the NESTED match below and make it miss.
+# Trimmed either way: a trailing slash would survive into the NESTED match
+# below and make it miss.
 SUPPORT="${SUPPORT%/}"
 CACHE="${CACHE%/}"
 BUNDLE="$HOME/Applications/Dubbing Studio.app"
 OUTPUT="${DUBBING_STUDIO_OUTPUT:-$HOME/Movies/Dubbed}"
 HF="$HOME/.cache/huggingface/hub"
 
-# Where the code lives decides how this ends. Installed under Application
-# Support it sits inside the support folder, so one move takes the app, the
-# settings and the history together; an install from the older layout keeps them
-# in separate places and both have to be named.
+# Installed under Application Support, one move takes the app, settings and
+# history together; the older layout keeps them separate, so both get named.
 case "$APP_DIR/" in
   "$SUPPORT"/*) NESTED="yes" ;;
   *)            NESTED="" ;;
@@ -159,9 +149,8 @@ say "  Other software may be using these. To remove them yourself:"
 say ""
 if command -v ollama >/dev/null 2>&1; then
   say "    Ollama and its models   $(size_of "$HOME/.ollama")"
-  # trash(1) is only guaranteed from macOS 14; typed advice gets no fallback
-  # of its own the way bin_it does, so it has to pick a command that will
-  # actually run on whatever's in front of it.
+  # trash(1) is only guaranteed from macOS 14, so the printed command has to
+  # match what will actually run here.
   if [[ -n "$HAVE_TRASH" ]]; then
     say "      ${DIM}brew uninstall --cask ollama && trash ~/.ollama${RESET}"
   else
@@ -185,8 +174,8 @@ if [[ "$answer" != "remove" ]]; then
 fi
 
 step "Removing"
-# The app serves on loopback and may still be running; a live process holding the
-# folder open makes the rest of this messier than it needs to be.
+# The app may still be running, and a live process holding the folder open
+# would complicate the rest of this.
 pkill -f "app.desktop" 2>/dev/null && ok "Closed the running app"
 pkill -f "app.server" 2>/dev/null
 
@@ -200,8 +189,8 @@ bin_it "$HOME/Library/Logs/DubbingStudio.log"* \
 if (( ${#HF_OURS[@]} )); then
   bin_it "${HF_OURS[@]}" && ok "Downloaded AI models"
 fi
-# Kept back when the app folder is inside it, so the folder holding this
-# running script is always the one handled last, detached below.
+# Kept back when the app folder is inside it, so it's always handled last,
+# detached below.
 if [[ -z "$NESTED" ]]; then
   bin_it "$SUPPORT" && ok "Settings and history"
 fi
@@ -215,10 +204,8 @@ fi
 say ""
 ok "Dubbed videos are still in $OUTPUT"
 
-# Last, because this script is running from inside it — detached, so the shell
-# is not moving the ground out from under itself mid-run. "remove" already was
-# the confirmation; this does not ask a second time for what the banner above
-# already said would go.
+# Last and detached, since this script runs from inside the folder being moved.
+# No second confirmation — "remove" already covered what the banner listed.
 if [[ -n "$NESTED" ]]; then
   ( sleep 1; bin_it "$SUPPORT" ) >/dev/null 2>&1 &
   ok "The app, its settings and its history — moving to the Bin"

@@ -17,12 +17,9 @@ APP_NAME = "Dubbing Studio"
 
 # ---------------------------------------------------------------- paths
 
-# Two roots, because the platform draws a line here and so should we. Settings
-# and history are the only things on this disk nobody can regenerate, so they go
-# where Time Machine looks and macOS never reclaims. The working files and the
-# downloaded models are re-fetchable by definition and belong in the cache, which
-# is skipped by backups and purgeable under pressure — sparing Time Machine the
-# tens of gigabytes a speech model collection can run to.
+# Two roots: settings/history are irreplaceable and go where backups look;
+# models/working files are re-fetchable and belong in the purgeable cache,
+# sparing backups the tens of gigabytes a speech model collection can run to.
 def _base_dir() -> Path:
     env = os.environ.get("DUBBING_STUDIO_HOME")
     if env:
@@ -34,10 +31,8 @@ def _cache_dir(base: Path) -> Path:
     env = os.environ.get("DUBBING_STUDIO_CACHE")
     if env:
         return Path(env)
-    # DUBBING_STUDIO_HOME means "keep it all here": the test suite points at one
-    # scratch folder and expects everything under it. Splitting the cache out
-    # from under that would put the working files somewhere it never looks, so
-    # the split only applies when the location was left to us.
+    # DUBBING_STUDIO_HOME means "keep it all here" (the test suite relies on
+    # this); the base/cache split only applies when the location was left to us.
     if os.environ.get("DUBBING_STUDIO_HOME"):
         return base / "cache"
     return Path(user_cache_dir("DubbingStudio", appauthor=False))
@@ -64,17 +59,10 @@ def ollama_host() -> str:
         host = f"http://{host}"
     return host.rstrip("/")
 
-# Existing jobs, models or previews under the data folder are moved into the
-# cache rather than left behind: the models alone run to several gigabytes,
-# and leaving them behind would mean downloading all of them again.
-#
-# "Not already there" means empty, not merely present: the loop below creates
-# JOBS and MODELS unconditionally so the app always has somewhere to write, and
-# an empty folder created that way is indistinguishable from a fresh install
-# unless a failed rename here is allowed to try again next launch. Without
-# that, one EXDEV on a bad day seals the folder from ever being checked again,
-# and the gigabytes sitting at the old path stay orphaned and invisible for
-# good rather than for one run.
+# Migrate jobs/models/previews left over from the old single-root layout into
+# the cache, so multi-gigabyte models aren't re-downloaded. "Not already there"
+# means empty, not merely present, since JOBS/MODELS are created unconditionally
+# below — otherwise a failed rename (e.g. EXDEV) would never be retried.
 for _name in ("jobs", "models", "previews"):
     _was, _now = BASE / _name, CACHE / _name
     _now_in_use = _now.is_dir() and any(_now.iterdir())
@@ -185,16 +173,11 @@ def detect_machine() -> Machine:
 def suggest_ollama_model(ram_gb: int) -> str:
     """Pick a translation model that will actually fit in memory.
 
-    "Fit" means alongside the operating system and the speech models, not just on
-    paper. A 12B model needs about 8.6 GB resident, which on a 16 GB Mac drives
-    the machine deep into swap and makes translation the slowest stage of the job
-    by a wide margin — so 16 GB gets an 8B model instead.
-
-    Capped at 14B however much memory there is. The 32B is a 20 GB download, it
-    holds about that much while it runs, and it is slower per line — against
-    line-by-line translation of instructional speech, where a glossary is what
-    actually pins the terminology, none of that buys enough to be the default.
-    Anyone who wants it can name it under Settings, which overrides this.
+    "Fit" means alongside the OS and speech models, not on paper: a 12B model
+    (~8.6 GB resident) drives a 16 GB Mac into swap, so 16 GB gets 8B instead.
+    Capped at 14B regardless of RAM — the 32B's extra cost isn't worth it for
+    line-by-line translation, where a glossary pins terminology anyway. A named
+    model under Settings overrides this.
     """
     if ram_gb >= 24:
         return "qwen3:14b"
@@ -381,15 +364,10 @@ class Settings:
     # which is how the panel that owns the field resets it deliberately.
     KEEP_ON_RESET = SECRET_KEYS + ("custom_glossary",)
 
-    # What a finished job's record leaves out, so that every other field is
-    # recorded by default and a new setting that changes the output is kept with
-    # the runs it shaped without anyone having to remember. Keys are never
-    # written down. keep_awake is a preference about this Mac rather than about
-    # the video, and so is youtube_cookies — it decides whether the video can be
-    # fetched at all, and the format that actually arrived is measured off the
-    # finished file. The last four reach the record in another form, from
-    # run_snapshot(): the model that actually did the words, and whether there
-    # were terms of the user's own rather than the terms themselves.
+    # Excluded so every other field is recorded by default. Keys are never
+    # written down; keep_awake/youtube_cookies are preferences about this Mac,
+    # not the video; the model/glossary fields reach the record in another form
+    # via run_snapshot() (translator_model, has_custom_glossary).
     UNRECORDED_KEYS = SECRET_KEYS + ("keep_awake", "youtube_cookies",
                                      "ollama_model", "anthropic_model",
                                      "openai_model", "custom_glossary")
@@ -398,16 +376,10 @@ class Settings:
         self.normalise()
 
     def normalise(self) -> None:
-        """Drop values this build cannot honour.
-
-        Both name a member of a set that a settings file outlives. An
-        unrecognised glossary contributes no terms while still claiming to; a
-        language with no voice behind it is translated into and then read aloud
-        in English, which sounds fluent and is nonsense.
+        """Drop values this build cannot honour (a settings file outlives its schema).
 
         Called on construction and again from save(), so a value assigned
-        straight onto an existing instance cannot reach the disk or be echoed
-        back to whoever set it.
+        straight onto an existing instance cannot reach the disk unchecked.
         """
         if self.glossary not in BUILTIN_GLOSSARIES:
             self.glossary = "none"
@@ -426,11 +398,8 @@ class Settings:
     def matching_preset(self) -> str:
         """The preset these settings actually are, or "custom".
 
-        This field used to be an assertion rather than an observation: three
-        comments described a "custom" value and nothing ever set it, so choosing
-        Balanced and then turning separation off left the preset saying
-        "balanced" and the segmented control in the interface claiming a preset
-        the settings no longer matched. Derived, it cannot drift.
+        Derived rather than stored, so toggling one setting away from a preset
+        can't leave `preset` claiming a match the settings no longer have.
         """
         for name, spec in PRESETS.items():
             if all(getattr(self, key) == spec[key] for key in self.PRESET_KEYS):
@@ -486,18 +455,10 @@ class Settings:
     def run_snapshot(self, local_source: bool = False) -> dict:
         """The settings that shaped a run, kept with its result.
 
-        What a dub sounds and looks like is decided by settings that are free to
-        change afterwards, so a finished job carries its own copy — otherwise
-        the only thing on offer is what happens to be selected now.
-
-        The custom glossary is recorded as whether there was one. The text is
-        unbounded and would be copied whole into every history entry it applied
-        to; the built-in glossary it sits alongside is named in full.
-
-        A setting that had no bearing on the run is left out rather than
-        recorded as whatever it happened to say, so that whoever reads the
-        snapshot back can take the presence of a key as the answer to whether it
-        counted.
+        Settings can change after a job finishes, so the job carries its own
+        copy. The custom glossary is recorded as present/absent, not verbatim
+        (it's unbounded text). A setting with no bearing on this run is omitted
+        rather than recorded as whatever it happened to say.
         """
         snap = {key: getattr(self, key) for key in self.recorded_keys()}
         snap["translator_model"] = {
@@ -531,13 +492,9 @@ class Settings:
     def save(self) -> None:
         """Write the settings, including any API keys, to SETTINGS_FILE.
 
-        The Anthropic and OpenAI keys are stored here in plain text. That is a
-        deliberate choice for a local single-user app — the Keychain would put a
-        system prompt in front of every job, and the app has no server to hold a
-        token for it — but it is only defensible if it is stated rather than
-        assumed, so the settings panel and the README both say where the key
-        goes. What can be done cheaply is narrowing who can read it: the file is
-        owner-only, so another account on the same Mac cannot.
+        Keys are stored in plain text (Keychain would prompt on every job, and
+        there's no server to hold a token instead) — a deliberate trade-off,
+        disclosed in the settings panel and README. File is chmod'd owner-only.
         """
         self.normalise()
         SETTINGS_FILE.write_text(json.dumps(asdict(self), indent=2))

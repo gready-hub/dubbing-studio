@@ -12,8 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# Set before app.config is imported — see the note in test_pipeline.py: each
-# run gets its own directory, removed on exit, unless one is named explicitly.
+# Set before app.config is imported — see the note in test_pipeline.py.
 _explicit_home = os.environ.get("DUBBING_STUDIO_HOME")
 if _explicit_home:
     SCRATCH = Path(_explicit_home)
@@ -117,8 +116,8 @@ def make_two_speaker_clip(path: Path) -> list[tuple[float, float, int]]:
     if path.exists():
         return json.loads(path.with_suffix(".json").read_text())
 
-    # Two built-in voices with clearly different timbre — a British female and a
-    # British male — so the diarizer has a genuine pair of speakers to separate.
+    # Two built-in voices with clearly different timbre so the diarizer has a
+    # genuine pair of speakers to separate.
     from app.backends.tts import OnnxTTS
 
     tts = OnnxTTS()
@@ -173,7 +172,6 @@ def test_diarization():
                for i in range(len(pattern)) for j in range(len(pattern)))
     check("segments grouped by the right speaker", same, f"{pattern} vs {truth_pattern}")
 
-    # Reference extraction for cloning.
     audio, rate = sf.read(clip, dtype="float32")
     for spk in sorted({s["speaker"] for s in labelled}):
         ref = D.pick_reference(labelled, spk, audio, rate, min_s=4.0, max_s=10.0)
@@ -293,9 +291,9 @@ def test_clone_fallback():
     r = JobRunner()
     s = Settings().apply_preset("best")
 
-    # Force the missing-dependency path. Previously this test relied on
-    # chatterbox genuinely being absent, so it inverted the moment the quality
-    # extras were installed and stopped testing the fallback at all.
+    # Force the missing-dependency path rather than relying on chatterbox
+    # genuinely being absent — that inverted (and stopped testing anything)
+    # once the quality extras were installed.
     real_available = C.available
     P.clone_backend.available = lambda: False
     try:
@@ -310,8 +308,8 @@ def test_clone_fallback():
     finally:
         P.clone_backend.available = real_available
 
-    # A model that imports but blows up on load must degrade the same way, since
-    # that is what a half-downloaded checkpoint actually looks like.
+    # A model that imports but blows up on load must degrade the same way —
+    # that's what a half-downloaded checkpoint looks like.
     real_ctor = C.CloneTTS
     P.clone_backend.available = lambda: True
 
@@ -351,9 +349,8 @@ def test_balanced_end_to_end():
                         "-c:a", "aac", str(clip)], check=True)
 
     from app.steps import download as dl
-    # Probe as well as download: the pipeline asks for the duration before it
-    # draws the progress plan, so stubbing only the download leaves the real
-    # yt-dlp being asked about a made-up URL.
+    # Stub probe too: the pipeline asks for duration before drawing the
+    # progress plan, so stubbing only download leaves yt-dlp hitting a fake URL.
     meta = {"title": "Two Speaker Test", "duration": dl.media_duration(clip),
             "uploader": "t", "thumbnail": ""}
 
@@ -412,11 +409,9 @@ def test_balanced_end_to_end():
     check("preset recorded in the report", st.get("preset") == "balanced")
     check("output exists", Path(job.output).exists())
 
-    # "Who's speaking?" is on the front panel now, so changing it on a link that
-    # has already been dubbed is an ordinary thing to do — and this pipeline has
-    # a history of reusing an artefact that no longer matches its settings. The
-    # transcript and the translation are rightly kept; the labels and the
-    # rendered voices are not, and they are what the answer changes.
+    # Re-running with a changed "who's speaking?" answer must not reuse a
+    # stale artefact: transcript/translation are rightly kept, but labels and
+    # rendered voices must change.
     def rerun(diarize: bool):
         again = Settings().apply_preset("balanced")
         again.diarize, again.translator, again.voice = diarize, "ollama", "bf_emma"
@@ -431,13 +426,10 @@ def test_balanced_end_to_end():
           one.status == "done" and one.stats.get("speakers") == 1,
           f"{one.status}: {one.stats.get('speakers')}")
 
-    # Rendered lines are cached in a voice-keyed folder, and the one-voice run
-    # just above leaves its own behind — in which both speakers legitimately
-    # sound the same, because that is what it was asked for. The pitch check
-    # below then picked whichever folder name sorted first and, when that was
-    # the single-voice one, failed with the two speakers under a hertz apart on
-    # a pipeline that was working correctly. Clearing them makes the folder it
-    # measures unambiguously the one this run renders.
+    # Rendered lines are cached in a voice-keyed folder; the one-voice run
+    # above leaves its own behind. Without clearing it, the pitch check below
+    # could pick that folder (both speakers legitimately sound the same there)
+    # instead of this run's, and fail on a pipeline that was working fine.
     import shutil
     shutil.rmtree(JOBS / job.id / "lines", ignore_errors=True)
 
@@ -452,11 +444,10 @@ def test_balanced_end_to_end():
     speakers = {s_["speaker"] for s_ in segs}
     check("segments carry speaker labels", len(speakers) == 2, str(speakers))
 
-    # Pitch by autocorrelation, taken per frame over the voiced parts and then
-    # averaged. One autocorrelation across a whole line also spans its silence
-    # and onsets, which made the estimate wobble by 20 Hz between runs and
-    # understated the real gap between voices badly enough to flip this check.
-    # An FFT peak is no good either: it finds harmonics, not the fundamental.
+    # Per-frame autocorrelation over voiced parts, then averaged. A single
+    # autocorrelation over the whole line spans silence/onsets and made the
+    # estimate wobble enough to flip this check; an FFT peak finds harmonics,
+    # not the fundamental, so neither shortcut works.
     def fundamental(path):
         a, sr = sf.read(path, dtype="float32")
         if a.ndim > 1:
@@ -477,15 +468,9 @@ def test_balanced_end_to_end():
                 f0s.append(sr / k)
         return float(np.median(f0s)) if f0s else 0.0
 
-    # Rendered lines sit in a voice-keyed subfolder, so that changing voice and
-    # re-running doesn't replay the previous voice's cached audio.
-    #
-    # The newest, not the alphabetically first. This test runs the job twice
-    # with different voices, so a second folder appears — and on a scratch
-    # directory that has been used before, whichever name sorted first won,
-    # which is whatever a previous run happened to leave behind. The check then
-    # measured audio from a different voice than the run it had just done, and
-    # failed with two speakers three hertz apart on a working pipeline.
+    # Pick the newest voice-keyed subfolder, not the alphabetically first —
+    # this job renders two, and sorting by name could pick a stale one from
+    # an earlier run, measuring the wrong voice's audio.
     lines_root = JOBS / job.id / "lines"
     subdirs = sorted((d for d in lines_root.iterdir() if d.is_dir()),
                      key=lambda d: d.stat().st_mtime) if lines_root.is_dir() else []

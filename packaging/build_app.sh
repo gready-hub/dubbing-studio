@@ -1,10 +1,9 @@
 #!/bin/bash
 # Builds "Dubbing Studio.app" into ~/Applications.
 #
-# The bundle is assembled ON this Mac rather than shipped pre-built. That is
-# deliberate: files created locally are not flagged by Gatekeeper, so the app
-# opens with a normal double-click instead of the "unidentified developer"
-# warning that a downloaded .app would trigger.
+# Assembled locally rather than shipped pre-built: Gatekeeper doesn't flag
+# files created on this Mac, so the app opens with a normal double-click
+# instead of the "unidentified developer" warning a downloaded .app would get.
 
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,7 +15,6 @@ mkdir -p "$APPS"
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
-# ------------------------------------------------------------------ plist
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -39,10 +37,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# --------------------------------------------------------------- launcher
 cat > "$CONTENTS/MacOS/DubbingStudio" <<LAUNCHER
 #!/bin/bash
-# Launcher stub — the code itself lives in the folder you installed from.
+# Stub only — the real code lives in the folder you installed from.
 SRC="$SRC"
 
 for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do
@@ -62,10 +59,8 @@ fi
 
 source .venv/bin/activate 2>/dev/null
 
-# macOS blocks apps from reading Downloads, Desktop and Documents unless the user
-# has granted access, and it denies rather than prompting for a bundle like this
-# one. The read fails silently, so check for it here and say what to do instead
-# of exiting into a log file nobody looks at.
+# macOS silently denies (rather than prompting) a bundle like this one reading
+# Downloads/Desktop/Documents, so surface the fix instead of failing silently.
 if ! command -v python >/dev/null 2>&1; then
   osascript -e 'display alert "Dubbing Studio" message "macOS is blocking the app from reading its own folder.\n\nThis happens when the app is kept in Downloads, Desktop or Documents. Re-run the one-line installer from the README — it installs to Application Support, which macOS allows.\n\nUntil then you can still use \"Start Dubbing Studio\" inside the folder." as critical'
   exit 1
@@ -73,16 +68,13 @@ fi
 
 command -v ollama >/dev/null 2>&1 && ! pgrep -qx ollama && open -a Ollama 2>/dev/null
 
-# A file of its own, not DubbingStudio.log. The app now writes that one itself
-# through a rotating handler, and a second writer appending to the same path
-# keeps its handle on the old inode the moment the handler rotates — so the two
-# quietly overwrite each other's work. This side is the last resort anyway: what
-# lands here is what dies below Python, where nothing can be logged.
+# Separate file from DubbingStudio.log: that one rotates via its own handler,
+# and a second writer appending to the same path would hold the old inode
+# across a rotation, silently clobbering it.
 exec python -m app.desktop 2>> "\$HOME/Library/Logs/DubbingStudio-crash.log"
 LAUNCHER
 chmod +x "$CONTENTS/MacOS/DubbingStudio"
 
-# ------------------------------------------------------------------- icon
 if [[ -f "$SRC/.venv/bin/python" ]]; then
   ICONSET="$(mktemp -d)/icon.iconset"
   mkdir -p "$ICONSET"

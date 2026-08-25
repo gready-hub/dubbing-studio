@@ -44,8 +44,7 @@ def draw(size: int = SIZE) -> Image.Image:
 
     cx, cy = size / 2, size / 2
 
-    # One waveform read left to right: the incoming language fades out as the
-    # new voice comes in. Faint bars on the left, solid on the right.
+    # Waveform reads left to right: source language fades out, dub fades in.
     bars = 9
     spacing = size * 0.079
     left = cx - spacing * (bars - 1) / 2

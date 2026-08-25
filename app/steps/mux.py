@@ -63,11 +63,9 @@ def mux(video: Path, dubbed: Path, dst: Path, mode: str = "replace",
     elif mode == "dual":
         cmd += [
             "-map", "0:v:0", "-map", "1:a:0", "-map", "0:a:0",
-            # Both tracks re-encoded rather than copied. The dub is already AAC,
-            # but the original is whatever the site served — on YouTube usually
-            # Opus, which in an MP4 will not play on most Android players or in
-            # QuickTime. Copying it produced a file that was universal in every
-            # respect except its second audio track.
+            # Both tracks re-encoded rather than copied: the original is
+            # whatever the site served (often Opus on YouTube), which in an
+            # MP4 fails on most Android players and QuickTime.
             "-c:v", "copy", "-c:a", "aac", "-b:a", AAC_BITRATE,
             "-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=English (dubbed)",
             "-metadata:s:a:1", "title=Original",
@@ -98,17 +96,12 @@ def check_loudness(result: Path, total_duration: float,
                    silence_db: float = -50.0, min_run: float = 3.0) -> dict:
     """Confirm the finished track actually contains speech.
 
-    verify() compares frame counts and durations, which catches structural
-    mistakes but says nothing about content: a dub that is correctly muxed,
-    exactly the right length and completely silent passes every check it makes.
-    Peak and mean level answer "is there anything there at all". The other
-    figure this returns is measured the same way — silencedetect over the
-    assembled dub — but reads as something else: this track holds only the
-    spoken lines placed at their original timestamps, so a silent run in it is
-    the time no line was dubbed there, not a defect in otherwise-present audio.
-
-    Measured with ffmpeg's own volumedetect and silencedetect rather than by
-    decoding the track here, so it costs one pass and no new dependency.
+    verify() checks frame counts and durations, not content: a dub that is
+    correctly muxed, right length and completely silent passes it anyway.
+    Peak/mean level answer "is anything there". The no-line-seconds figure
+    uses the same silencedetect pass but means something different here: this
+    track holds only dubbed lines at their original timestamps, so a silent
+    run is time nothing was dubbed there, not a defect in present audio.
     """
     proc = subprocess.run(
         ["ffmpeg", "-v", "info", "-nostats", "-i", str(result), "-map", "0:a:0",
@@ -179,15 +172,11 @@ _H264_ENCODERS = (
 def transcode_h264(src: Path, dst: Path) -> str:
     """Re-encode the picture to H.264, leaving audio and subtitles untouched.
 
-    Used only when the site offered nothing widely playable — on YouTube that is
-    rare, since H.264 is published down to 144p even on videos from 2005. When it
-    does happen the alternative is handing someone a file their Mac opens as
-    sound with no picture, so the cost of an encode is worth paying.
-
-    yuv420p is forced because AV1 and VP9 are both offered in 10-bit, which H.264
-    can technically carry and almost nothing can decode — converting to something
-    unplayable would defeat the point. Returns the encoder used, or "" if none of
-    them worked, in which case the original file is left alone.
+    Used only when the site offered nothing widely playable — rare on YouTube,
+    but the alternative is a file that opens as sound with no picture.
+    yuv420p is forced because AV1/VP9 10-bit is technically legal in H.264 but
+    almost nothing can decode it. Returns the encoder used, or "" if none
+    worked, in which case the original file is left alone.
     """
     for encoder, quality in _H264_ENCODERS:
         done = subprocess.run(

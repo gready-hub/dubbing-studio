@@ -24,10 +24,8 @@ SAMPLE_RATE = 24000
 
 class MlxTTS:
     name = "Apple GPU (MLX)"
-    # Stated rather than left to be guessed at: the pipeline fixes one rate for
-    # the whole track before the first line is spoken, and it used to reach for
-    # this attribute, not find it on two of the three engines, and fall through
-    # to a module constant that happened to agree.
+    # Required on all three engines: the pipeline fixes one sample rate for the
+    # whole track up front. Used to be missing here, masked by a module constant.
     sample_rate = SAMPLE_RATE
 
     def __init__(self) -> None:
@@ -111,10 +109,8 @@ def load_tts(use_mlx: bool, progress: Progress = None):
 def prefetch(use_mlx: bool, progress: Progress = None) -> None:
     """Fetch and warm whatever load_tts() would pick, plus the fallback.
 
-    Goes through load_tts rather than reproducing its choice, so MlxTTS's
-    deliberate say("Ready.") — which forces Kokoro's lazily-built phonemiser —
-    happens here too. Warming up by calling load_model() directly skipped
-    exactly that, which is the stall this is meant to remove.
+    Goes through load_tts() rather than load_model() directly, so MlxTTS's
+    say("Ready.") still forces Kokoro's lazily-built phonemiser here too.
     """
     engine = load_tts(use_mlx, progress)
     if not isinstance(engine, OnnxTTS):

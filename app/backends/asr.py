@@ -26,20 +26,11 @@ from ..notes import note
 
 Progress = Optional[Callable[[float, str], None]]
 
-# How many times an engine's decode behaviour has changed enough that the same
-# audio, under the same settings, would come back as a different transcript.
-# pipeline.py folds this into segments.json's fingerprint, so a job resumed
-# across such a change re-transcribes rather than replaying what the old
-# behaviour produced — for condition_on_previous_text below, a transcript that
-# could still carry the repetition-loop hallucination it exists to avoid.
-#
-# Keyed by engine, and an engine absent from here declares nothing. That matters
-# because the fingerprint cascades: the terminology and the translation are both
-# built on top of it, so one blanket version number would make a resumed
-# Parakeet job throw away a finished translation — real money, on a paid
-# translator — over a change that cannot have altered a Parakeet transcript at
-# all. An engine left out keeps the exact fingerprint it had before any of this
-# existed, and so keeps its cached work.
+# Bumped when an engine's decode behaviour changes enough that the same audio
+# would come back differently. pipeline.py folds this into segments.json's
+# fingerprint so resumed jobs re-transcribe instead of replaying stale output.
+# Keyed per engine (missing = 0) — a single global version would invalidate a
+# finished, paid-for translation whenever an unrelated engine changed.
 DECODE_VERSIONS = {"whisper": 2}
 
 
@@ -59,8 +50,6 @@ def to_wav16k(src: Path, dst: Path) -> Path:
                     "-ac", "1", "-ar", "16000", str(dst)], check=True)
     return dst
 
-
-# ------------------------------------------------------------------ MLX
 
 def _transcribe_mlx(audio: Path, progress: Progress = None) -> list[dict]:
     from parakeet_mlx import from_pretrained
@@ -83,8 +72,6 @@ def _transcribe_mlx(audio: Path, progress: Progress = None) -> list[dict]:
         progress(1.0, f"Transcribed {len(out)} lines")
     return out
 
-
-# ----------------------------------------------------------------- ONNX
 
 def _ensure_onnx_models(progress: Progress = None) -> tuple[Path, Path]:
     from .download_util import fetch, extract
@@ -172,8 +159,6 @@ def _cpu_count() -> int:
     return os.cpu_count() or 4
 
 
-# -------------------------------------------------------------- Whisper
-
 WHISPER_MLX = "mlx-community/whisper-large-v3-mlx"
 WHISPER_CPU = "large-v3"
 WHISPER_CPU_COMPUTE = "int8"
@@ -199,25 +184,19 @@ def _whisper_mlx_cached() -> bool:
 def _mlx_whisper_progress(progress: Progress, first: float, last: float):
     """Report mlx_whisper's own decode progress while inside this block.
 
-    mlx_whisper.transcribe() is one blocking call that swallows the whole file,
-    and it was reported as a single jump from 5% to done — six minutes of a
-    frozen bar on a 52-minute video, under a label still saying "Loading
-    Whisper". It does publish its position, just to a progress *bar* rather than
-    to a callback: the decode loop runs inside `with tqdm.tqdm(total=
-    content_frames)` and calls pbar.update() once per window, where the counter
-    is the audio position. That is an exact fraction of the file, and better
-    than the line counting the CPU path settles for.
+    mlx_whisper.transcribe() is one blocking call; without this it reported a
+    single jump from 5% to done (a 6-minute frozen bar on a 52-minute video).
+    It does track position, but via a tqdm bar rather than a callback — the
+    decode loop does `with tqdm.tqdm(total=content_frames)` and calls
+    pbar.update() per window, an exact fraction of the file. That tqdm is
+    swapped for a stand-in that calls us instead of drawing, reached via
+    sys.modules because mlx_whisper.transcribe is a function (the package's
+    __init__ rebinds the name), so an attribute lookup on the module misses it.
 
-    So the meter is swapped for one that calls us instead of drawing. Its module
-    is reached through sys.modules deliberately: mlx_whisper.transcribe is the
-    *function* — the package's __init__ rebinds the name — so the obvious
-    attribute lookup finds something with no tqdm on it.
-
-    This does reach into another package's internals, so it is written to fail
-    into the old behaviour rather than to fail: no callback, no tqdm to replace,
-    or a shape that no longer matches, and the transcription simply runs as it
-    did before with a quiet bar. It is restored unconditionally, since leaving a
-    foreign module monkeypatched would follow every later call in the process.
+    Reaches into another package's internals, so anything unexpected here
+    (no callback, nothing to patch, a changed shape) falls back to the old
+    quiet-bar behaviour rather than raising. Always restored, so the patch
+    can't leak into later calls in the process.
     """
     module = sys.modules.get("mlx_whisper.transcribe")
     real = getattr(module, "tqdm", None)
@@ -250,14 +229,9 @@ def _mlx_whisper_progress(progress: Progress, first: float, last: float):
             pass
 
         def __getattr__(self, _name):
-            # Anything else tqdm is asked for. Only the constructor, the
-            # context manager and update() are used by the decode loop this
-            # stands in for, but that is this version of mlx_whisper's business
-            # and the requirement is not pinned. A method that does nothing
-            # keeps the promise made above — that a shape which no longer
-            # matches costs the progress reporting and nothing else — where an
-            # AttributeError would be raised inside the transcription and drop
-            # the whole job onto the portable engine instead.
+            # Unpinned mlx_whisper internals may probe other tqdm methods; a
+            # no-op keeps failures limited to progress reporting instead of an
+            # AttributeError aborting the transcription.
             return lambda *_args, **_kw: None
 
     module.tqdm = types.SimpleNamespace(tqdm=_Meter)
@@ -270,34 +244,24 @@ def _mlx_whisper_progress(progress: Progress, first: float, last: float):
 def _transcribe_whisper_mlx(audio: Path, progress: Progress = None) -> list[dict]:
     import mlx_whisper
 
-    # Fetched as its own step so the download can be spoken about honestly. The
-    # message here was unconditional — every run, for the life of the install,
-    # announced a 3 GB first-run download — and transcribe() loads and decodes
-    # in a single call, so there was no moment at which the app could have said
-    # the loading had finished and the work had started.
+    # Checked separately because transcribe() loads+decodes in one call, giving
+    # no moment to say "loading done" — without this the 3 GB download message
+    # showed unconditionally, even once the model was already cached.
     cached = _whisper_mlx_cached()
     if progress:
         progress(0.02, "Loading Whisper" if cached
                  else "Loading Whisper (first run downloads about 3 GB)")
     if not cached:
-        # Only when there is really something to fetch. Asked unconditionally it
-        # is a second full trip through snapshot_download() for a model already
-        # on the disk, which costs a wasted pass and prints a second "Fetching"
-        # bar into the window the user is told to leave open.
+        # Skipped when cached: snapshot_download() still makes a full pass and
+        # prints its own "Fetching" bar even with nothing to download.
         _fetch_whisper_mlx()
     if progress:
         progress(0.05, "Transcribing — 0%")
-    # condition_on_previous_text feeds each 30s window's decode the text Whisper
-    # believes it just produced. On a real 52-minute recording that carried a
-    # single garbled window into a self-reinforcing loop — one word repeated for
-    # the rest of the window, sometimes hundreds of times — because a bad guess
-    # became the next window's prompt instead of a fresh start. Two independent
-    # full 52-minute decodes of this exact source file with the flag left on
-    # produced 4 distinct repetition-loop instances between them; the same two
-    # decodes with it off produced none, with *more* words captured overall
-    # (nothing lost at the window boundaries this removes) and a faster decode
-    # besides. Documented further, including what was and wasn't independently
-    # verified, in ~/.claude/scratch/dubbing-studio-asr-hallucination/spec.md.
+    # condition_on_previous_text feeds each window's decode Whisper's own belief
+    # about what it just said, which can lock in a self-reinforcing repetition
+    # loop. Two independent 52-minute decodes of the same file with it on
+    # produced 4 such loops between them; off, zero, with more words captured
+    # and a faster decode. Details: ~/.claude/scratch/dubbing-studio-asr-hallucination/spec.md.
     with _mlx_whisper_progress(progress, 0.05, 0.98):
         result = mlx_whisper.transcribe(str(audio), path_or_hf_repo=WHISPER_MLX,
                                         word_timestamps=False, verbose=None,
@@ -306,11 +270,10 @@ def _transcribe_whisper_mlx(audio: Path, progress: Progress = None) -> list[dict
     for s in result.get("segments", []):
         text = (s.get("text") or "").strip()
         if text:
-            # Kept rather than dropped: a hallucinated repeat isn't always this
-            # cheap to catch by eye. One real instance of this same failure had
-            # an avg_logprob of -2.12 and a compression_ratio of 21.3 — both far
-            # past Whisper's own thresholds (-1.0, 2.4) — and would have been
-            # visible from these fields alone, discarded here until now.
+            # Kept (not just text) so a hallucinated repeat can be caught by
+            # these fields even when not obvious by eye: one real repetition
+            # had avg_logprob -2.12 / compression_ratio 21.3, both past
+            # Whisper's own thresholds (-1.0 / 2.4).
             out.append({"start": float(s["start"]), "end": float(s["end"]), "text": text,
                         "avg_logprob": s.get("avg_logprob"),
                         "compression_ratio": s.get("compression_ratio"),
@@ -327,12 +290,10 @@ def _transcribe_whisper_cpu(audio: Path, progress: Progress = None) -> list[dict
         progress(0.05, "Loading Whisper (first run downloads about 1.5 GB)")
     model = WhisperModel(WHISPER_CPU, device="cpu", compute_type=WHISPER_CPU_COMPUTE,
                          cpu_threads=max(2, _cpu_count() - 1))
-    # Same flag, same reason, as the MLX path above: condition_on_previous_text
-    # carries a bad decode into the next window as its prompt. vad_filter=True
-    # already resets segmentation at silence, which is real protection this
-    # path had and the MLX one didn't — this is defense in depth alongside it,
-    # not the primary fix, and hasn't had its own full-length real-audio
-    # verification the way the MLX change did.
+    # Same fix as the MLX path: condition_on_previous_text off avoids carrying a
+    # bad decode into the next window's prompt. vad_filter=True already resets
+    # at silence (protection the MLX path lacks); this hasn't had the MLX
+    # path's full-length verification.
     segments, info = model.transcribe(str(audio), vad_filter=True, beam_size=1,
                                       condition_on_previous_text=False)
     out = []
@@ -350,8 +311,6 @@ def _transcribe_whisper_cpu(audio: Path, progress: Progress = None) -> list[dict
         progress(1.0, f"Transcribed {len(out)} lines")
     return out
 
-
-# ---------------------------------------------------------------- public
 
 def _fetch_whisper_mlx() -> None:
     import mlx_whisper                                           # noqa: F401

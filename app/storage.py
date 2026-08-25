@@ -1,13 +1,8 @@
 """What this app is keeping on the disk, and how to get rid of it selectively.
 
-The app writes to four places and only ever reported one number for one of them.
-Between the speech models, the translation model Ollama holds on its behalf, the
-working files and the finished videos, a few hours of use is comfortably tens of
-gigabytes — and the only control was a single Clear button that emptied every
-job's working files at once.
-
-Filling the boot disk does not merely fail the job. macOS becomes unusable at
-the same moment, which is not a state to leave someone in.
+Speech models, the Ollama translation model, working files and finished videos
+can add up to tens of gigabytes; a full boot disk makes macOS itself unusable,
+not just the job, so clearing needs to be per-category rather than all-or-nothing.
 """
 from __future__ import annotations
 
@@ -18,16 +13,12 @@ from pathlib import Path
 
 from .config import CACHE, JOBS, MODELS, OUTPUT_DIR, PREVIEWS, ollama_host
 
-# The app's own folder, and the Python environment inside it. Between them these
-# are larger than everything under Application Support, and neither was visible
-# anywhere — a breakdown that omits the biggest items is not a breakdown.
+# Larger than everything under Application Support, so must be in the breakdown.
 APP_DIR = Path(__file__).resolve().parent.parent
 VENV = APP_DIR / ".venv"
 
-# Where the model libraries put their downloads. Shared with any other tool on
-# the machine that uses Hugging Face, so only the repositories this app actually
-# fetches are counted or removed — someone else's models are not ours to total
-# up, let alone delete.
+# Shared with any other tool using Hugging Face; only our own repos (below) are
+# counted or removed.
 HF_HUB = Path.home() / ".cache" / "huggingface" / "hub"
 OUR_MODEL_REPOS = (
     "models--mlx-community--parakeet-tdt",
@@ -46,10 +37,8 @@ def model_cache_dirs() -> list[Path]:
     return [p for p in HF_HUB.iterdir()
             if p.is_dir() and p.name.startswith(OUR_MODEL_REPOS)]
 
-# Peak working-file cost per second of video. Measured rather than guessed: a
-# 10m35s job at 720p peaked at 390 MB before it pruned itself, which is roughly
-# 615 KB for every second of video. The higher qualities carry more pixels
-# through the same pipeline, so they scale with it.
+# Peak working-file cost per second of video, measured (not guessed) from a
+# real job before it pruned itself; higher qualities scale up from there.
 BYTES_PER_SECOND = {"720": 620_000, "1080": 1_100_000, "best": 1_800_000}
 # The part of that which is not the source video: the 16 kHz wav, the four
 # separated stems and the assembled track. Used when the real download size is
@@ -86,10 +75,8 @@ def free_bytes(path: Path = CACHE) -> int:
 def human_size(count: int) -> str:
     """Bytes, written the way someone reading a message needs them.
 
-    One formatter rather than one per caller: the download used to print its own
-    fixed "%.1f GB", which read "about 0.0 GB" for a short video and "0 MB" for
-    anything under half a megabyte. A size nobody can act on is worse than no
-    size, and the small end is exactly where a first, cautious try lands.
+    One formatter for every caller, so small sizes never round to "0.0 GB"
+    the way a fixed "%.1f GB" format used to.
     """
     if count >= 1024 ** 3:
         return f"{count / 1024 ** 3:.1f} GB"
@@ -104,36 +91,21 @@ def estimate_needed(duration: float, quality: str = "best",
                     source_bytes: int = 0, local_source: bool = False) -> int:
     """Roughly what a job of this length will occupy while it runs.
 
-    Deliberately the peak rather than the leftover. A job prunes itself down to
-    a few megabytes when it succeeds, but it holds the source video, a
-    full-band wav, the separated stems and the assembled track all at once
-    before it gets there — and it is that moment, not the tidy end state, that
-    fills a disk.
+    Deliberately the peak, not the pruned-down end state: source video, wav,
+    separated stems and assembled track can all exist at once mid-job.
 
-    source_bytes is the real download size when the site published one, and it
-    is worth more than the per-second guess in the two cases the guess is worst:
-    an unusually high-bitrate video, where the guess is simply too low, and a
-    30-second preview, where duration is the *sample* length but the whole video
-    is still fetched to take the sample out of — so the estimate was 500 MB for
-    a download of well over a gigabyte, on the check that exists to stop a full
-    disk taking the machine down with it.
+    source_bytes (the real download size, when known) overrides the per-second
+    guess, which is worst exactly on a high-bitrate video and on a short preview
+    sample (duration is the sample length, but the whole video is still fetched).
 
-    local_source says the video is already on this disk and is not being copied
-    in, which takes the fetch out of the estimate but not the dub written back
-    out — see below.
+    local_source means the source isn't being copied in, so the fetch drops out
+    of the estimate but the written-back dub does not — see below.
     """
     if local_source:
-        # A file already on this disk is read where it lies rather than copied
-        # into the job folder, so the source itself costs nothing. What it does
-        # still cost is the dub: mux copies the picture rather than re-encoding
-        # it, so the finished file is about the size of the one it came from —
-        # and a source that is not already H.264 is converted into a second
-        # full-size file beside it before that one replaces it. Hence twice,
-        # exactly as for a download, just with the fetch taken out.
-        #
-        # source_bytes is what this run will actually write, which is the whole
-        # picture on a full run and a thirty-second cut of it on a sample; the
-        # caller scales it, because only the caller knows which this is.
+        # Source costs nothing (read where it lies), but mux keeps the finished
+        # file about the same size, and a non-H.264 source is first converted
+        # into a second full-size file beside it — hence x2, as for a download,
+        # minus the fetch. source_bytes is scaled by the caller (full vs sample).
         if source_bytes > 0:
             return max(MINIMUM_NEED,
                        int(source_bytes * 2 + max(0.0, duration) * DERIVED_PER_SECOND))
@@ -145,10 +117,8 @@ def estimate_needed(duration: float, quality: str = "best",
     rate = BYTES_PER_SECOND.get(quality, BYTES_PER_SECOND["best"])
     need = max(0.0, duration) * rate
     if source_bytes > 0:
-        # Twice the finished size: yt-dlp writes the video and audio streams
-        # side by side and then merges them into a third file. The derived rate
-        # is what is left of the measurement above once the source is taken out
-        # of it — the wav, the four separated stems and the assembled track.
+        # x2: yt-dlp writes video and audio streams separately, then merges
+        # them into a third file.
         need = max(need, source_bytes * 2 + max(0.0, duration) * DERIVED_PER_SECOND)
     return max(MINIMUM_NEED, int(need))
 
@@ -182,11 +152,8 @@ def job_folders(title_for=None) -> list[dict]:
         if not folder.is_dir():
             continue
         size = dir_size(folder)
-        # A job that failed early leaves a folder holding little more than its
-        # error log. Sub-megabyte entries are not where anybody's disk went, and
-        # a row reading "0 KB" beside a Clear button reads as something broken
-        # rather than as something small. Clearing all of them still sweeps
-        # these up.
+        # A failed-early job is just an error log; listing it as "0 KB" reads as
+        # broken, not small. Clearing all jobs still sweeps these up.
         if size < LISTABLE:
             continue
         rows.append({"id": folder.name,
@@ -264,10 +231,9 @@ def clear(what: str, keep: set[str] | None = None) -> int:
         return freed
     if what in ("models", "previews"):
         target = MODELS if what == "models" else PREVIEWS
-        # A symlinked folder — someone keeping the models on an external drive,
-        # which is exactly what a person short of space might do — is not ours
-        # to empty. rmtree refuses to follow it anyway, so without this the size
-        # was measured through the link and reported as freed while nothing was.
+        # A symlinked folder (e.g. models kept on an external drive) is not ours
+        # to empty; without this check, size was measured through the link and
+        # reported freed while rmtree silently refused to follow it.
         if not target.is_dir() or target.is_symlink():
             return 0
         freed = dir_size(target)
@@ -276,8 +242,8 @@ def clear(what: str, keep: set[str] | None = None) -> int:
         return freed
     if what.startswith("job:"):
         name = what[4:]
-        # Resolved and checked rather than joined and trusted: this arrives over
-        # HTTP, and "job:../.." would otherwise reach outside the jobs folder.
+        # Resolved and checked, not trusted: this arrives over HTTP, and
+        # "job:../.." would otherwise reach outside the jobs folder.
         folder = (JOBS / name).resolve()
         if name in keep or folder.parent != JOBS.resolve() or not folder.is_dir():
             return 0

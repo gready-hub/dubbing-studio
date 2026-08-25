@@ -1,14 +1,11 @@
 """A last look at the translation before any of it is spoken.
 
-Cheap on purpose: string work over lines that are already in memory, no model
-call, no audio. It exists because the expensive checks all happen too late — the
-finished-audio check confirms there is sound, and the frame check confirms the
-picture survived, and a dub that reads out "id: 63" followed by untranslated
-Spanish passes both of them.
+Cheap on purpose: string work over in-memory lines, no model call, no audio.
+Exists because the other checks run too late — a dub reading "id: 63" followed
+by untranslated Spanish passes both the audio-present and frame-count checks.
 
-It also runs against a translation restored from cache, which the parser cannot:
-a job whose translation went wrong once would otherwise replay it on every
-re-run of the same link.
+Also runs against a translation restored from cache, which the parser cannot,
+so a job whose translation went wrong once won't replay the fault forever.
 """
 from __future__ import annotations
 
@@ -26,9 +23,8 @@ def check(segments: list[dict]) -> dict:
     better one than the original language read aloud in an English voice.
     """
     repaired = untranslated = empty = template = 0
-    # Every repair is logged with the line it changed, not just counted. The
-    # count says a long video needed patching; the lines say where, so they can
-    # be listened to in the finished dub instead of taken on trust.
+    # Each repair is logged with the line it changed, not just counted, so the
+    # affected lines can be checked in the finished dub instead of taken on trust.
     log = logs.get()
 
     for seg in segments:
@@ -38,13 +34,11 @@ def check(segments: list[dict]) -> dict:
             continue
 
         cleaned = _strip_echo(text)
-        # Template all the way down. This is the path that matters for a video
-        # already translated once: the parser's guards run at translation time,
-        # but a cached translated.json is replayed straight past them, and
-        # stripping "<id>|" off "<id>|<translation>" leaves "<translation>",
-        # which is not empty, does not resemble its Portuguese source, and was
-        # therefore spoken — and counted as a *repair*, so the report claimed a
-        # fix where there was none.
+        # A cached translated.json replays straight past the parser's guards
+        # (those only run at translation time). Stripping "<id>|" off a
+        # template reply like "<id>|<translation>" leaves non-empty text that
+        # looks like a real translation and would otherwise be spoken and
+        # miscounted as a repair.
         if cleaned and (_is_scaffolding(cleaned) or _is_example(cleaned)):
             template += 1
             log.warning("line came back as the reply format, not a translation",

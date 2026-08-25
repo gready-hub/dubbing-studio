@@ -21,19 +21,14 @@ Progress = Optional[Callable[[float, str], None]]
 
 # --------------------------------------------------- which kind of source is it
 
-# Extensions people actually hand this app. Used for one thing only: telling a
-# filename apart from a web address typed without its scheme. "clip.mov" and
-# "youtube.com/watch" are both a name with a dot in it, and somebody whose file
-# has been moved should not be told they forgot to type https://.
+# Used only to tell a filename apart from a scheme-less web address: "clip.mov"
+# and "youtube.com/watch" are both just a name with a dot in it.
 MEDIA_SUFFIXES = frozenset({
     ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".mpg", ".mpeg", ".wmv",
     ".flv", ".ts", ".m2ts", ".mts", ".3gp", ".ogv", ".mxf", ".vob", ".divx",
     ".asf", ".rm", ".rmvb", ".f4v", ".m2v",
-    # Sound as well as picture. Not because a bare recording is what this app is
-    # for, but because this set is what decides whether a name is a name: a
-    # folder called "Mr.Robot" holding "s01e01.mp3" is no more a web address
-    # than one holding "s01e01.mkv", and leaving the audio extensions out meant
-    # the first was told to put https:// on the front and the second was not.
+    # Audio included too: "Mr.Robot/s01e01.mp3" is no more a web address than
+    # "s01e01.mkv" is, and this set is what decides that.
     ".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".oga", ".opus", ".wma",
     ".aif", ".aiff", ".alac", ".ape", ".mka",
 })
@@ -43,26 +38,21 @@ MEDIA_SUFFIXES = frozenset({
 # path does.
 _BARE_LINK = re.compile(r"^(?![/~.])[\w-]+(\.[\w-]+)+(:\d+)?([/?#]|$)")
 
-# Domain endings, consulted for one question only: whether a string that is
-# *also* named like a video is an address or a folder. Deliberately far short of
-# the real registry — see looks_like_bare_link(), which reads anything unlisted
-# as a folder on purpose, that being the safer of the two wrong answers.
+# Domain endings, consulted only to tell an address from a folder that also
+# happens to look like a video name. Deliberately far short of the real
+# registry — looks_like_bare_link() reads anything unlisted as a folder, the
+# safer of the two wrong answers.
 #
-# Matched as typed, not lowercased, and that is what makes the short ones safe
-# to list. A domain is written in lower case and a release tag in upper: the
-# folders this app gets pointed at are "The.Movie.2020.1080p.WEB.YTS.AM" and
-# "Marketing.Assets.US", where the same two letters that end anchor.fm and
-# example.io end a scene tag instead. Comparing case-insensitively meant every
-# one of those folders was answered with "put https:// on the front".
+# Matched as typed, not lowercased: a domain is written lower case and a
+# release tag upper, e.g. "The.Movie.2020.1080p.WEB.YTS.AM" vs anchor.fm.
+# Comparing case-insensitively answered those folders with "put https:// on
+# the front".
 _LINK_ENDINGS = frozenset({
     "com", "net", "org", "info", "biz", "cloud", "online", "edu", "gov", "xyz",
     "io", "fm", "tv", "co", "me", "gg", "ly", "ai", "cc", "sh", "app", "dev",
-    # Country codes, which is where most of the world's links live: without
-    # them "bbc.co.uk/v/clip.mp4" and "media.example.de/a.mp4" came back as
-    # "there's no file at /Users/…/bbc.co.uk/v/clip.mp4", the invented path this
-    # whole test exists to stop being printed. Safe here for the same reason the
-    # two-letter endings above are: a domain is written in lower case and the
-    # release tags that would collide with these — .AM, .US, .NO — in upper.
+    # Country codes, without which "bbc.co.uk/v/clip.mp4" reported a made-up
+    # local path. Safe case-sensitively for the same reason as above: real
+    # release tags that collide (.AM, .US, .NO) are written upper case.
     "uk", "de", "fr", "nl", "au", "jp", "eu", "es", "it", "ca", "br", "in",
     "se", "no", "dk", "fi", "ch", "at", "be", "pl", "ru", "nz", "za", "ie",
     "pt", "gr", "cz", "kr", "tw", "hk", "sg", "mx", "ar", "il", "ua", "ro",
@@ -85,13 +75,10 @@ def normalise_source(raw: str) -> str:
     text = (raw or "").strip()
     if not text:
         return ""
-    # Unwrapped before anything else is decided about it. A path copied out of
-    # Terminal arrives inside quotes and Terminal is where a lot of paths get
-    # copied from, but so does a link — and asking whether it began with http://
-    # first sent a perfectly good quoted link down the file branch, to be
-    # reported as a missing file at ".../https:/www.youtube.com/watch". A
-    # matching pair around the whole string is part of neither a real filename
-    # nor a real URL, so taking it off cannot lose anything.
+    # Stripped before the http:// check: a quoted link ("...") was previously
+    # sent down the file branch and reported as a missing file at
+    # ".../https:/www.youtube.com/watch". Neither a real path nor a real URL
+    # carries a matching quote pair, so removing it is always safe.
     if len(text) > 1 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()
         if not text:
@@ -131,50 +118,33 @@ def looks_like_bare_link(typed: str) -> bool:
         return False
     if Path(text).suffix.lower() not in MEDIA_SUFFIXES:
         return True
-    # Named like a video, which is the one case the pattern above cannot settle
-    # on its own: "clip.mov", "Season.1/ep01.mkv" and
-    # "cdn.example.com/talks/clip.mov" all match it, and only the last is a
-    # link. What separates them is whether the part before the first separator
-    # is a *host*. Vetoing on the suffix alone called the third one a file and
-    # answered "there's no file at /Users/…/cdn.example.com/talks/clip.mov" —
-    # naming a path nobody typed; dropping the veto entirely called the second
-    # one a link and told somebody with a mistyped folder name to add https://.
+    # Named like a video, which the pattern above cannot settle alone:
+    # "clip.mov", "Season.1/ep01.mkv" and "cdn.example.com/talks/clip.mov" all
+    # match it, and only the last is a link — told apart by whether the part
+    # before the first separator is a *host*.
     cut = re.search(r"[/?#]", text)
     if not cut or not text[cut.end():]:
-        # All name and no path, so it is a filename. The emptiness matters as
-        # much as the separator: "clip.mov/" has one and still names nothing
-        # beyond it, and Path() drops the trailing slash before the suffix test
-        # above ever sees it.
+        # All name and no path, so a filename. "clip.mov/" still counts: Path()
+        # drops the trailing slash before the suffix test above sees it.
         return False
     host = text[:cut.start()]
-    # The port belongs to the address rather than to any name in it. _BARE_LINK
-    # allows one, so failing to take it off here rejected the very links that
-    # pattern was written to accept.
+    # _BARE_LINK allows a port on the host, so it must be stripped here too.
     host = re.sub(r":\d+$", "", host)
     if re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", host):
         return True                # nothing is named 192.168.1.5
-    # Whether the last label is a domain ending, rather than merely a word. This
-    # is the only test that separates "cdn.example.com/talks/clip.mov" from
-    # "Mr.Robot/s01e01.mkv", and no shape-based rule can: both are words either
-    # side of a dot, and "Season.1", "Final.Cut" and "Mr.Robot" are all how
-    # people really name the folders their videos are in.
-    #
-    # Anything unlisted is read as a folder, deliberately. That is the safer of
-    # the two wrong answers — it says the file is missing and shows the path it
-    # looked at, where the other tells somebody to put https:// in front of a
-    # filename. Endings that read as ordinary words are left out for the same
-    # reason: .video and .mov exist, and "holiday.video" and "clip.mov" are far
-    # likelier to be a folder and a file than a domain.
+    # Whether the last label is a domain ending, the only test that separates
+    # "cdn.example.com/talks/clip.mov" from "Mr.Robot/s01e01.mkv" — both are
+    # words either side of a dot. Unlisted endings read as a folder on
+    # purpose (the safer wrong answer), which is also why ordinary words like
+    # .video are left out of _LINK_ENDINGS.
     return host.rsplit(".", 1)[-1] in _LINK_ENDINGS
 
 
 # --------------------------------------------------------- fetching from a site
 
-# yt-dlp will emit progress in a shape we choose, rather than us reading the
-# shape it chose for humans. The old regex matched "[download]  12.3%" out of
-# text meant for a terminal, which is free to change between releases and says
-# nothing but the percentage. This is a documented interface and carries the
-# byte counts too.
+# A machine-readable progress format, not yt-dlp's human-facing "[download]
+# 12.3%" text, which is free to change between releases and carries no byte
+# counts.
 _PROGRESS_PREFIX = "DUBPROG|"
 _PROGRESS_TEMPLATE = (
     "download:" + _PROGRESS_PREFIX
@@ -185,51 +155,39 @@ _PROGRESS_TEMPLATE = (
 def _ytdlp_cmd() -> list[str]:
     """The yt-dlp inside this app's own environment, and no other.
 
-    Deliberately not shutil.which("yt-dlp"). The launcher activates .venv, so
-    .venv/bin lands first on PATH and which() returns the copy pip put there —
-    while the installer's `brew update && brew upgrade yt-dlp` diligently
-    freshens a *different* binary further down the same PATH. The two drift
-    apart within weeks, and the one that ran was the one nobody was maintaining.
-    Measured on a video that plays fine in a browser: the pip copy knew only
-    clients YouTube had already retired and died with "HTTP Error 403" about
-    20 MB in, while the Homebrew copy six weeks newer negotiated `visionos` —
-    a client the older one does not have at all — and fetched it in one go.
+    Deliberately not shutil.which("yt-dlp"): the launcher's .venv/bin leads
+    PATH, so which() finds the pip-installed copy, while the installer's
+    `brew update && brew upgrade yt-dlp` freshens a different binary further
+    down PATH — the two drift apart, and the stale one is the one that ran.
+    Measured: a 6-week-newer Homebrew copy fetched a video the pip copy died
+    on with "HTTP Error 403", because it could negotiate a client the older
+    one lacked entirely.
 
-    sys.executable pins this to the interpreter already running, so it resolves
-    to the venv the app ships and the installer upgrades: one yt-dlp, one thing
-    to keep current, and no way for PATH order to choose between them. The bare
-    "python3" this used to fall back to was not that — it is whatever PATH
-    resolves, which need be neither the venv nor an interpreter with yt_dlp
-    installed at all.
+    sys.executable pins this to the interpreter already running — the venv the
+    app ships and the installer upgrades — rather than whatever bare "python3"
+    PATH happens to resolve to, which need not have yt_dlp installed at all.
     """
     return [sys.executable, "-m", "yt_dlp"]
 
 
 # No player_client pin, on purpose. This used to name
-# "default,web_safari,tv" so the probe and the download would negotiate against
-# the same client list and agree on format ids — a real requirement, and the
-# reason a pinned id could come back "not available". But naming clients freezes
-# a judgement that goes stale: every one of those three is now refused for some
-# videos that play fine in a browser (403, "the page needs to be reloaded", and
-# "requested format is not available" respectively), because YouTube retired
-# them and yt-dlp moved its own default on. A list written here cannot follow.
-#
-# yt-dlp's defaults track YouTube release by release, which is the whole point of
-# keeping it current. The probe/download invariant is preserved by both simply
-# not asking: same binary, same defaults, same ids.
+# "default,web_safari,tv" so the probe and the download negotiated the same
+# client list and agreed on format ids — but naming clients freezes a
+# judgement that goes stale: YouTube has since retired all three, and a list
+# written here cannot follow. Both stages simply not asking (relying on
+# yt-dlp's own current defaults) preserves the same probe/download agreement
+# without freezing anything.
 
-# yt-dlp reads its own config files (portable, home, user, system) by default and
-# silently merges whatever they contain into this command, which can add unwanted
-# output files or override the flags chosen here. --ignore-config keeps the
-# command fully specified; "Sign in as" still reaches --cookies-from-browser
-# directly, with no config file needed either way.
+# yt-dlp silently merges its own config files (portable, home, user, system)
+# into this command by default, which can add unwanted outputs or override
+# flags chosen here. --ignore-config keeps the command fully specified; "Sign
+# in as" still reaches --cookies-from-browser directly either way.
 _NO_CONFIG_ARGS = ["--ignore-config"]
 
-# Retrying is yt-dlp's job and it does it properly: per-request, with real
-# exponential backoff, without abandoning the bytes already on disk. Ours was a
-# whole-command loop with a fixed 4n sleep that restarted the progress count
-# every time. A 403 part way through a large media fetch — the failure actually
-# measured here — is what --retries and http backoff exist for.
+# Real per-request exponential backoff, replacing a whole-command retry loop
+# with a fixed 4n sleep that restarted the progress count each time and gave
+# up the bytes already on disk. A 403 part way through a large fetch is what
+# --retries and http backoff exist for.
 _RETRY_ARGS = [
     "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "5",
     "--retry-sleep", "http:exp=1:60",
@@ -238,30 +196,26 @@ _RETRY_ARGS = [
 ]
 
 
-# Deliberately no --no-warnings on either command. yt-dlp says why it is about
-# to fail in a warning and then fails in an error that does not repeat it: the
-# 403 measured here was preceded by "n challenge solving failed: Some formats
-# may be missing" and by the note that the challenge solver had been skipped —
-# neither of which reached the log, because both are warnings and warnings were
-# switched off. stream() folds stderr into stdout, so keeping them costs nothing
-# and the tail that reaches the error pane finally says what happened.
+# Deliberately no --no-warnings on either command. yt-dlp explains an
+# impending failure in a warning that its error text does not repeat — a 403
+# here was preceded by "challenge solving failed" and a skipped-solver note,
+# neither of which reached the log while warnings were off. Costs nothing:
+# stream() folds stderr into stdout anyway.
 
 
 def probe(url: str, cookies_from: str = "") -> dict:
     """Ask the site what it has, without fetching any of it.
 
-    cookies_from matters here and not only in download(): an age-restricted or
-    members-only video refuses at the *lookup*, so a user who followed the 403
-    advice and named their browser in Settings would still be turned away before
-    the download that knows about their cookies was ever reached.
+    cookies_from matters here too, not just in download(): an age-restricted
+    or members-only video refuses at the *lookup*, so skipping it here would
+    turn away a user who'd already set "Sign in as" before download() ever ran.
 
-    --ignore-no-formats-error because this asks what exists, not for a stream.
-    Without it yt-dlp resolves its default selector even under -J and fails the
-    whole lookup when nothing satisfies it, which YouTube does intermittently to
-    videos it will serve happily a minute later — a job dead before the download
-    that would have coped was ever reached. The errors worth keeping still land:
-    a private or age-restricted video fails to extract at all, which is a
-    different error and still raises here with its own advice.
+    --ignore-no-formats-error because this asks what exists, not for a stream:
+    without it, yt-dlp resolves its default selector even under -J and fails
+    the whole lookup when nothing satisfies it — something YouTube does
+    intermittently to videos it serves fine a minute later. Errors worth
+    keeping still land: a private/age-restricted video fails extraction
+    entirely, a different error that still raises with its own advice.
     """
     cmd = (_ytdlp_cmd() + ["-J", "--skip-download",
                            "--ignore-no-formats-error"]
@@ -270,10 +224,8 @@ def probe(url: str, cookies_from: str = "") -> dict:
         cmd += ["--cookies-from-browser", cookies_from]
     out = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=120)
     if out.returncode != 0 and _format_was_refused(out.stderr):
-        # The same refusals the download stage sees, and for the same reason: the
-        # site answers one negotiation differently from the next. Two of the three
-        # failures in a real session died here, before the download that would
-        # have coped was reached. Asked once more, which re-negotiates.
+        # Same refusals download() sees, for the same reason: the site answers
+        # each negotiation differently. Asked once more, which re-negotiates.
         out = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=120)
     if out.returncode != 0:
         raise DownloadError(_friendly(out.stderr), out.stderr)
@@ -283,11 +235,9 @@ def probe(url: str, cookies_from: str = "") -> dict:
         "duration": float(data.get("duration") or 0),
         "uploader": data.get("uploader", ""),
         "thumbnail": data.get("thumbnail", ""),
-        # Kept rather than discarded: choose_format() reads this, and without it
-        # every call returned None and quietly fell back to the selector string —
-        # so the codec and the real download size were unknown until afterwards,
-        # which is the whole thing choosing from the list was meant to fix. Stays
-        # in memory; the caller writes its own small record to info.json.
+        # Kept rather than discarded: choose_format() reads this to pick a
+        # codec and know the real download size up front. Stays in memory
+        # only; the caller writes its own small record to info.json.
         "formats": data.get("formats") or [],
         "is_live": bool(data.get("is_live")),
     }
@@ -347,14 +297,10 @@ def _stale_lead() -> str:
     """The sentence a refusal should open with when this yt-dlp is old enough to
     be the cause — and nothing at all when it is not.
 
-    This exists because the advice was confidently wrong. A public video that
-    plays fine in a browser was refused with a 403, and the message told the user
-    to go and configure browser cookies and suggested the video might be private
-    or members-only. It was none of those: every player client that copy knew
-    about had been retired, and the one that still served the video had been
-    added to yt-dlp after it was built. Sending somebody to their cookie settings
-    for that is a wrong answer delivered with total confidence, which is worse
-    than no answer.
+    Exists because a public, browser-playable video was once refused with a
+    403 and told the user to check cookies or the video's privacy — wrong on
+    both counts, since every player client that copy knew had been retired.
+    Confidently wrong advice is worse than none.
     """
     days = ytdlp_age_days()
     if days is None or days <= YTDLP_STALE_DAYS:
@@ -369,34 +315,26 @@ def _stale_lead() -> str:
 def _why_refused(s: str) -> str:
     """The sentence a refusal opens with when something here explains it.
 
-    Two things on this machine can cause YouTube to refuse a download that a
-    browser gets: a yt-dlp too old to ask as a player client YouTube still
-    serves, and one that cannot answer the JavaScript challenge its media URLs
-    are signed with. Both are named before the refusal itself, because both are
-    the actual cause and both are fixed by the same click.
+    Two things on this machine can cause a refusal a browser wouldn't get: a
+    stale yt-dlp, or one that can't answer the JavaScript challenge media URLs
+    are signed with. Both are named up front because both are fixed by the
+    same click.
 
-    Only ever one of them, and never as a branch of its own. The challenge
-    failure was briefly tested first in _friendly() and had to be taken out
-    again: yt-dlp emits it on every extraction on a machine with no JavaScript
-    runtime, so as a branch it does not tell failures apart at all — it
-    swallowed the one below it, and a download that died because the network
-    dropped was reported as "press Update yt-dlp" instead of "check your
-    internet connection". As a lead it explains the refusals it really causes
-    and leaves every other diagnosis alone.
+    Only ever one of them, as a lead rather than a branch of _friendly(): the
+    challenge-failure text is emitted on every extraction on a machine with no
+    JS runtime, so branching on it swallowed unrelated failures — a dropped
+    network connection was once reported as "press Update yt-dlp" instead of
+    "check your internet connection".
     """
-    # Age first, where it is known: it prescribes the same click and has a
-    # number behind it, which is worth more than a diagnosis that has to hedge.
+    # Age first: a known number beats a diagnosis that has to hedge.
     stale = _stale_lead()
     if stale:
         return stale
     if "challenge solving failed" in s:
-        # Says what happened rather than why, and does not promise the click.
-        # An old yt-dlp is the commonest reason it cannot answer — but this copy
-        # is not old, or the branch above would have taken it. What is left is
-        # usually a machine with no JavaScript runtime to answer the check with,
-        # which no amount of updating changes, so sending somebody to press a
-        # button that will report "already current" would be advice they can
-        # disprove in one click and would leave the rest of this looking wrong.
+        # Doesn't promise the "update" click here: this copy isn't stale (or
+        # the branch above would've fired), so it's usually a missing JS
+        # runtime — which updating can't fix, and "already current" would
+        # disprove the advice in one click.
         return ("yt-dlp couldn't answer YouTube's download check, and that is "
                 "the likeliest reason on its own. Setup check will say whether "
                 "it wants updating, and the error details below name what it "
@@ -407,15 +345,10 @@ def _why_refused(s: str) -> str:
 def _friendly(stderr: str) -> str:
     s = stderr.lower()
     if "403" in s and "forbidden" in s:
-        # By the time anyone reads this the download has already been attempted
-        # several times. Telling them to try again in a minute at that point is
-        # advice that has already been taken on their behalf and failed.
-        #
-        # What this machine did wrong is named first when it did anything wrong,
-        # because it is the commonest cause of this and the only one the user
-        # can fix in a click. The sign-in advice stays either way — it is the
-        # right answer when there is nothing wrong here — but it is no longer
-        # the *first* answer regardless of whether it fits.
+        # By the time this is read, retries have already happened — so "try
+        # again" isn't offered here. What this machine did wrong (if anything)
+        # is named first via _why_refused(), since it's the one thing fixable
+        # in a click; sign-in advice still follows as the fallback answer.
         return (_why_refused(s) +
                 "YouTube described the video but refused to send it, on every "
                 "attempt. It usually wants a signed-in session: set “Sign in as” "
@@ -423,13 +356,10 @@ def _friendly(stderr: str) -> str:
                 "video may be private, age-restricted or members-only.")
     if "private video" in s:
         return "That video is private, so it can't be downloaded."
-    # Named signals only. This used to be `"age" in s and "restricted" in s`,
-    # which is three letters that occur inside "package", "page" and "message" —
-    # and yt-dlp's advisory about a skipped solver says "NPM package" every
-    # time. Harmless while warnings were suppressed and live the moment they
-    # were not: "Video unavailable. This video is restricted." then came back
-    # as "that video is age-restricted", which is a different thing with
-    # different advice.
+    # Named signals only. `"age" in s and "restricted" in s` used to match
+    # here — those letters also occur in "package"/"page"/"message", and
+    # yt-dlp's skipped-solver advisory says "NPM package" every time, so a
+    # plain "restricted" video was misdiagnosed as age-restricted.
     if ("sign in to confirm your age" in s or "age-restricted" in s
             or "age restricted" in s or "inappropriate for some users" in s):
         return "That video is age-restricted and can't be fetched without signing in."
@@ -439,69 +369,50 @@ def _friendly(stderr: str) -> str:
         return "That link isn't one yt-dlp recognises."
     if "http error 429" in s or "too many requests" in s:
         return "The site is rate-limiting downloads. Wait a few minutes and try again."
-    # yt-dlp passes this one through from YouTube, and its own words are advice
-    # that cannot work: there is no page here to reload. It means the exchange
-    # was declined — the player challenge failed, or enough requests have gone
-    # out recently that the next one is refused on sight. Both clear on their
-    # own, and both come back faster for being left alone.
+    # yt-dlp passes this through from YouTube verbatim, but there's no page to
+    # reload — it means the exchange was declined (challenge failed, or rate
+    # limited) and clears on its own, faster for being left alone.
     #
-    # Deliberately not led like the 403 above. Every lead _why_refused() offers
-    # ends in "press Update yt-dlp, then try again", and this message exists to
-    # say the opposite — that retrying straight away makes the wait longer — so
-    # the two together tell somebody to do the one thing the sentence after it
-    # asks them not to. A stale copy does provoke this one too, measured, asking
-    # as the retired `tv` client; Setup check is where that is said, without
-    # having to argue with the advice here.
+    # Deliberately not led by _why_refused(): its leads end in "try again",
+    # which directly contradicts the wait-don't-retry advice below.
     if "page needs to be reloaded" in s:
         return ("YouTube declined the request rather than the video. This happens "
                 "after a burst of downloads and clears on its own. Wait a few "
                 "minutes and press Try again — retrying straight away makes the "
                 "wait longer.")
-    # yt-dlp's own words here are "Requested format is not available. Use
-    # --list-formats for a list of available formats", which tells somebody who
-    # has never opened a terminal to pass a command-line flag. It also sounds
-    # like a fault in the video, and it is not: the video is listed and then
-    # nothing in the listing is offered, which on YouTube is a defensive response
-    # to being asked repeatedly — or the sign that the formats worth having were
-    # the ones the unanswered challenge withheld.
+    # yt-dlp's own text tells someone to pass a --list-formats flag and reads
+    # like a fault in the video. It isn't: the listing exists but nothing in it
+    # is offered, usually a defensive response to repeated requests or the
+    # sign the wanted formats were what an unanswered challenge withheld.
     if "requested format is not available" in s:
         return (_why_refused(s) +
                 "YouTube listed the video but offered no version to download. "
                 "That is usually temporary — wait a few minutes and try again. If "
                 "it persists, set “Sign in as” in Settings to the browser you "
                 "watch YouTube in.")
-    # A link that goes nowhere is one of the commonest ways this fails — a typo,
-    # a stale bookmark, half a URL pasted — and it used to fall through to
-    # yt-dlp's own words, which is where the interface got "ERROR: [generic]
-    # does-not-exist: Unable to download webpage: HTTP Error 404: File not found
-    # (caused by <HTTPError 404: File not found>)".
+    # A dead link (typo, stale bookmark, half a URL) used to fall through to
+    # yt-dlp's raw "ERROR: [generic] does-not-exist: Unable to download
+    # webpage: HTTP Error 404: File not found (caused by ...)".
     if "http error 404" in s or "unable to download webpage" in s:
         return ("That link couldn't be opened. Check it is typed correctly and that "
                 "the video is still there.")
     if ("name or service not known" in s or "nodename nor servname" in s
             or "temporary failure in name resolution" in s):
         return "That address couldn't be reached — check your internet connection."
-    # Last, where this began, and kept alongside the lead above rather than
-    # replaced by it. Above, an unanswered challenge explains a refusal this
-    # function already recognises; here it is the whole explanation, for a
-    # failure that produced no such refusal. Dropping it in favour of the lead
-    # alone sent a challenge failure with any unrecognised error — a connection
-    # reset, a stderr of nothing but warnings — out as raw yt-dlp text.
+    # Fallback for an unrecognised error, kept alongside the challenge lead
+    # above (which only explains a refusal this function already recognises)
+    # rather than instead of it — otherwise any unrecognised error went out as
+    # raw yt-dlp text with no lead at all.
     tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
-    # Only when there is nothing else at all — every line a warning. Asking
-    # instead whether any line *started* with ERROR was too narrow by half: a
-    # Python traceback ending "OSError: [Errno 28] No space left on device"
-    # starts with none, and neither does "yt-dlp: error: unrecognized
-    # arguments", so both came back as a failed download check. The challenge
-    # lines match far more stderr than they explain — the advisory about a skipped solver is emitted
-    # on every extraction on a machine with no JavaScript runtime, including
-    # runs that succeed — so testing them against a stderr that also carries a
-    # real error hid the error: a disk that filled up came back as "press Update
-    # yt-dlp". Where yt-dlp has said what went wrong, that is the answer, even
-    # unrecognised; this is for the stderr that is warnings the whole way down,
-    # which would otherwise go out as "WARNING: [youtube] [jsc] Remote
-    # components challenge solver script (deno) …" — _tidy() strips ERROR: and
-    # would leave the WARNING: on.
+    # Only fires when every line is a warning. Checking for a line *starting*
+    # with ERROR was too narrow — neither an "OSError: ... No space left on
+    # device" traceback nor "yt-dlp: error: unrecognized arguments" starts with
+    # it. And the challenge-failure text alone is too broad to gate on: it's
+    # emitted on every extraction with no JS runtime, even successful ones, so
+    # testing it against stderr that also holds a real error hid that error —
+    # a full disk once came back as "press Update yt-dlp". This only takes over
+    # when there's genuinely no ERROR line, just warnings like "WARNING:
+    # [youtube] [jsc] Remote components challenge solver script (deno) …".
     if (("challenge solving failed" in s or "challenge solver" in s)
             and all(ln.lstrip().upper().startswith("WARNING") for ln in tail)):
         return ("yt-dlp couldn't answer YouTube's download check, which is the "
@@ -515,16 +426,15 @@ def _format_was_refused(detail: str) -> bool:
     """Whether the *pinned formats* were the problem, so a fresh pick may not be.
 
     choose_format() reads its ids from probe(), a separate yt-dlp run and so a
-    separate negotiation. The site answers the lookup and the fetch from
-    different format lists often enough that a pinned id is a guess by the time
-    it is used, and it comes back either as a 403 on a stream the listing had
-    just offered or as the ids simply not being in the second list. Choosing
-    again, in the same exchange that fetches, is the answer to both.
+    separate negotiation — the site often answers the two with different
+    format lists, making a pinned id a guess by the time it's used (a 403, or
+    the id simply missing from the second list). Re-choosing in the same
+    exchange that fetches answers both.
 
-    Deliberately not every refusal. "The page needs to be reloaded" is the site
-    declining the exchange itself — asking again straight away is asking a
-    rate-limited host to serve twice as fast, which earns a longer refusal, not
-    a video. That one is left to fail with advice to wait.
+    Deliberately not every refusal: "the page needs to be reloaded" is the
+    site declining the exchange itself, and asking again immediately just
+    earns a longer refusal from a rate-limited host — left to fail with
+    advice to wait instead.
     """
     s = detail.lower()
     return ("requested format is not available" in s
@@ -544,10 +454,9 @@ def _tidy(line: str) -> str:
     head = re.match(r"^\[[^\]]+\]\s*", line)
     if head:
         line = line[head.end():]
-        # yt-dlp prints the video's own id straight after the extractor name.
-        # Kept id-shaped deliberately: a message that merely happens to start
-        # with a word and a colon — or with a URL, which is full of them — must
-        # not lose its first clause to this.
+        # Strips the video id yt-dlp prints after the extractor name. Kept
+        # id-shaped so a message merely starting with "word:" — or a URL,
+        # full of colons — doesn't lose its first clause.
         line = re.sub(r"^[\w.\-]{1,64}:\s+", "", line, count=1)
     line = re.sub(r"\s*\(caused by .*\)\s*$", "", line)
     return line.strip() or "The download failed."
@@ -561,33 +470,23 @@ _H264 = r"[vcodec~='^(avc|h264)']"
 def format_selector(quality: str = "best") -> str:
     """Build the yt-dlp format chain, as fallbacks from most to least wanted.
 
-    The video stream is copied rather than re-encoded, so whatever is chosen here
-    is what has to play on the far end. Every rung exists for a case that has
-    actually been seen, and the chain always ends in a bare "b", so no video can
-    be refused for want of a preferred format.
-
-    quality is "best", "1080" or "720".
+    The video stream is copied rather than re-encoded, so whatever is chosen
+    here is what has to play on the far end. quality is "best", "1080" or
+    "720":
 
         1. bv*[H.264][cap]+ba   what we want: H.264, under the height cap
         2. bv*[cap]+ba          any codec still under the cap
-        3. b[cap]               one combined stream, for the sites that have no
+        3. b[cap]               one combined stream, for sites with no
                                 separate audio to merge
-        4. b                    anything at all
+        4. b                    anything at all — never refused for want of a
+                                preferred format
 
-    The boundary cases, all of which land on a later rung rather than failing:
-
-    * A video offered only in AV1 or VP9 — rung 2. The finished file's codec is
-      recorded, and the report says so if it is one older Macs cannot play.
-    * A site with no separate audio stream — rung 3, or 4 when uncapped.
-    * Nothing at or below the cap, which happens on a video published only at
-      1440p or above — rung 4, which drops the cap rather than returning nothing.
-      A larger file beats no file.
-    * An unrecognised quality string — treated as "best", so a settings file
-      edited by hand cannot produce an empty selector.
-    * No usable formats at all, which is a live stream or a members-only video —
-      yt-dlp fails and the message is translated for the user; there is no
-      selector that can rescue it.
-
+    Boundary cases, all landing on a later rung rather than failing: AV1/VP9-only
+    video (rung 2, codec is recorded and flagged to the user if unplayable);
+    no separate audio stream (rung 3/4); nothing under the height cap, e.g. a
+    1440p-only source (rung 4, a larger file beats no file); an unrecognised
+    quality string (treated as "best"); no usable formats at all — live stream
+    or members-only video — which no selector can rescue.
     """
     cap = f"[height<={quality}]" if quality in ("1080", "720") else ""
     rungs = [f"bv*{_H264}{cap}+ba", f"bv*{cap}+ba"]
@@ -597,22 +496,19 @@ def format_selector(quality: str = "best") -> str:
     return "/".join(rungs)
 
 
-# H.264 video and AAC audio in an MP4 is the one combination that plays
-# everywhere worth caring about: every Mac and iPhone, every Android device of
-# the last decade and a half, every browser, VLC, QuickTime and the smart TVs.
-# It is preferred unconditionally — not per machine — because the file outlives
-# the machine that made it. It gets sent to people, and a dub nobody else can
-# open is not finished.
+# H.264+AAC in MP4 is the one combination that plays everywhere worth caring
+# about (every Mac/iPhone/Android/browser/VLC/QuickTime/smart TV), preferred
+# unconditionally because the finished file gets sent to people and outlives
+# the machine that made it.
 #
-# Deliberately not H.265: smaller at the same quality, and the case it fails is
-# exactly the one that matters here — Android support varies by chip and player,
-# and Chrome and Firefox largely will not touch it. YouTube does not offer it
-# for this material anyway; the codecs on a typical video are avc1, vp9 and av01.
+# Not H.265: smaller at the same quality, but Android support varies by
+# chip/player and Chrome/Firefox largely won't play it; YouTube doesn't offer
+# it for this material anyway.
 #
-# When H.264 is not on offer at all, nothing left is universally playable — VP9
-# will not play in an MP4 in QuickTime whatever the Mac, and AV1 needs an M3.
-# Ranking those against each other is false precision, so the smallest is taken
-# and the report says plainly that the file may not play elsewhere.
+# When H.264 isn't offered at all, nothing left is universally playable — VP9
+# won't play in an MP4 in QuickTime, AV1 needs an M3 — so ranking them against
+# each other is false precision; the smallest is taken and the report flags
+# that it may not play elsewhere.
 def _codec_rank(vcodec: str) -> int:
     v = (vcodec or "").lower()
     return 0 if v.startswith(("avc", "h264")) else 1
@@ -626,35 +522,28 @@ def _size(f: dict) -> int:
 def _size_key(f: dict) -> tuple[int, int]:
     """Sort smallest-first, with unpublished sizes *last* rather than first.
 
-    _size() alone could not be used as a tiebreak: it reports an unknown size as
-    0, and 0 sorts smallest, so a format that declined to say how big it was beat
-    every format that answered honestly. Measured on a real video: 720p H.264 was
-    offered both as progressive https (300 MB, declared) and as HLS (no
-    filesize), the two tied on codec and height, and the HLS one won the "which
-    is smaller" test by knowing nothing.
+    _size() alone can't be the tiebreak: it reports unknown as 0, which sorts
+    smallest — so an undeclared-size format would beat one that answered
+    honestly (seen with a 300MB declared progressive-https 720p H.264 losing
+    to a same-codec, same-height HLS format with no filesize at all).
     """
     size = _size(f)
     return (1, 0) if size == 0 else (0, size)
 
 
-# Progressive https before HLS, where a site offers the same thing as both.
-# Nothing is wrong with the HLS copy, but it arrives as thousands of fragments
-# with no total to count against — so it publishes no filesize, which makes the
-# disk check guess and the progress bar count toward a total it does not have.
-# The https copy is one ranged fetch that yt-dlp can resume, and it says how big
-# it is up front, which is what everything downstream here was written to use.
+# Progressive https before HLS when a site offers both. HLS arrives as
+# thousands of fragments with no total, so it publishes no filesize — leaving
+# the disk check to guess and the progress bar with no total to count toward.
+# https is one resumable ranged fetch that states its size up front.
 def _protocol_rank(f: dict) -> int:
     return 1 if "m3u8" in (f.get("protocol") or "") else 0
 
 
-# YouTube publishes some audio tracks twice: the original, and a "-drc" variant
-# put through dynamic range compression. They tie on container, channels and
-# bitrate, so whichever the format list happened to mention first was taken —
-# and on a measured video that was the DRC one. It is the wrong track to take
-# here for a reason particular to this app: the audio is transcribed and then
-# dubbed over, so a copy that has already had its loudness squashed is a
-# processed rendition standing in for the source, given to a transcriber that
-# does better on the source.
+# YouTube publishes some tracks twice: the original and a "-drc" (dynamic
+# range compressed) variant, tied on container/channels/bitrate so whichever
+# sorts first gets picked arbitrarily. The DRC copy is wrong for this app
+# specifically: audio here is transcribed then dubbed over, and a transcriber
+# does better on the unsquashed source.
 def _is_drc(f: dict) -> bool:
     fid = str(f.get("format_id") or "")
     return fid.endswith("-drc") or "drc" in (f.get("format_note") or "").lower()
@@ -664,12 +553,10 @@ def _total_size(*picked: dict) -> int:
     """The download's size, or 0 meaning "not known".
 
     Summed straight, an unpublished size counted as nothing, so a video stream
-    that gave no figure plus an audio stream that did came back as the size of
-    the audio alone — "Downloading — 100% of 48.4 MB" against a file that
-    finished at 353 MB, and a disk-space check clearing a job seven times larger
-    than it measured. One unknown part makes the total unknown, and 0 already
-    means unknown to every caller: the progress bar falls back to the byte counts
-    yt-dlp reports as it goes.
+    with no figure plus an audio stream that did have one came back as the
+    audio's size alone — "100% of 48.4 MB" against a 353 MB finished file, and
+    a disk check cleared a job 7x larger than it measured. One unknown part
+    makes the total unknown; every caller already treats 0 that way.
     """
     sizes = [_size(f) for f in picked]
     return 0 if any(size == 0 for size in sizes) else sum(sizes)
@@ -739,8 +626,8 @@ def choose_format(info: dict, quality: str = "best") -> dict | None:
     return None
 
 
-# Names yt-dlp and its postprocessors are known to leave scratch state under
-# (.part, .ytdl, .part-Frag<n>, source.temp.<ext>) — none of it the finished video.
+# Scratch state yt-dlp and its postprocessors leave behind — none of it the
+# finished video.
 def _is_scratch(name: str) -> bool:
     lower = name.lower()
     if lower.endswith(".part") or lower.endswith(".ytdl") or ".part-frag" in lower:
@@ -749,20 +636,16 @@ def _is_scratch(name: str) -> bool:
     return len(suffixes) >= 2 and suffixes[-2] == ".temp"
 
 
-# The demuxers ffmpeg reads a still image through — see `ffmpeg -demuxers`.
-# Every one of them describes itself as "piped X sequence" and is named
-# accordingly, which is a property of the file (what read it), not a guess
-# about its codec or its duration. yuv4mpegpipe is deliberately not swept up
-# by the "*_pipe" pattern below: raw video frames, not a still-image
-# sequence, and spelled without the underscore every image demuxer uses.
+# The demuxers ffmpeg reads a still image through (see `ffmpeg -demuxers`);
+# each names itself "piped X sequence", which "*_pipe" below matches without
+# also catching yuv4mpegpipe (raw video frames, spelled without the
+# underscore).
 #
-# gif is deliberately not in this set. Unlike jpeg_pipe or png_pipe, ffmpeg
-# reads a one-frame thumbnail and a genuinely animated GIF through the same
-# "gif" demuxer — format_name alone cannot tell them apart, and yt-dlp's own
-# Imgur extractor offers a real 'ext': 'gif' format as a fallback for posts
-# with no video transcode, which this app's format chain (ending in a bare
-# "b" — anything at all) would legitimately select and download. See
-# _is_single_frame_gif() for how that case is told apart instead.
+# gif is deliberately excluded: ffmpeg reads a one-frame thumbnail and a real
+# animated GIF through the same "gif" demuxer, so format_name alone can't
+# tell them apart, and yt-dlp's Imgur extractor can legitimately offer a real
+# animated-gif format. See _is_single_frame_gif() for how that case is told
+# apart instead.
 _IMAGE_DEMUXERS = {"image2", "image2pipe"}
 
 
@@ -772,16 +655,13 @@ def _is_still_image(format_name: str) -> bool:
 
 
 def _is_single_frame_gif(format_name: str, nb_frames: str) -> bool:
-    """A GIF is rejected only when ffprobe positively counts exactly one
-    frame in it, straight from the container's own frame count — never from
-    `-count_frames`, which would mean decoding the whole thing just to find
-    out whether it was worth decoding.
+    """A GIF is rejected only when ffprobe's own container frame count is
+    exactly one — never via `-count_frames`, which would mean decoding the
+    whole thing to decide whether it's worth decoding.
 
-    An unparseable or missing count is not treated as one frame: some GIF
-    encoders leave nb_frames as "N/A" in the header, and calling that a
-    thumbnail would silently throw away a real animated GIF for the same
-    reason a duration floor did — proving a negative that the container
-    never promised to make provable.
+    An unparseable or missing count (some encoders leave nb_frames as "N/A")
+    is not treated as one frame, since that would silently discard a real
+    animated GIF the container never promised to prove itself.
     """
     if "gif" not in (format_name or "").split(","):
         return False
@@ -793,13 +673,13 @@ def _is_single_frame_gif(format_name: str, nb_frames: str) -> bool:
 
 def _looks_like_media(path: Path) -> bool:
     """Ask ffprobe what kind of file this is, rather than trusting its name or
-    size — yt-dlp's config can drop a thumbnail or info.json sidecar next to
-    the video under the same "source." prefix, and neither looks like scratch.
+    size — yt-dlp's config can drop a thumbnail or info.json sidecar under the
+    same "source." prefix, and neither looks like scratch.
 
-    Only a positive match against ffmpeg's own image demuxers (or a
-    single-frame GIF) counts as not-media; an unreadable probe, or a stream
-    that is neither audio nor video, is assumed to be a real video so a
-    finished download is never thrown away for want of proof.
+    Only a positive match against ffmpeg's image demuxers (or a single-frame
+    GIF) counts as not-media; an unreadable probe, or a stream that's neither
+    audio nor video, is assumed to be a real video so a finished download is
+    never discarded for want of proof.
     """
     try:
         out = subprocess.run(
@@ -809,12 +689,10 @@ def _looks_like_media(path: Path) -> bool:
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
-        # No answer from ffprobe is not evidence that this is a thumbnail —
-        # it is not evidence of anything. Accepting it and letting the real
-        # ffmpeg invocation downstream fail on its own, loudly, with its own
-        # error attached, is strictly better than silently discarding a
-        # completed download because the probe that was only ever meant to
-        # catch a sidecar happened to time out.
+        # No answer from ffprobe is not evidence of anything. Better to let
+        # the downstream ffmpeg call fail loudly on its own than silently
+        # discard a completed download because this sidecar-detecting probe
+        # happened to time out.
         return True
     kinds, format_name, nb_frames = set(), "", ""
     for line in out.stdout.splitlines():
@@ -834,11 +712,11 @@ def _looks_like_media(path: Path) -> bool:
 
 def _finished_file(workdir: Path) -> Path | None:
     """The video that was actually downloaded, not whatever sorts first — a
-    leftover .part fragment from an interrupted first try can sort ahead of the
+    leftover .part fragment from an interrupted first try can sort ahead of a
     completed source.mp4 a retry then wrote.
 
-    Excludes scratch state and anything ffprobe identifies as a still image,
-    then prefers the merged filename, falling back to the largest candidate.
+    Excludes scratch state and still images, then prefers the merged filename,
+    falling back to the largest candidate.
     """
     candidates = [p for p in workdir.glob("source.*")
                   if p.is_file() and not _is_scratch(p.name)]
@@ -850,15 +728,13 @@ def _finished_file(workdir: Path) -> Path | None:
 
 
 def _explain_missing_video(workdir: Path) -> str:
-    """What download() puts in a DownloadError's detail when _finished_file()
-    comes back empty, so "yt-dlp wrote nothing" can be told apart from
-    "yt-dlp wrote something and it was turned away" — the difference between
-    a bug here and a bug in whatever the user linked to.
+    """The DownloadError detail when _finished_file() comes back empty, so
+    "yt-dlp wrote nothing" can be told apart from "yt-dlp wrote something and
+    it was rejected" — a bug here vs. a bug in whatever the user linked to.
 
-    This only runs after download() has already decided to fail, and its own
-    contract is best-effort: one guard round the whole body means a vanished
-    file or an unreadable directory falls back to a vaguer detail instead of
-    replacing the friendly error with a raw traceback.
+    Best-effort: the one guard round the whole body means a vanished file or
+    unreadable directory falls back to a vaguer detail rather than a raw
+    traceback.
     """
     try:
         if not workdir.is_dir():
@@ -898,8 +774,8 @@ def download(url: str, workdir: Path, quality: str = "best",
     if progress:
         progress(0.02, f"Found “{info['title']}”")
 
-    # Chosen from the published list where there is one, with the selector
-    # string kept behind it as a fallback for anything that list cannot answer.
+    # picked, when available, is tried first; the selector string stays as a
+    # fallback for anything the published list can't answer.
     picked = choose_format(info, quality)
     fmt = format_selector(quality)
     if picked:
@@ -911,55 +787,45 @@ def download(url: str, workdir: Path, quality: str = "best",
     target = workdir / "source.%(ext)s"
     cmd = _ytdlp_cmd() + [
         "-f", fmt, "--merge-output-format", "mp4",
-        # Deliberately no --user-agent. YouTube ties a media URL's authorisation
-        # to the client yt-dlp negotiated it as, so overriding the agent
-        # *desyncs* the two: a hand-set desktop Chrome string turns a download
-        # that works into a reliable 403. yt-dlp's own default is correct.
+        # Deliberately no --user-agent: YouTube ties a media URL's
+        # authorisation to the client yt-dlp negotiated it as, so overriding
+        # the agent desyncs the two and turns a working download into a
+        # reliable 403.
         "--newline",
         "--progress-template", _PROGRESS_TEMPLATE,
     ] + _RETRY_ARGS + _NO_CONFIG_ARGS
-    # The fix for the stubborn case: YouTube increasingly wants a session, and a
-    # signed-out request for some videos is refused whatever client asks. Off
-    # unless the user names a browser, because reading their cookie store is not
+    # Off unless the user names a browser: reading their cookie store is not
     # something to do quietly on their behalf.
     if cookies_from:
         cmd += ["--cookies-from-browser", cookies_from]
     cmd += ["-o", str(target), url]
 
-    # Picture and sound arrive as two separate downloads, each of which counts
-    # its own bytes from zero. Reported as-is, the bar filled up and then
-    # started again from nothing — which to anyone not watching the byte counts
-    # looks like the job restarting itself near the end. Summed here instead,
-    # against the total the format listing gave us, so it only ever goes forward.
+    # Picture and sound are two separate downloads, each counting its own
+    # bytes from zero — reported as-is, the bar would fill up and restart near
+    # the end. Summed here against the format listing's total instead, so it
+    # only ever goes forward.
     done = {"before": 0, "last": 0}
     expected = picked["bytes"] if picked else 0
 
     def fetched() -> int:
         """What is actually on disk for this download.
 
-        The reported counter cannot be trusted on its own across a retry. A
-        403 part way through leaves a part file behind, the next attempt is
-        answered with "Resuming download at byte 288019941", and what the
-        counter does from there depends on whether the format is served as one
-        range request or as fragments. Measured on the video that failed for a
-        user: the bar sat at "0% of 1.7 GB" while the file on disk passed 1.4 GB.
-
-        The file has no opinion about any of that. Used as a floor rather than a
-        replacement, so a site that streams into a single handle still reports
-        normally.
+        The reported counter can't be trusted across a retry: a 403 part way
+        through leaves a part file, the resumed attempt's counter behaves
+        differently depending on whether the format is one range request or
+        fragments — measured once sitting at "0% of 1.7 GB" while the file on
+        disk had passed 1.4 GB. Used as a floor, not a replacement, so a
+        single-handle stream still reports normally.
         """
         try:
             return sum(f.stat().st_size for f in workdir.glob("source.*"))
         except OSError:
             return 0
 
-    # yt-dlp's own words, with the progress records left out. --progress-template
-    # emits a DUBPROG line per update and a large download emits thousands, so
-    # the tail stream() keeps was all progress and no diagnosis. Seen in the
-    # field: a real 403 reported with a detail that began "DUBPROG|64512|3" and
-    # never reached the error at all. Collected here rather than filtered in
-    # stream(), which drives Demucs too and has no business knowing what a
-    # progress line looks like.
+    # yt-dlp's own words, with progress records filtered out — a large download
+    # emits thousands of DUBPROG lines, so stream()'s own tail was all progress
+    # and no diagnosis. Filtered here rather than in stream(), which also
+    # drives Demucs and has no business knowing what a progress line looks like.
     said: list[str] = []
 
     def show(line: str) -> None:
@@ -996,17 +862,12 @@ def download(url: str, workdir: Path, quality: str = "best",
     # nothing but progress lines before dying.
     detail = "".join(said).strip() or problem
     if code != 0 and _format_was_refused(detail):
-        # Every one of these is a refusal of the exchange rather than of the
-        # video: the same argv, run again by hand a minute later, fetches it.
-        # YouTube rate-limits and answers each negotiation differently, and
-        # yt-dlp's own --extractor-retries does not count these as retryable, so
-        # one refusal ended a job that a second ask would have got through.
-        #
-        # Asked again from scratch, which re-negotiates. When ids were pinned the
-        # chain replaces them too: those came from probe(), a negotiation that
-        # has already ended, and yt-dlp only walks the chain while it is
-        # choosing — a format it chose and then could not fetch is the end of the
-        # run rather than a reason to try the next rung.
+        # A refusal of the exchange, not the video: the same argv run again a
+        # minute later fetches it, but yt-dlp's own --extractor-retries
+        # doesn't count these as retryable. Re-negotiated from scratch, and
+        # any pinned ids replaced too — those came from probe()'s already-
+        # ended negotiation, and yt-dlp won't fall through its own chain once
+        # it has chosen and failed to fetch a format.
         if progress:
             progress(0.02, "The site refused that; asking again")
         said.clear()
@@ -1049,11 +910,10 @@ def _ffprobe_streams(path: Path) -> tuple[set[str], float, str]:
     """(what kinds of stream are in it, how long it is, what ffprobe complained
     about). Never raises — an unreadable file is an answer, not an exception.
 
-    The streams are asked for their own durations as well as the container, so
-    that a file whose header does not carry one still arrives with a length. A
-    transport stream and a growing recording both do that, and the pipeline
-    divides by this number to weight a sample and to find where the speech
-    starts.
+    Streams are asked for their own duration as well as the container's, so a
+    header-less file (a transport stream, a growing recording) still gets a
+    length — the pipeline divides by this to weight a sample and find where
+    speech starts.
     """
     try:
         out = subprocess.run(
@@ -1081,15 +941,14 @@ def probe_local(path: Path | str) -> dict:
     """The same description of a video that probe() gets out of a site, for a
     file that is already here.
 
-    Shaped identically on purpose: the pipeline reads a title, a duration and a
-    format list out of one dictionary whichever end it came from. The empty
-    format list is the honest answer rather than a stub — there is nothing to
-    choose between, which is exactly what choose_format() returning None means.
+    Shaped identically on purpose: the pipeline reads title/duration/formats
+    from one dictionary whichever end it came from. The empty format list is
+    honest, not a stub — it means the same as choose_format() returning None.
 
-    The two refusals are the two the pipeline cannot recover from further down.
-    A file with no picture has nothing to mux the new soundtrack onto, and a
-    file with no sound has nothing to transcribe — both would otherwise die
-    inside ffmpeg, minutes later, in its words rather than ours.
+    The two refusals here are the two the pipeline can't recover from further
+    down: no picture means nothing to mux the soundtrack onto, no sound means
+    nothing to transcribe. Both would otherwise die inside ffmpeg minutes
+    later, in its words rather than ours.
     """
     path = Path(path)
     if not path.is_file():
@@ -1122,18 +981,15 @@ def use_local(path: Path | str, progress: Progress = None,
               info: dict | None = None) -> tuple[Path, dict]:
     """download()'s counterpart for a file that never needed downloading.
 
-    Deliberately no copy into the job folder. The source video is the largest
-    thing a job touches — this app refuses to start when the disk is tight, and
-    prunes itself afterwards to get the space back — so duplicating a file that
-    is already on the same disk, in order to read it once, would be the most
-    expensive no-op in the pipeline. Everything downstream treats it as an
-    ffmpeg input and writes elsewhere, so reading it where it lies is safe and
-    the user's own file is never touched.
+    Deliberately no copy into the job folder: the source video is the largest
+    thing a job touches, so duplicating a file already on the same disk just
+    to read it once would be the most expensive no-op in the pipeline.
+    Everything downstream treats it as an ffmpeg input and writes elsewhere,
+    so reading it in place never touches the user's own file.
     """
     path = Path(path)
-    # Re-checked even when the caller brought an info along: the probe happens
-    # before the disk check and the progress plan, and a file can be moved,
-    # renamed or unmounted in the seconds between.
+    # Re-checked even with a caller-supplied info: a file can be moved,
+    # renamed or unmounted in the seconds between the probe and this call.
     if not path.is_file():
         raise DownloadError(f"There's no file at {path} any more.",
                             f"{path} was there when the job started and is not now.")

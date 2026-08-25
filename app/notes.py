@@ -1,14 +1,10 @@
 """A side channel for fallbacks that changed the result.
 
-Every backend already reports progress through a callback, and a fallback that
-changed the outcome was visible only as a progress message — which scrolls past
-while the job runs and is gone by the time anyone reads the report. The
-orchestrator can only write down the fallbacks it can *observe* from a return
-value, which is why separation and cloning were recorded and the ASR and TTS
-engines quietly falling back to their portable versions were not.
-
-So the note travels on the channel that already reaches every layer. A backend
-records one without knowing or caring whether anybody is collecting them.
+Progress messages scroll past and are gone by the time anyone reads the report,
+and the orchestrator can only record fallbacks it can observe from a return
+value — which missed engines silently falling back to portable versions. Notes
+travel on the same callback channel instead, written without the backend
+knowing or caring whether anyone is collecting them.
 """
 from __future__ import annotations
 

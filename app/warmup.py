@@ -1,20 +1,15 @@
 """Fetch the models a preset needs before the first job, not during it.
 
-The first dub stopped for several gigabytes of downloading in the middle of
-whichever stage happened to need them, reported as a fraction of that stage's
-progress. A progress bar that sits still for twenty minutes is indistinguishable
-from a hang, and the one thing the user can see — the stage name — says
-"Transcribing", which is not what is happening.
+Otherwise gigabytes downloaded mid-stage show as stalled progress under a
+stage name ("Transcribing") that doesn't explain the wait.
 
-Each backend says what *it* needs, through its own `prefetch()`, built from the
-same fallback ladder it uses at run time. This module only decides which
-backends a preset will reach. It used to reconstruct the per-backend model lists
-itself, reaching into private helpers to do it, and the two copies promptly
-disagreed — it fetched only the engine expected to win, so the fallbacks, which
-are reached precisely when the primary is failing, still stalled the job.
+Each backend says what it needs via its own `prefetch()`, built from the same
+fallback ladder used at run time — this module only decides which backends a
+preset reaches. (A prior version reconstructed per-backend model lists itself
+and only fetched the primary engine, so fallbacks still stalled the job.)
 
-Nothing here is required: every fetch may fail, and the pipeline still downloads
-on demand exactly as before.
+Nothing here is required: any fetch may fail and the pipeline still downloads
+on demand as before.
 
     python -m app.warmup [preset]
 """
@@ -75,8 +70,7 @@ def warm(preset: str = "balanced", on_step: Step = _say) -> list[str]:
 
 
 def main() -> int:
-    # Whatever is actually selected, not a hardcoded guess — otherwise the one
-    # preset that gets warmed is the one the user may not be using.
+    # The preset actually in use, not a hardcoded guess.
     preset = sys.argv[1] if len(sys.argv) > 1 else Settings.load().preset
     if preset not in PRESETS:
         preset = "balanced"                       # "custom" has no model list
@@ -84,10 +78,8 @@ def main() -> int:
     if not failed:
         return 0
     print(f"  {len(failed)} of these will download on first use instead.", flush=True)
-    # Non-zero so the installer can say so. Not fatal to the install: the caller
-    # warns and carries on, and the app still fetches on demand exactly as
-    # before. Returning 0 regardless meant the installer promised the models
-    # were ready even when none of them had arrived.
+    # Non-zero so the installer can warn, but not fatal — it carries on, and
+    # the app still fetches on demand as before.
     return 1
 
 

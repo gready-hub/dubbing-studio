@@ -50,14 +50,10 @@ Rules you must follow every time:
    break inside a translation — anything after it is thrown away."""
 
 
-# The one filled-in example above. A concrete example is imitated far more
-# reliably than a placeholder is filled in, which is why it replaced
-# "<id>|<translation>" — but that trade has a cost: a copied example is a
-# plausible English sentence, and neither _is_scaffolding nor _looks_untranslated
-# can see it. The first version of this said "12|Now chain three and turn your
-# work.", which on a crochet tutorial is indistinguishable from a correct
-# translation of a real line. So the sentence is deliberately alien to anything
-# this app is pointed at, and is checked for rather than trusted to look wrong.
+# A concrete filled-in example is imitated more reliably than "<id>|<translation>"
+# is filled in — but a copied example reads as a plausible sentence that neither
+# _is_scaffolding nor _looks_untranslated can catch, so it must be deliberately
+# alien to any real tutorial line rather than merely checked for.
 EXAMPLE_LINE = "Nobody remembered to close the gate behind them."
 
 
@@ -67,23 +63,18 @@ def _is_example(text: str) -> bool:
 
 
 class TranslationError(RuntimeError):
-    """A translation failure, with the provider's own words kept alongside the
-    plain one.
+    """A translation failure, with the provider's own words kept in `.detail`.
 
-    Shaped like download.DownloadError on purpose: pipeline.py already knows how
-    to lift a `.detail` into job.error_detail, and the UI already knows how to
-    render whatever lands there, so a translation failure needs no special-casing
-    on either side to get the same treatment. Before this, a rejected key
-    surfaced only as "translation batch incomplete, halving" repeated thirty
-    times in Copy details — never the rejection itself.
+    Shaped like download.DownloadError on purpose: pipeline.py already lifts
+    `.detail` into job.error_detail and the UI already renders it, so no
+    special-casing is needed here. Before this, a rejected key surfaced only
+    as "translation batch incomplete, halving" repeated thirty times.
     """
 
     def __init__(self, message: str, detail: str = ""):
         super().__init__(message)
         self.detail = detail.strip()
 
-
-# ------------------------------------------------------------- prompt build
 
 def _build_prompt(batch: list[dict], context: list[str], target: str, glossary: str) -> str:
     parts = [f"Translate into {target}."]
@@ -92,21 +83,14 @@ def _build_prompt(batch: list[dict], context: list[str], target: str, glossary: 
     if context:
         parts.append("\nPreceding lines, for continuity only — do NOT translate them:\n"
                      + "\n".join(f"  {c}" for c in context))
-    # Deliberately no placeholder. This is the last instruction the model reads
-    # before it answers, so it is the nearest thing to copy — and the copy that
-    # produced 16% of a video was of a placeholder just like the one that used to
-    # be here, in backticks, on this line. Fixing the rule in SYSTEM and leaving
-    # this one moved the hazard closer to the generation point rather than away.
+    # Deliberately no placeholder here — this is the last instruction the model
+    # reads before answering, so it's the nearest thing to copy. A placeholder
+    # here once got copied verbatim into 16% of a video.
     parts.append("\nTranslate these lines. Reply with one line for each: its "
                  "number, a vertical bar, then the translation.\n")
-    # Nothing but the id and the line itself. The slot used to ride along here as
-    # "[5.1s] ", to hold the translation to the time it has to fit — and came
-    # back spoken aloud on 89 of every 100 Japanese lines, because rule 3 turns
-    # numbers into words and "four point zero seconds" is indistinguishable from
-    # a translation to every check downstream. The timings never needed to cross
-    # this boundary: assemble() reads them from the segments, not from the model.
-    # Rule 1 anchors length to the source line, which is already here and cannot
-    # be pasted back as content.
+    # No timing slot appended per line: "[5.1s] " used to ride along here and
+    # came back spoken aloud on 89% of Japanese lines, since rule 3 turns
+    # numbers into words. assemble() reads timings from the segments instead.
     for seg in batch:
         parts.append(f'{seg["i"]}|{seg["text"]}')
     return "\n".join(parts)
@@ -148,23 +132,18 @@ def _is_scaffolding(text: str) -> bool:
 
 
 def _slot_echo(slot: float) -> re.Pattern:
-    """The marker this very line was sent, whatever the model did to its brackets.
+    """The marker this line was sent, whatever the model did to its brackets.
 
-    Matching the value we know we sent beats guessing at the shape it comes back
-    in: "[2.0s]", "2.0s]", "2s" and "(2.0 s)" are all the same echo, and none of
-    them can be confused with a sentence that merely opens on a number. The word
-    boundary after the s is what keeps "5 stitches" — the reason the general
-    pattern below has to stay narrow — out of reach.
+    Matches the value actually sent rather than guessing the echoed shape:
+    "[2.0s]", "2.0s]", "2s" and "(2.0 s)" are all the same echo, none confusable
+    with a sentence merely opening on a number.
     """
     exact = f"{slot:.1f}"
     whole = exact[:-2] if exact.endswith(".0") else exact
-    # The decimal is the form the prompt actually sent, so it stands on its own.
-    # A model that dropped the ".0" leaves a bare number, which a sentence can
-    # open with too — "60s is a long time" against a 60 second slot — so that
-    # form is only an echo when a bracket closes it.
-    # What may follow the marker is closing punctuation and separators only.
-    # Anything that opens a sentence — an inverted ¿ or ¡, a quote — belongs to
-    # the translation, and a greedier tail ate it.
+    # The decimal form stands alone; the bare form (".0" dropped) can also open
+    # a real sentence — "60s is a long time" — so it's only an echo when bracketed.
+    # Only closing punctuation may follow: an opening ¿/¡ or quote belongs to the
+    # translation, and a greedier tail used to eat it.
     after = r"[\s\]\)}>|:.,\-]*"
     return re.compile(rf"^\W*(?:{re.escape(exact)}\s*s\b{after}"
                       rf"|{re.escape(whole)}\s*s\s*[\]\)}}>]{after})")
@@ -192,12 +171,11 @@ def _looks_untranslated(text: str, source: str) -> bool:
     """The model handed the source back instead of translating it.
 
     A local model that has lost the thread does this for a run of lines, and
-    nothing downstream can tell — the dub simply speaks the original language in
-    an English voice for several minutes, which is what happened on a real
-    hour-long video.
+    nothing downstream can tell — happened for real on an hour-long video, which
+    spoke the original language in an English voice for several minutes.
 
     Short lines are exempt: "OK", a number, or a name legitimately survives
-    translation unchanged, and rejecting those would throw away good work.
+    translation unchanged.
     """
     def bare(s: str) -> str:
         return re.sub(r"[^\w]+", "", s).casefold()
@@ -210,17 +188,15 @@ def _parse(reply: str, batch: list[dict]) -> tuple[dict[int, str], bool]:
     """Returns (translations, trustworthy).
 
     trustworthy is False when the reply's line numbering does not correspond to
-    the batch's — an id that was never asked for, or the same id twice. Both are
-    the fingerprint of a model that renumbered rather than answered, and when it
-    renumbers the lines it *does* match are attached to the wrong slots.
+    the batch's — an id never asked for, or repeated — the fingerprint of a
+    model that renumbered rather than answered, which attaches the lines it
+    *does* match to the wrong slots.
 
-    That case is the reason this returns a flag rather than just a dict. Found in
-    a finished 98-minute dub: two lines carried the translation of the pair two
-    slots earlier, so the voice described a corner while the picture showed a
-    seam. Every existing check passed it — each translation was fluent English,
-    none matched its own source, and the batch was one line short, which is under
-    the 5% ceiling by construction. Nothing in the pipeline compared a
-    translation against the slot it landed in, so nothing could have seen it.
+    Caught for real in a finished 98-minute dub: two lines carried the
+    translation of the pair two slots earlier, so the voice described a corner
+    while the picture showed a seam. Every content check passed it — fluent,
+    unmatched to its own source, one line short of the batch (under the 5%
+    ceiling). Nothing compared a translation to the slot it landed in.
     """
     wanted = {s["i"]: s.get("text", "") for s in batch}
     slots = {s["i"]: s["end"] - s["start"] for s in batch if "end" in s and "start" in s}
@@ -273,8 +249,6 @@ def _parse(reply: str, batch: list[dict]) -> tuple[dict[int, str], bool]:
     return out, trustworthy
 
 
-# ----------------------------------------------------------------- backends
-
 def installed_models(host: str = "") -> list[dict]:
     """What Ollama actually has, largest first."""
     from ..config import ollama_host
@@ -291,17 +265,13 @@ def installed_models(host: str = "") -> list[dict]:
 def usable_model(wanted: str, host: str = "") -> tuple[str, str]:
     """The wanted model if Ollama has it, otherwise the best thing it does have.
 
-    The suggested model is chosen from installed memory, so a machine whose
-    installer pulled a different one — the download timed out, Ollama was slow to
-    start its first time, the RAM tier moved — asked for a tag that was not there
-    and the job died on a 404 part way through translating. The person this app
-    is for does not know that model tags exist and should not have to: another
-    Qwen of a different size translates instructional speech perfectly well, and
-    using it is strictly better than refusing.
+    A machine whose installer pulled a different model (timeout, slow first
+    start, RAM tier moved) used to ask for a tag that wasn't there and die on a
+    404 mid-translation. The user doesn't know model tags exist and shouldn't
+    have to — substituting is strictly better than refusing.
 
-    Returns (model, note). The note is empty when nothing was substituted, and
-    otherwise says what happened, because a quietly different model is a quietly
-    different translation.
+    Returns (model, note); note is empty unless something was substituted,
+    since a quietly different model is a quietly different translation.
     """
     have = installed_models(host)
     if not have:
@@ -330,13 +300,10 @@ def _call_ollama(prompt: str, model: str, host: str = "",
                 "temperature": 0.2,
                 "num_ctx": 8192,
                 # A small model under token pressure falls into repeating itself
-                # — echoing the input back, or filling the budget with the same
-                # fragment. It is a well-known failure of quantised local models
-                # on long structured tasks, and it is what produced a dub that
-                # read out "id: 63" and then several minutes of the original
-                # language. A mild repetition penalty discourages the loop
-                # without flattening legitimately repeated words, which matter
-                # in a tutorial that says "chain three" forty times.
+                # (echoing input, looping a fragment) — produced a dub that read
+                # "id: 63" then minutes of the original language. Mild penalty
+                # discourages the loop without flattening legitimate repeats
+                # like a tutorial saying "chain three" forty times.
                 "repeat_penalty": 1.1,
                 "min_p": 0.05,
             },
@@ -351,12 +318,9 @@ def _call_ollama(prompt: str, model: str, host: str = "",
         with urllib.request.urlopen(req, timeout=600) as resp:
             return json.loads(resp.read()).get("message", {}).get("content", "")
 
-    # Qwen3 — the model every default install ends up with — reasons at length
-    # before answering, and for a line-by-line translation that reasoning is
-    # pure cost. Measured against this exact endpoint: 92 generated tokens with
-    # thinking on, 5 for the identical output with it off. Translation is the
-    # slow stage on a local model, and most of it was the model talking to
-    # itself.
+    # Qwen3, the default install, reasons at length before answering — pure
+    # cost for line-by-line translation. Measured: 92 generated tokens with
+    # thinking on vs. 5 for the identical output off.
     for think in (False, None):
         try:
             return ask(think)
@@ -375,14 +339,11 @@ def _call_ollama(prompt: str, model: str, host: str = "",
     return ""
 
 
-# --------------------------------------------------------- provider HTTP errors
-
 def _provider_message(body: bytes) -> str:
     """The provider's own explanation, if the body is shaped like one.
 
-    Anthropic and OpenAI both nest it as {"error": {"message": ...}} once
-    decoded, which is also the only field read here — anything else in the body
-    is left alone rather than guessed at.
+    Anthropic and OpenAI both nest it as {"error": {"message": ...}}; that's
+    the only field read here, everything else in the body is left alone.
     """
     try:
         data = json.loads(body)
@@ -393,12 +354,8 @@ def _provider_message(body: bytes) -> str:
 
 
 def _redact(text: str, key: str) -> str:
-    """Strip the literal key out of anything about to be shown or logged —
-    OpenAI's own 401 body echoes it back, so a provider's message isn't safe
-    to relay unexamined.
-
-    Matched as an exact, case-sensitive substring against the real key rather
-    than a pattern; a whitespace-only key is treated as no key at all.
+    """Strip the literal key before showing/logging text — OpenAI's own 401
+    body echoes it back, so a provider's message isn't safe to relay raw.
     """
     return text.replace(key, "[key redacted]") if key.strip() and key in text else text
 
@@ -416,14 +373,10 @@ def _retry_hint(exc: urllib.error.HTTPError) -> str:
 def _api_error(provider: str, exc: urllib.error.HTTPError, key: str) -> TranslationError:
     """Turn a rejected HTTP request into the thing a user can act on.
 
-    The Ollama path below already does this; the two API paths used to do
-    nothing at all, so a 401 raised urllib.error.HTTPError, which is not a
-    TranslationError and was swallowed a few lines down in _ask() as "no lines
-    came back" — thirty retries and ninety seconds later the report blamed a
-    local model that was never in use. The distinction made here is what lets
-    that swallow-and-retry loop be skipped rather than merely renamed: _ask()
-    re-raises a TranslationError instead of eating it, so a request that can
-    never succeed fails on the first try.
+    The API paths used to raise a bare HTTPError, which _ask() swallowed as
+    "no lines came back" — thirty retries and ninety seconds later blaming a
+    local model that was never in use. Raising TranslationError here instead
+    lets _ask() re-raise it so an unrecoverable request fails on the first try.
     """
     body = exc.read()
     said = _redact(_provider_message(body), key)
@@ -457,13 +410,10 @@ def _call_anthropic(prompt: str, model: str, key: str,
     body = json.dumps({
         "model": model,
         "max_tokens": 8192,
-        # The same judgement the Ollama path makes below, and now it has to be
-        # said out loud: Sonnet 5 runs adaptive thinking whenever this field is
-        # omitted, where Sonnet 4.5 ran without it. Thinking is billed inside
-        # max_tokens, so a batch of twenty-five lines could be reasoned about
-        # until the reply truncated — and a truncated reply is not visible as an
-        # error here. It arrives as missing lines and a halving retry, which
-        # looks like a slow model rather than a misconfigured request.
+        # Sonnet 5 runs adaptive thinking when this is omitted (Sonnet 4.5 did
+        # not). Thinking is billed inside max_tokens, so a batch could reason
+        # itself into a truncated reply — invisible here, arriving downstream
+        # as missing lines and a halving retry that looks like a slow model.
         "thinking": {"type": "disabled"},
         "system": system,
         "messages": [{"role": "user", "content": prompt}],
@@ -511,10 +461,9 @@ WEAK_LOCAL_MODELS = ("qwen3:4b", "qwen3:1.7b", "qwen3:0.6b")
 def describe_translator(settings, ram_gb: int) -> tuple[str, str]:
     """(what will translate, a warning if that is the weak link).
 
-    Translation is the one stage whose failure cannot be heard as a failure: a
-    bad dub with clean audio and perfect timing sounds finished and is useless.
-    So what did it goes in the report next to everything else, and when it is a
-    model small enough to be the risk, the report says so.
+    Translation is the one stage whose failure can't be heard: a bad dub with
+    clean audio and perfect timing sounds finished and is useless. So this goes
+    in the report, and flags the model when it's small enough to be the risk.
     """
     if settings.translator == "anthropic":
         return settings.anthropic_model, ""
@@ -532,10 +481,9 @@ def describe_translator(settings, ram_gb: int) -> tuple[str, str]:
 def _batches(segments: list[dict]) -> list[list[dict]]:
     """Group lines into requests, capped by count and by size.
 
-    A fixed twenty-five was fine until the lines were long: joined run-on speech
-    can be several hundred characters each, and a batch of those crowds the
-    context window, which is precisely when a small model stops following the
-    format and starts repeating itself.
+    A fixed count of 25 was fine until lines got long: joined run-on speech can
+    run several hundred characters, crowding the context window right when a
+    small model stops following the format and starts repeating itself.
     """
     out: list[list[dict]] = []
     current: list[dict] = []
@@ -562,12 +510,10 @@ def _ask(batch: list[dict], context: list[str], target: str, glossary: str,
     except Exception:                                            # noqa: BLE001
         return {}
     if not trustworthy:
-        # The whole batch goes back, not the lines that happened to match. When
-        # a model renumbers, the answers it gives under the ids we asked for are
-        # translations of *other* lines, so keeping them is worse than keeping
-        # none: they are fluent, they pass every content check, and they are
-        # attached to the wrong moment in the video. Discarding makes them missing
-        # lines, which is the one condition the halving retry can act on.
+        # Discard the whole batch, not just the mismatched lines: when a model
+        # renumbers, even the answers under ids we asked for are translations of
+        # *other* lines — fluent, pass every check, attached to the wrong moment.
+        # Discarding turns them into missing lines, which the halving retry can act on.
         logs.get().warning("reply did not line up with the batch, discarding it",
                            extra={"asked": len(batch), "matched": len(got),
                                   "first_id": batch[0]["i"]})
@@ -579,26 +525,22 @@ def _translate_chunk(batch: list[dict], context: list[str], target: str,
                      glossary: str, call) -> dict[int, str]:
     """One batch, halved whenever the model cannot manage it whole.
 
-    The retry used to break a batch down only when four or fewer lines were
-    missing, on the reasoning that small prompts almost always land. That is
-    true, and it was applied to the wrong case: a model that starts echoing its
-    input back fails a whole batch at once, and twenty-five missing lines fell
-    outside the rule, so it was asked the identical question twice and then
-    given up on.
+    Used to retry only when four or fewer lines were missing (small prompts
+    almost always land) — but a model that echoes its input fails a whole
+    batch at once, so 25 missing lines fell outside that rule and got asked
+    the identical question twice before being given up on.
 
-    Halving asks a different question each time, and by the time a piece is one
-    line the prompt is small enough that almost anything lands. Bounded by the
-    halving itself — a batch of twenty-five bottoms out in five levels.
+    Halving asks a different question each time; by one line the prompt is
+    small enough that almost anything lands. A batch of 25 bottoms out in
+    five levels.
     """
     got = _ask(batch, context, target, glossary, call)
     missing = [s for s in batch if s["i"] not in got]
     if not missing:
         return got
 
-    # Logged because this is the machinery that stops a local model's bad patch
-    # reaching the finished video, and until now it left no trace either way —
-    # so after a run nobody could say whether it had saved the job or never
-    # fired. On a long video these lines are the evidence.
+    # Logged so a run leaves evidence of whether this machinery — which stops a
+    # local model's bad patch reaching the finished video — actually fired.
     log = logs.get()
     log.warning("translation batch incomplete, halving", extra={
         "asked": len(batch), "missing": len(missing),
@@ -618,15 +560,10 @@ def _translate_chunk(batch: list[dict], context: list[str], target: str,
     return got
 
 
-# ------------------------------------------------------------------- public
-
-# ------------------------------------------------------- terminology pass
-
-# Asked of the same model, before any translating, with the transcript in front
-# of it. The model that called "ponto amêndoa" amaranth, shell and cluster across
-# one video answers this correctly and identically on every run — it knows the
-# vocabulary and loses it under per-line pressure, so it is worth asking once
-# while it can see the whole thing.
+# Asked of the same model, before any translating, with the whole transcript in
+# front of it. A model that called "ponto amêndoa" amaranth, shell and cluster
+# across one video answers correctly and identically here — it knows the
+# vocabulary and loses it under per-line pressure.
 EXTRACT_SYSTEM = """You extract specialist vocabulary from a tutorial transcript \
 so that a translator renders it the same way every time.
 
@@ -641,19 +578,18 @@ EXTRACT_RUNS = 2         # kept only if the runs agree; see _agreed()
 EXTRACT_MAX = 20
 EXTRACT_MAX_WORDS = 3    # a term, not a phrase built around one
 EXTRACT_TARGET_WORDS = 6  # ...and its rendering is a term too, not a sentence
-# Contiguous, and sized against the clock rather than the context window: the
-# model reads this twice before any translating starts, and a full 18,000
-# characters cost 282 seconds — 14% of a 33-minute job — where 8,000 costs a
-# third of that. Contiguous matters more than long: a thin strided sample made
-# the vocabulary look unstable when it is not.
+# Sized against the clock, not the context window: the model reads this twice
+# before translating starts, and 18,000 chars cost 282s (14% of a 33-min job)
+# vs. a third of that at 8,000. Kept contiguous — a strided sample made the
+# vocabulary look unstable when it isn't.
 EXTRACT_CHARS = 8000
 
 
 def _extract_once(transcript: str, target: str, call) -> dict[str, str]:
-    # Wording matters more than it should. "Give the standard English equivalent
+    # Wording matters more than it should: "Give the standard English equivalent
     # for each specialist term" reads, to a small model looking at numbered
-    # speech, as an instruction to translate the lines — the first real run came
-    # back with "3 -> Today's lesson is about..." for every line it saw.
+    # speech, as an instruction to translate the lines. First run came back
+    # with "3 -> Today's lesson is about..." for every line it saw.
     prompt = (f"This transcript is from an instructional video. Identify the "
               f"specialist vocabulary in it and give the standard {target} term "
               f"for each one.\n\nTranscript:\n{transcript}")
@@ -674,11 +610,9 @@ def _agreed(runs: list[dict[str, str]], transcript: str) -> dict[str, str]:
     """Terms every run returned identically, and that survive the filters.
 
     Agreement is the gate because a term the model is sure of comes back the
-    same each time, while a guess wanders. Measured on a real transcript: the
-    core terms were unanimous over three runs, and what varied was compositional
-    phrases — "iniciar com dois pontos altos", "pulo de correntinhas de espaço" —
-    which are not terms at all. The word cap removes those; agreement alone left
-    them in.
+    same each time, while a guess wanders. On a real transcript, what varied
+    across runs was compositional phrases ("iniciar com dois pontos altos"),
+    not terms — the word cap below removes those; agreement alone did not.
     """
     if not runs:
         return {}
@@ -706,9 +640,9 @@ def _agreed(runs: list[dict[str, str]], transcript: str) -> dict[str, str]:
 def _merge_glossaries(known: str, extracted: str) -> str:
     """Known-good terms first; extracted ones only where they add something.
 
-    Precedence is settled here rather than left to the model: an extracted term
-    whose source is already covered by the built-in list or by the user's own
-    terms is dropped, so the two can never contradict each other in the prompt.
+    Precedence is settled here, not left to the model: an extracted term
+    already covered by the built-in or user glossary is dropped, so the two
+    can never contradict each other in the prompt.
     """
     if not extracted.strip():
         return known
@@ -730,11 +664,9 @@ def extract_terms(segments: list[dict], settings, ram_gb: int,
     """
     try:
         transcript = "\n".join((s.get("text") or "") for s in segments)[:EXTRACT_CHARS]
-        # Below a couple of batches there is no cross-batch drift to prevent —
-        # the whole point of pinning terminology is that batch 14 cannot see what
-        # batch 2 called a stitch, and a video this short is one batch. Asking
-        # anyway is where the junk comes from: on a four-line French clip it
-        # returned "pas compliqué -> not complicated" and "mamies -> grandmas",
+        # Below a couple of batches there's no cross-batch drift to prevent, and
+        # asking anyway is where junk comes from: a four-line French clip
+        # returned "pas compliqué -> not complicated" and "mamies -> grandmas" —
         # everyday phrases it would then have pinned.
         if len(transcript) < 2 * BATCH_CHARS:
             return ""
@@ -759,24 +691,18 @@ def backend_for(settings, ram_gb: int):
     """(call, label) for whichever translator is configured.
 
     Lifted out of translate() so the terminology pass uses the same backend and
-    the same model rather than a second copy that could drift away from it.
+    model rather than a second copy that could drift away from it.
 
-    Takes no progress callback. It used to, for the sole purpose of recording
-    which model had been substituted — and since both the translation and the
-    terminology pass call this, the finished job carried that note twice.
+    Takes no progress callback: it used to, only to record a substituted model,
+    and since both the translation and terminology pass call this, the note
+    was doubled on every finished job.
     """
     backend = settings.translator
     if backend == "ollama":
-        # Deliberately not noted on the finished job. Which local models are
-        # installed is a property of this Mac, not of this video: it does not
-        # change from one run to the next, and it was being restated on every
-        # finished dub — twice, because the translation and the terminology pass
-        # each resolve a backend and each recorded it. Setup check already
-        # carries it, on the row named for the model, which is where a
-        # standing fact about the machine belongs and where the command to
-        # change it is actually actionable. A note is for what this run did
-        # differently, and "you have not installed a model you never asked for
-        # by name" is not that.
+        # Substitution deliberately not noted on the finished job: which local
+        # models are installed is a property of this Mac, not this video, so it
+        # doesn't belong in a per-run report. Setup check already surfaces it,
+        # on the row named for the model, where the fix is actionable.
         model, _ = usable_model(settings.resolved_ollama_model(ram_gb))
         return ((lambda p, system=SYSTEM: _call_ollama(p, model, system=system)),
                 f"local model {model}")
@@ -834,20 +760,16 @@ def translate(segments: list[dict], settings, ram_gb: int, progress: Progress = 
 
     missing = [s for s in segments if s["i"] not in done]
     if len(missing) > len(segments) * 0.05:
-        # settings.translator, not label: label is "local model X" for Ollama
-        # and a free-text model id the user typed into Settings for the other
-        # two, and parsing that string to decide the advice below couples the
-        # message to a display convention when the definitive answer — which
-        # backend actually ran — is sitting right here. This used to ignore
-        # both and always blame a local model, so a paid API key that had
-        # translated all but a few lines of the video was told, in the
-        # failure it caused, to go find a bigger local model.
         if settings.translator == "ollama":
             hint = "If you are using a local model, try a larger one in Settings \u2192 Translation."
         else:
             hint = (f"{label} isn't a local model, so a bigger one won't help — "
                     "try the job again; if it keeps happening, a handful of lines "
                     "are likely tripping it up rather than the whole batch.")
+        # settings.translator, not label: label is free text for API backends
+        # and shouldn't be parsed to decide the advice below — this used to
+        # always blame a local model, telling a paid API key that had
+        # translated all but a few lines to go find a bigger local model.
         raise TranslationError(
             f"Translation only returned {len(done)} of {len(segments)} lines, "
             f"translating with {label}. {hint}"

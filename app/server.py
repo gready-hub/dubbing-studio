@@ -41,8 +41,6 @@ def diagnostics_report() -> dict:
     return {"text": diagnostics.report()}
 
 
-# ------------------------------------------------------------------ models
-
 class JobRequest(BaseModel):
     # A web link, or the path to a file on this Mac. One box in the interface
     # and one field here, because which of the two it is is a question the
@@ -62,20 +60,15 @@ class SettingsReset(BaseModel):
     keys: list[str] | None = None
 
 
-# ------------------------------------------------------------------ routes
-
 def _local_only(request: Request) -> None:
     """Refuse a state-changing request that came from a web page.
 
-    The endpoints that take no body are CORS "simple requests": any site the
-    user happens to have open can POST to them on loopback without a preflight,
-    and while it cannot read the reply, the side effect still happens — wiping
-    every job's working files, or cancelling a job halfway through an hour of
-    video. The ones that take a JSON body are already protected, since that
-    content type forces a preflight.
-
-    A browser always sends Origin on a cross-origin POST. Our own page sends
-    either none or its own origin, so this costs nothing and closes it.
+    Body-less POSTs are CORS "simple requests" — any open tab can fire one at
+    loopback without a preflight, and the side effect (wiping files,
+    cancelling a job) happens even though the response is unreadable.
+    JSON-body endpoints already require a preflight. A browser always sends
+    Origin cross-origin; our own page sends none or its own, so checking it
+    is free and sufficient.
     """
     origin = request.headers.get("origin")
     if not origin:
@@ -133,12 +126,9 @@ def _feature_status() -> dict:
     }
 
 
-# yt-dlp versions are dates, so how old one is needs no network to work out.
-#
-# The threshold lives with the downloader, which needs the same number to decide
-# whether to blame a stale copy for a refusal. Two constants meant the setup
-# check and the error message could disagree about whether the very same yt-dlp
-# was too old — one calling it fine while the other named it as the cause.
+# yt-dlp versions are dates, so age needs no network call.
+# Threshold lives with the downloader so this check and its error message can't
+# disagree about whether the same copy is stale.
 from .steps.download import YTDLP_STALE_DAYS
 
 
@@ -147,10 +137,8 @@ def _ytdlp_age() -> tuple[bool, str]:
     import datetime as _dt
     from .steps.download import _ytdlp_cmd
     try:
-        # The copy the downloader will actually run, not whatever PATH resolves.
-        # Asking bare "yt-dlp" here read the Homebrew binary on a PATH where the
-        # activated venv shadowed it, so this cheerfully dated a yt-dlp that was
-        # never going to be the one to fetch anything.
+        # Runs the copy the downloader actually uses, not whatever PATH resolves —
+        # bare "yt-dlp" once dated a Homebrew copy while venv shadowed it.
         version = subprocess.run(_ytdlp_cmd() + ["--version"], capture_output=True,
                                  text=True, timeout=8).stdout.strip()
     except Exception:                                            # noqa: BLE001
@@ -170,17 +158,14 @@ def doctor() -> dict:
         {"name": "ffmpeg", "ok": machine.has_ffmpeg,
          "hint": "Install with: brew install ffmpeg"},
     ]
-    # The version, not just its presence. YouTube changes break yt-dlp every few
-    # weeks and the fix ships within days, so an old copy is the commonest reason
-    # a video describes itself happily and then refuses to download — and until
-    # now the check said "yt-dlp ✓" and left nobody anything to look at.
+    # Version, not just presence: YouTube breaks yt-dlp every few weeks, and an
+    # old copy is the commonest reason a video refuses partway through.
     stale, version = _ytdlp_age()
     checks.append({
         "name": f"yt-dlp — {version}" if version else "yt-dlp",
         "ok": machine.has_ytdlp and not stale,
-        # Not "brew upgrade yt-dlp" any more: that freshens a binary on PATH,
-        # and the downloader runs the one inside .venv. Re-running the installer
-        # is what upgrades the copy this check just dated.
+        # Not "brew upgrade yt-dlp": that freshens PATH's binary, but the
+        # downloader runs the one inside .venv — the installer upgrades that copy.
         # Named so the panel can offer the one-click fix without having to
         # recognise this row by its label, which carries a version number.
         "action": "update-ytdlp",
@@ -189,11 +174,9 @@ def doctor() -> dict:
                  "it, which shows up as a video refusing to download part way in. "
                  "Press “Update yt-dlp” to fetch a current one."),
     })
-    # Room to work in. A job holds the source video, a full-band wav, the
-    # separated stems and the assembled track at once before it prunes itself,
-    # and a boot disk that fills takes the whole machine down with it — so this
-    # belongs beside ffmpeg and yt-dlp as something to know before starting,
-    # not something to discover at 80%.
+    # A job holds source, full-band wav, stems and assembled track at once
+    # before pruning — a full boot disk takes down the whole machine, so this
+    # belongs up front with ffmpeg and yt-dlp, not discovered at 80%.
     free = store.free_bytes()
     checks.append({
         "name": f"Disk space — {round(free / 1024 ** 3, 1)} GB free",
@@ -209,12 +192,10 @@ def doctor() -> dict:
             "hint": "Start the Ollama app, or switch to an API key in Settings.",
         })
         if machine.has_ollama:
-            # Reports what will actually be used, not what was ideally wanted.
-            # The suggested model comes from installed memory, so a machine whose
-            # installer pulled a different one used to be told it was missing and
-            # handed a terminal command — for a difference nobody outside this
-            # code can see or cares about. Any Qwen translates instructional
-            # speech; only having none at all is a problem.
+            # Reports what will actually be used, not the ideal pick — a machine
+            # whose installer pulled a different model used to be told it was
+            # missing. Any Qwen handles instructional speech; only having none
+            # is a problem.
             from .backends.translate import installed_models, usable_model
             wanted = settings.resolved_ollama_model(machine.ram_gb)
             picked, swapped = usable_model(wanted)
@@ -223,10 +204,8 @@ def doctor() -> dict:
                 "name": f"Translation model — {picked}" if have else "Translation model",
                 "ok": have,
                 "hint": (f"None installed. Run:  ollama pull {wanted}" if not have else ""),
-                # A substitution is explained even on a green row — the two
-                # screens used to disagree about the same run: this one said
-                # "fine", the finished job's own report named the swap and gave
-                # the command to undo it.
+                # Explained even on a green row: this screen used to say "fine"
+                # while the finished job's own report named the swap.
                 **({"note": swapped} if swapped else {}),
             })
     elif settings.translator == "anthropic":
@@ -277,9 +256,8 @@ def _apply_settings(settings: Settings, data: dict) -> dict:
             except (TypeError, ValueError):
                 continue
             setattr(settings, key, value)
-    # Read back off the switches rather than left as whatever was last named, so
-    # that turning one of them off in Advanced shows as "custom" instead of
-    # leaving the control claiming a preset the settings no longer are.
+    # Read back off the switches, not left as whatever was last named — so
+    # disabling one in Advanced shows "custom" instead of a stale preset label.
     settings.preset = settings.matching_preset()
     settings.save()
     # Applied now, not at the next job. See JobRunner.sync_keep_awake.
@@ -296,12 +274,9 @@ def save_settings(patch: SettingsPatch) -> dict:
 def reset_settings(req: SettingsReset, request: Request) -> dict:
     """Put settings back to what the app ships with — named ones, or all.
 
-    A setting in KEEP_ON_RESET is only cleared when it is named. A button that
-    means "undo my fiddling" must not be able to destroy by implication anything
-    that cannot simply be chosen again: an API key comes from an account
-    somewhere else and cannot be read back out of this app, and a glossary of
-    someone's own terms was typed by hand and has no undo. The panel that owns
-    such a field can still reset it, by asking for it by name.
+    KEEP_ON_RESET fields are only cleared when named explicitly: an API key
+    can't be read back from elsewhere, and a hand-typed glossary has no undo.
+    A panel that owns such a field can still reset it by naming it.
     """
     _local_only(request)
     defaults = Settings.defaults()
@@ -318,40 +293,25 @@ def reset_settings(req: SettingsReset, request: Request) -> dict:
 def _check_local_file(typed: str, path: Path) -> None:
     """Say which of the several ways this isn't a video went wrong.
 
-    "That doesn't look like a web link" was the only answer this endpoint had,
-    and now that the box takes a file as well it is the wrong one more often
-    than it is right: a path can be missing, be a folder, or be something macOS
-    will not let this app read. Each of those has a different thing to do about
-    it, and none of them is "check the link".
+    A path can be missing, be a folder, or be unreadable — each needs
+    different advice, and none of them is "check the link".
 
-    Opened rather than merely stat'd. On a Mac the interesting refusal is
-    macOS's own — Desktop, Documents and Downloads sit behind a permission this
-    app may never have been granted — and that one is invisible to os.access(),
-    which reads the file's permission bits and knows nothing about the privacy
-    layer sitting over them.
+    Opened rather than merely stat'd: macOS's own privacy permissions
+    (Desktop, Documents, Downloads) are invisible to os.access(), which only
+    reads filesystem permission bits.
     """
     if not path.exists():
         if download.looks_like_bare_link(typed):
-            # Both ways round here too, and for the same reason as below: the
-            # guess is not reliable in either direction. A folder called
-            # "Mr.Robot" or "Season.1" reads exactly like a host, so this branch
-            # catches real files as well — and answering one of those with only
-            # "put https:// on the front" leaves somebody whose video has moved
-            # with advice for a problem they do not have.
+            # Guess isn't reliable either way — "Mr.Robot" or "Season.1" reads
+            # like a host too, so this can catch a real (moved) file and give
+            # wrong advice.
             raise HTTPException(400, f"That looks like a web address with the "
                                      f"https:// missing from the front of it. If "
                                      f"you meant a file, there's nothing at {path}.")
-        # Says both, because the guess above cannot be made reliable. Telling a
-        # host from a folder means knowing that "bbc.co.uk" is a domain and
-        # "Mr.Robot" is not, and nothing in the string says which — only a list
-        # of domain endings does, and no such list is ever finished: .tech, .ae
-        # and .news are as real as .com, and every one left out came back here
-        # as a path the person never typed and no advice they could act on.
-        #
-        # So the naming of the path — which is the useful half when a file has
-        # genuinely moved — carries the other possibility with it. Being wrong
-        # then costs a sentence rather than the answer, and the list above only
-        # decides which of the two leads.
+        # Says both: distinguishing a domain from a folder name needs a
+        # complete TLD list, which doesn't exist, so the guess can't be made
+        # reliable — naming the path (useful when a file moved) always carries
+        # the other possibility too, at the cost of a sentence.
         raise HTTPException(400, f"There's no file at {path}. If you meant a web "
                                  f"address, put https:// on the front of it.")
     if path.is_dir():
@@ -379,20 +339,16 @@ def create_job(req: JobRequest) -> dict:
     machine = detect_machine()
     if not machine.has_ffmpeg:
         raise HTTPException(400, "ffmpeg isn't installed — re-run the installer.")
-    # Asked only of a link. A file on this Mac is never fetched, and refusing to
-    # dub one for want of a downloader it has no use for would be a stopper
-    # invented out of nothing.
+    # Only a link needs yt-dlp; a local file is never fetched.
     if not local and not machine.has_ytdlp:
         raise HTTPException(400, "yt-dlp isn't installed — re-run the installer.")
     return runner.submit(source, Settings.load(), preview=req.preview).public()
 
 
-# activate first, so the dialog comes to the front instead of opening behind the
-# window that asked for it. Movies is the default location where there is one,
-# and there is no file-type filter at all on purpose: the containers people
-# actually have lying about (mkv, webm, mts) are not reliably tagged as movies
-# by macOS, and a picker that hides the very file somebody is looking for is
-# worse than one that lets them choose wrongly and be told why a second later.
+# activate first so the dialog comes to front, not behind the caller. No
+# file-type filter on purpose: mkv/webm/mts aren't reliably tagged as movies
+# by macOS, and hiding the file is worse than letting a wrong pick be
+# explained afterwards.
 _CHOOSE_FILE = """
 activate
 try
@@ -408,16 +364,12 @@ return POSIX path of (choose file with prompt "Choose a video to dub" default lo
 async def choose_file(request: Request) -> dict:
     """Open the Mac's own file chooser and hand back the path that was picked.
 
-    Done here, in the process that needs the answer, because a browser will not
-    give a page one: it offers the file's *contents* instead, and the contents
-    are the wrong thing entirely — the video is already on this disk, often
-    several gigabytes of it, and this app reads it where it lies rather than
-    taking a second copy to work from.
+    Done server-side because a browser file input hands back file
+    *contents*, not a path — the video stays on disk and is read where it lies.
 
-    async, and asyncio's own subprocess rather than the thread pool, on purpose.
-    The dialog stays open for exactly as long as somebody takes to decide, and
-    FastAPI runs every ordinary `def` endpoint on one small pool of threads — a
-    picker left open over lunch would be one of those gone for the duration.
+    async with asyncio's own subprocess, not the thread pool: the dialog can
+    stay open indefinitely, and FastAPI's `def` endpoints share one small
+    thread pool that a parked picker would exhaust.
     """
     _local_only(request)
     if platform.system() != "Darwin":
@@ -468,22 +420,19 @@ def voice_preview(voice: str, speed: float = 1.0):
     speed = max(0.5, min(2.0, float(speed)))
     out = PREVIEWS / f"{voice}-{speed:.2f}.wav"
     if not out.exists():
-        # Rendering a new one loads a second copy of the speech model. Doing
-        # that while a job is running competes with it for the GPU and pushed
-        # this machine deep into swap — the interface stopped answering for
-        # minutes. An already-rendered preview costs nothing and is still served.
+        # Rendering loads a second copy of the speech model — doing that while
+        # a job runs competes for the GPU and once pushed this machine into
+        # swap for minutes. A cached preview costs nothing and is still served.
         if runner.busy():
             raise HTTPException(409, "Wait until the current video has finished — "
                                      "playing a voice now would slow it down.")
         out.parent.mkdir(parents=True, exist_ok=True)
         import soundfile as sf
         from .backends import tts as tts_backend
-        # Serialised: two clicks in quick succession would otherwise load the
-        # model twice at once. Released again afterwards — keeping it resident
-        # would leave a second Kokoro in memory for the life of the process,
-        # competing with every later job for exactly the resource the guard
-        # above exists to protect. Previews are cached on disk, so the only
-        # thing being given up is a faster first render of each voice.
+        # Serialised so two quick clicks don't load the model twice; released
+        # after, since keeping it resident would compete with every later job
+        # for the GPU this same guard protects. Only cost: a slower first
+        # render per voice.
         with _preview_lock:
             engine = tts_backend.load_tts(detect_machine().fast_path)
             audio, rate = engine.say(PREVIEW_TEXT, voice, speed)
@@ -539,10 +488,8 @@ def _folder_title(name: str) -> str:
 def storage_summary() -> dict:
     """Everything this app is keeping, and how much room is left for more.
 
-    It used to report one number for one of the four places it writes to, and
-    nobody goes looking in Application Support — so between the speech models,
-    the model Ollama holds on its behalf, the working files and the finished
-    videos, the only visible figure was the smallest one.
+    Used to report only one of the four places it writes to (working files),
+    since nobody goes looking in Application Support for the rest.
     """
     return store.summary(_folder_title)
 
@@ -576,10 +523,10 @@ def job_video(job_id: str):
     job = runner.jobs.get(job_id)
     if not job or not job.output:
         raise HTTPException(404, "Not ready.")
-    # A sample lives in the working folder, so clearing that folder — or the
-    # full run of the same link tidying up after itself — can take it away while
-    # the panel offering it is still on screen. Checked rather than assumed, so
-    # the player gets a clean 404 to react to instead of a stalled request.
+    # A sample lives in the working folder, so clearing it (or a full run of
+    # the same link finishing) can remove it while the panel is still on
+    # screen — checked here so the player gets a clean 404, not a stalled
+    # request.
     if not Path(job.output).is_file():
         raise HTTPException(404, "That file no longer exists.")
     return FileResponse(job.output, media_type="video/mp4")
@@ -626,10 +573,9 @@ def version() -> dict:
 def run_update(request: Request) -> dict:
     """Hand the updater to Terminal.
 
-    Update.command, not Install.command. The latter sets up dependencies and
-    never fetches code, so pressing this ran a full reinstall, changed nothing,
-    left the recorded version untouched, and the banner correctly went on saying
-    an update was available.
+    Update.command, not Install.command — the latter sets up dependencies but
+    never fetches code, so pressing it left the recorded version (and the
+    update banner) unchanged.
     """
     _local_only(request)
     script = store.APP_DIR / "Update.command"
@@ -641,13 +587,11 @@ def run_update(request: Request) -> dict:
     return {"ok": True}
 
 
-# One update at a time. The button that reaches this is disabled while it runs,
-# but that is one page's good manners rather than a guarantee — a second window,
-# a reload mid-update, or a double-click landing before the first render all
-# arrive here as a second request, and two pip installs writing the same files
-# in the same environment is how a working yt-dlp becomes a broken one. Waiting
-# is the right answer rather than refusing: the second caller then reports
-# "already current", which by then it is.
+# One update at a time. The disabled button is good manners, not a
+# guarantee — a second window or reload can still arrive as a second
+# request, and two pip installs writing the same files is how yt-dlp
+# breaks. Wait rather than refuse: the second caller then correctly reports
+# "already current".
 _YTDLP_UPDATE = threading.Lock()
 
 
@@ -655,16 +599,12 @@ _YTDLP_UPDATE = threading.Lock()
 def update_ytdlp(request: Request) -> dict:
     """Refresh just yt-dlp, inside this app's own environment.
 
-    Separate from /api/update, which hands Update.command to Terminal and
-    re-downloads the code and re-runs the entire setup. That is the right shape
-    for a new version of the app and the wrong one for this: yt-dlp is the single
-    dependency with a deadline — YouTube changes something every few weeks, the
-    fix ships within days, and a copy left alone for a month refuses videos that
-    play fine in a browser. Making the commonest failure cost a full reinstall
-    meant the advice was correct and nobody took it.
+    Separate from /api/update (full reinstall via Terminal): yt-dlp is the
+    one dependency with a deadline, and making the commonest failure cost a
+    full reinstall meant the advice was correct but nobody took it.
 
-    Deliberately the same interpreter the downloader runs, so this upgrades the
-    copy that will actually do the fetching rather than one further along PATH.
+    Uses sys.executable deliberately, so this upgrades the copy the
+    downloader actually runs rather than one further along PATH.
     """
     _local_only(request)
     from .steps import download as _dl
@@ -689,13 +629,11 @@ def update_ytdlp(request: Request) -> dict:
 
 @app.post("/api/uninstall")
 def open_uninstaller(request: Request) -> dict:
-    """Open the uninstaller in Terminal.
+    """Open the uninstaller in Terminal, rather than run it here.
 
-    Not performed here. Removing the app means removing the Python environment
-    this process is running inside, and the last thing it deletes is the folder
-    holding the script doing the deleting — neither is something a web request
-    should be halfway through. The script shows what it will remove, separates
-    what belongs to this app from what the rest of the Mac shares, and asks.
+    Removing the app means removing the Python environment this process
+    runs in, ending with the folder holding the deleting script — not
+    something a web request should be halfway through.
     """
     _local_only(request)
     script = store.APP_DIR / "Uninstall.command"
@@ -732,12 +670,9 @@ def reveal(body: dict) -> dict:
 @app.get("/api/events")
 async def events():
     loop = asyncio.get_running_loop()
-    # An asyncio queue, deliberately, not a thread-blocking one. Waiting on a
-    # queue.Queue via run_in_executor leaked a worker thread on every keepalive:
-    # wait_for cancels the await, but the thread stays parked in get() for ever.
-    # FastAPI runs ordinary `def` endpoints on that same pool, so once it was
-    # exhausted every other request hung too — leaving the window open for a few
-    # minutes was enough to freeze the whole interface.
+    # asyncio.Queue, not queue.Queue: waiting on the latter via run_in_executor
+    # leaked a thread every keepalive (wait_for cancels the await, not the
+    # blocked get()), and exhausting that pool froze every other `def` endpoint.
     q: asyncio.Queue = asyncio.Queue()
 
     def listener(payload: dict) -> None:

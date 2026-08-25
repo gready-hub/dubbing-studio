@@ -1,10 +1,8 @@
 """Native desktop window.
 
-Runs the web server on a background thread and shows it in a real application
-window using the WebView that already ships with macOS. No Chromium bundled.
-
-Falls back to the default browser if pywebview isn't importable, so the app
-still works even if that dependency failed to install.
+Runs the web server on a background thread and shows it via macOS's built-in
+WebView (no Chromium bundled). Falls back to the default browser if pywebview
+isn't importable, so the app still works if that dependency failed to install.
 """
 from __future__ import annotations
 
@@ -43,9 +41,8 @@ def _wait_until_up(url: str, timeout: float = 40.0) -> bool:
 
 
 def main() -> None:
-    # Before anything else: this is the entry point the app icon uses, and a
-    # crash between here and the window appearing is the one failure with no
-    # interface left to press a button in.
+    # First, since this is the app-icon entry point: a crash before the window
+    # appears is the one failure with no interface left to report it.
     from . import logs
     logs.setup()
     logs.get().info("app start", extra={"launched_by": "app bundle"})

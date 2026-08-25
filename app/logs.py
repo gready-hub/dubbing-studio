@@ -1,18 +1,11 @@
 """One log file, in JSON, for whoever has to work out what went wrong.
 
-What was here before was not a log. The app bundle redirected stderr to
-`~/Library/Logs/DubbingStudio.log` and nothing else ever wrote to it, so on a
-machine that had dubbed real videos the file held twenty-two lines: the same
-`pkg_resources is deprecated` warning over and over, no timestamps, no job ids,
-no errors. The README told people to send it. It would have told them nothing.
+Previously stderr was redirected to a file nothing else wrote to — no
+timestamps, no job ids, no errors, just repeated deprecation warnings.
 
-Deliberately one file rather than one per job. A job id is a field on the record,
-which is all it needs to be — per-job files mean deciding which file to read,
-which is a branch in every caller and a question for the user at exactly the
-moment they are least able to answer it.
-
-JSON here, plain text in the pasteable report: this side is read by a machine
-that can filter on a field, that side is read by a person in a chat window.
+Deliberately one file rather than one per job: a job id is just a field on the
+record, so no caller has to decide which file to read. JSON here, plain text in
+the pasteable report — this side is machine-filtered, that side is human-read.
 """
 from __future__ import annotations
 
@@ -28,9 +21,8 @@ from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
-# The job this thread is working on, set once when a job starts. Jobs run one at
-# a time on a worker thread, so everything a job touches — including backends
-# several layers down that know nothing about jobs — logs against the right one.
+# Jobs run one at a time on a worker thread, so setting this once lets backends
+# several layers down log against the right job without knowing about jobs.
 current_job: ContextVar[str] = ContextVar("current_job", default="")
 
 # The path the README already names and Uninstall.command already deletes.
@@ -41,18 +33,14 @@ LOG_DIR = Path(os.environ.get(
         else Path.home() / ".dubbing-studio" / "logs")))
 LOG_FILE = LOG_DIR / "DubbingStudio.log"
 
-# Sized so a whole job's records land in one file. A run split across a rotation
-# boundary makes the report incoherent — it would quote the tail of a job and
-# silently drop the head — and that matters more than the disk this costs, which
-# at the ceiling is 20 MB against the gigabytes a single job already moves.
+# Sized so a whole job's records land in one file — a rotation mid-job would
+# quote the tail and silently drop the head.
 MAX_BYTES = 5 * 1024 ** 2
 BACKUPS = 3
 
-# Third-party chatter that made the old file unreadable. Filtered rather than
-# left to be scrolled past: a log nobody can skim is a log nobody reads.
-# httpx and httpcore are the loud ones in practice: loading a single speech model
-# logged three "HTTP Request: HEAD https://huggingface.co/..." lines at INFO, none
-# of which say anything the surrounding stage records do not.
+# Third-party chatter that made the old file unreadable — httpx/httpcore are
+# the worst, logging HTTP request lines at INFO that add nothing over the
+# surrounding stage records.
 _NOISY = ("huggingface_hub", "httpx", "httpcore", "urllib3", "requests",
           "filelock", "matplotlib", "numba", "asyncio", "multipart", "watchfiles")
 
@@ -60,14 +48,11 @@ _ready = False
 
 
 def log_before_ready(message: str) -> None:
-    """For the handful of things that can go wrong before setup() has run —
-    config.py resolves paths and migrates old ones at import time, which is
-    earlier than anything here can run.
+    """For failures before setup() has run (config.py migrates paths at import time).
 
     Written straight to the file rather than queued for setup() to drain,
-    because the process that hits this is often a short-lived one — a
-    subprocess, a test run — that never calls setup() at all, and a queue
-    only that process ever reads is no better than the silence it replaces.
+    since the calling process (a subprocess, a test run) may never call
+    setup() at all.
     """
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -110,10 +95,8 @@ def setup(level: int = logging.INFO) -> Path:
                 "encoding": "utf-8",
                 "formatter": "json",
             },
-            # Warnings and worse also go to the terminal. Someone who started
-            # the app from "Start Dubbing Studio" is watching that window, and
-            # sending every problem exclusively to a file they have not been
-            # told about would be a step backwards from printing to stderr.
+            # Also to the terminal: someone launching via "Start Dubbing Studio"
+            # is watching that window and shouldn't lose visibility into a file.
             "console": {
                 "class": "logging.StreamHandler",
                 "level": "WARNING",
@@ -125,12 +108,10 @@ def setup(level: int = logging.INFO) -> Path:
         "loggers": {name: {"level": "WARNING"} for name in _NOISY},
     })
 
-    # The single biggest contributor to the old file, emitted on every import of
-    # a voice model and carrying nothing anyone can act on.
+    # Emitted on every voice-model import; carries nothing actionable.
     warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
 
-    # The case that leaves nothing behind today: the app dies and the window
-    # simply closes, with no failed job to press a button on.
+    # Otherwise an app crash leaves nothing behind — no failed job to inspect.
     def crashed(kind, value, tb):
         logging.getLogger("app").critical(
             "uncaught exception", exc_info=(kind, value, tb))
@@ -141,10 +122,8 @@ def setup(level: int = logging.INFO) -> Path:
     return LOG_FILE
 
 
-# Names LogRecord already owns. Passing one in `extra` does not shadow it, it
-# raises — so a field called "message" turned a failed job into a second failure
-# inside the logging call that was reporting the first. Renamed rather than
-# dropped, because the value is usually the one worth having.
+# Names LogRecord already owns — passing one in `extra` raises rather than
+# shadowing it, so these get renamed (suffixed) instead of dropped.
 _RESERVED = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
     "message", "asctime"}
 
@@ -167,13 +146,8 @@ class _WithJob(logging.LoggerAdapter):
 def get(job_id: str = "") -> logging.LoggerAdapter:
     """A logger whose every record carries the job it belongs to.
 
-    The adapter is what keeps this out of the call sites: `log.info("separated")`
-    inside a job reads the same as anywhere else, and the id is attached without
-    anyone having to remember to pass it.
-
-    Falls back to the job this thread is running, so the places that matter most
-    — the translation retry, the quality check — are tagged without threading a
-    job id down through backends that have no other use for one.
+    Falls back to the job this thread is running, so call sites don't need to
+    thread a job id down through backends that have no other use for one.
     """
     job_id = job_id or current_job.get("")
     return _WithJob(logging.getLogger("app"), {"job_id": job_id} if job_id else {})
