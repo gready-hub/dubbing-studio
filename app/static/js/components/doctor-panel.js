@@ -15,6 +15,12 @@ const SHELL = `
 class DoctorPanel extends BaseElement {
   connectedCallback(){
     this.html(SHELL);
+    // What the yt-dlp row is currently saying, held here rather than only on
+    // the node. Refreshing the checks after an update re-renders the whole
+    // list, so a message written straight into the DOM was wiped by the very
+    // refresh that proved it had worked — and only "Already current" survived,
+    // because that is the case where nothing changes and nothing re-renders.
+    this._ytdlp = {said: "", busy: false};
     this._unsub = store.subscribe(s => this.update(s));
   }
 
@@ -35,6 +41,19 @@ class DoctorPanel extends BaseElement {
         ? "Ready. Everything needed is installed."
         : "Not ready. A check below needs fixing — it says what to do.";
       verdict.style.color = s.doctor.ready ? "var(--ok)" : "var(--bad)";
+      // The message belongs to the update somebody just ran, not to the panel.
+      // It has to outlive the re-render that update causes — that re-render is
+      // what used to wipe it — and it must not outlive anything else, or a
+      // refresh an hour later paints " Updated to 2026.08.19." beside the
+      // button as though it had just happened.
+      //
+      // `busy` is the whole mechanism. It is still set while the refresh below
+      // runs, so that render keeps the message; it is cleared immediately
+      // after, so the next render — which belongs to something else — drops it.
+      // Cleared here rather than after the markup, because the markup is what
+      // reads it: deciding afterwards still painted it this time round and only
+      // took effect on the render after that.
+      if(!this._ytdlp.busy && this._ytdlp.said) this._ytdlp = {said: "", busy: false};
       this.$("#doctor").innerHTML = s.doctor.checks.map(c=>`
         <div class="check">
           <span class="dot ${c.ok?"ok":(c.optional?"opt":"bad")}"></span>
@@ -42,8 +61,9 @@ class DoctorPanel extends BaseElement {
             ${c.ok?"":`<br><code>${escapeHtml(c.hint)}</code>`}
             ${c.note?`<br><code>${escapeHtml(c.note)}</code>`:""}
             ${c.action==="update-ytdlp"?`<br><button class="small" data-action="update-ytdlp"
-                 style="margin-top:6px">Update yt-dlp</button>
-               <span class="hint" data-said="update-ytdlp"></span>`:""}</div>
+                 style="margin-top:6px"${this._ytdlp.busy?" disabled":""}>Update yt-dlp</button>
+               <span class="hint" data-said="update-ytdlp">${
+                 escapeHtml(this._ytdlp.said)}</span>`:""}</div>
         </div>`).join("");
       this.wireYtdlpUpdate();
     });
@@ -56,31 +76,55 @@ class DoctorPanel extends BaseElement {
   wireYtdlpUpdate(){
     const button = this.$('[data-action="update-ytdlp"]');
     if(!button) return;
-    const said = this.$('[data-said="update-ytdlp"]');
     button.onclick = async () => {
-      button.disabled = true;
-      said.textContent = " Updating…";
+      this.sayYtdlp(" Updating…", true);
+      let done;
       try {
         const r = await api.updateYtdlp();
         // Already current is a success, and saying so beats a silent button:
         // somebody pressing this is trying to fix a download that just failed,
         // and needs to know whether to look elsewhere.
-        said.textContent = r.changed ? ` Updated to ${r.version}.`
-                                     : ` Already current (${r.version}).`;
+        done = r.changed ? ` Updated to ${r.version}.`
+                         : ` Already current (${r.version}).`;
+      } catch (e) {
+        // Painted here and not held: nothing re-renders behind a failure, so
+        // this is the only thing that shows it, and clearing busy is what stops
+        // it reappearing beside the button an hour later.
+        this.sayYtdlp(` ${e.message || "That didn't work."}`, false);
+        return;
+      }
+      // Said now, but still held: what the button starts is a pip install into
+      // the environment this app is running out of, and a second one racing the
+      // first writes over the same files. Staying disabled until everything it
+      // set off has finished is what makes a double-click harmless from here.
+      this.sayYtdlp(done, true);
+      try {
         // Re-read the checks so the row re-dates itself rather than sitting
         // there still flagged after the thing it flagged has been fixed.
         store.setDoctor(await api.doctor());
-      } catch (e) {
-        said.textContent = ` ${e.message || "That didn't work."}`;
-      } finally {
-        // Always live again. "Already current" leaves every value on the row
-        // unchanged, so the panel does not re-render and the button would stay
-        // greyed out for the rest of the session — on the one control somebody
-        // may well want twice, since what makes it necessary is YouTube
-        // changing something rather than anything happening in here.
-        button.disabled = false;
+      } catch {
+        // Deliberately silent, and deliberately after the message above: the
+        // update itself succeeded, and letting a failed refresh replace that
+        // with "the request failed" would report the wrong outcome. The row
+        // stays as it was and the next refresh corrects it.
       }
+      // Only now: this gives the button back and, by clearing busy, marks the
+      // message as belonging to a run that has finished, so the next render
+      // that is not this one's drops it.
+      this.sayYtdlp(done, false);
     };
+  }
+
+  // Records what the row says and paints it at once. Both halves matter: the
+  // paint shows it immediately even when nothing re-renders, and the record is
+  // what puts it back when something does. Whether it survives the next render
+  // is decided by `busy` — see update().
+  sayYtdlp(said, busy){
+    this._ytdlp = {said, busy};
+    const button = this.$('[data-action="update-ytdlp"]');
+    const span = this.$('[data-said="update-ytdlp"]');
+    if(button) button.disabled = busy;
+    if(span) span.textContent = said;
   }
 
   paintMachine(m){

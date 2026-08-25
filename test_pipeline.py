@@ -613,6 +613,24 @@ def test_server():
     check("a link with the https:// left off is told what's missing",
           r.status_code == 400 and "https://" in r.json()["detail"],
           str(r.json())[:90])
+    # Telling a host from a folder means knowing "bbc.co.uk" is a domain and
+    # "Mr.Robot" is not, which only a list of domain endings can say — and no
+    # such list is ever finished. So the missing-file answer carries the other
+    # possibility too: a link whose ending is not on the list still gets told
+    # what to do, instead of only being shown a path nobody typed.
+    r = client.post("/api/job", json={"url": "podcast.example.tech/ep.mp3"})
+    detail = r.json()["detail"]
+    check("an address the list has never heard of is still told about https://",
+          r.status_code == 400 and "https://" in detail, detail[:96])
+    check("and is still shown the path that was looked for",
+          "no file at" in detail, detail[:96])
+    # And the other way round. A folder called "Mr.Robot" reads exactly like a
+    # host, so the link branch catches real files too — answering one of those
+    # with only "put https:// on the front" leaves somebody whose video moved
+    # holding advice for a problem they do not have.
+    guessed = client.post("/api/job", json={"url": "Mr.Robot"}).json()["detail"]
+    check("a folder mistaken for an address is still told where it looked",
+          "https://" in guessed and "nothing at" in guessed, guessed[:96])
     r = client.post("/api/job", json={"url": str(SCRATCH)})
     check("a folder is refused as a folder",
           r.status_code == 400 and "folder" in r.json()["detail"],
@@ -693,6 +711,45 @@ def test_server():
           "/api/ytdlp/update" in routes)
     check("the stale hint names that control, not the full reinstall",
           "Update yt-dlp" in ytdlp_row.get("hint", ""), ytdlp_row.get("hint", "")[:80])
+    # What the button sets off is a pip install into the environment this app is
+    # running out of. Two of those at once write over each other's files, and a
+    # second window, a reload part way through, or a double-click landing before
+    # the button is redrawn all arrive here as a second request.
+    import threading as _th
+    from app.steps import download as _dl_mod
+    _real_run, _real_ver = _srv.subprocess.run, _dl_mod.ytdlp_version
+    inside, seen_together = [], []
+    guard = _th.Lock()
+
+    def _slow_pip(cmd, *a, **k):
+        with guard:
+            inside.append(1)
+            seen_together.append(len(inside))
+        time.sleep(0.2)
+        with guard:
+            inside.pop()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    # Stands in for the lru_cached real thing, cache_clear() and all: without
+    # that attribute the endpoint dies before it answers, and this test went
+    # green anyway — the pip calls it counts happen before the failure. The
+    # status codes are asserted for exactly that reason.
+    _fake_version = lambda: "2026.08.19"                          # noqa: E731
+    _fake_version.cache_clear = lambda: None
+    _srv.subprocess.run = _slow_pip
+    _dl_mod.ytdlp_version = _fake_version
+    codes = []
+    try:
+        threads = [_th.Thread(target=lambda: codes.append(
+            client.post("/api/ytdlp/update").status_code)) for _ in range(3)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+    finally:
+        _srv.subprocess.run, _dl_mod.ytdlp_version = _real_run, _real_ver
+    check("three at once still only ever run one pip",
+          seen_together == [1, 1, 1], str(seen_together))
+    check("and all three are answered rather than queued into a failure",
+          codes == [200, 200, 200], str(codes))
 
     real_run = _srv.subprocess.run
 
@@ -1001,6 +1058,141 @@ def test_server():
         silent = _dlm._friendly("ERROR: unable to download: HTTP Error 403: Forbidden")
         check("nor is one that will not say its version at all",
               not silent.startswith("This copy of yt-dlp is"), silent[:70])
+        # Named as the cause of the refusal it produces, rather than as a
+        # diagnosis of its own. YouTube signs its media URLs with a parameter
+        # that has to be computed by running its JavaScript, and a yt-dlp that
+        # cannot do that is handed a URL which serves a few tens of MB and is
+        # then refused — so the challenge failure and the 403 are in the same
+        # stderr every time. Asserted against the real captured output, because
+        # testing each message on its own is exactly how a branch for this got
+        # shipped unreachable: the 403 matched first and the cause was never
+        # once reported.
+        # Dated from today rather than written down. A literal version is a
+        # test with an expiry date on it: pinned to a real release, these
+        # assertions pass until it drifts past YTDLP_STALE_DAYS and then start
+        # failing on a change nobody made, because _stale_lead() begins
+        # answering and the message no longer opens the way it expects.
+        _fresh = (_dt.date.today() - _dt.timedelta(days=1)).strftime("%Y.%m.%d")
+        _dlm.ytdlp_version = lambda: _fresh              # current, so no stale lead
+        challenge = ("WARNING: [youtube] [jsc] Remote components challenge solver "
+                     "script (deno) and NPM package (deno) were skipped. These may "
+                     "be required to solve JS challenges.\n"
+                     "WARNING: [youtube] dJ_lkWoILqg: n challenge solving failed: "
+                     "Some formats may be missing.\n")
+        both = _dlm._friendly(challenge +
+                              "ERROR: unable to download video data: HTTP Error 403: Forbidden")
+        check("a failed download check leads the 403 it causes",
+              both.startswith("yt-dlp couldn't answer"), both[:70])
+        check("and it points at where the answer is without promising it",
+              "Setup check" in both and "error details" in both, both[:120])
+        # Deliberately not "press Update yt-dlp": this branch is only reached
+        # when the copy is *not* old — the age lead above takes it otherwise —
+        # so what is usually left is a machine with no JavaScript runtime to
+        # answer the check with, which updating does not change. The button
+        # would report "already current" and make the rest look wrong too.
+        check("and does not send them to a button that will say 'already current'",
+              "Press “Update yt-dlp”" not in both, both[:120])
+        _dlm.ytdlp_version = lambda: "2020.01.01"
+        aged = _dlm._friendly(challenge + "ERROR: HTTP Error 403: Forbidden")
+        check("an old copy is named by its age instead, which is the better answer",
+              aged.startswith("This copy of yt-dlp is") and "days old" in aged, aged[:70])
+        _dlm.ytdlp_version = lambda: _fresh
+        check("with the refusal itself still said after it",
+              "refused to send it" in both, both[-80:])
+        check("the same cause leads a listing that offers nothing",
+              _dlm._friendly(challenge + "ERROR: Requested format is not available")
+              .startswith("yt-dlp couldn't answer"))
+        check("a 403 with no challenge behind it still gets the sign-in advice",
+              _dlm._friendly("ERROR: HTTP Error 403: Forbidden")
+              .startswith("YouTube described the video"))
+        # Why it is a lead and not a branch of its own, which is what it was
+        # first written as. yt-dlp emits this warning on every extraction on a
+        # machine with no JavaScript runtime, so it does not tell one failure
+        # from another at all: tested first, it swallowed everything under it,
+        # and a download that died because the network dropped was answered
+        # with "press Update yt-dlp". Each of these has its own advice, and one
+        # of them is the opposite of retrying.
+        for said, want in (
+                ("ERROR: <urlopen error nodename nor servname provided, or not known>",
+                 "internet connection"),
+                ("ERROR: HTTP Error 404: File not found", "typed correctly"),
+                ("ERROR: HTTP Error 429: Too Many Requests", "rate-limiting"),
+                ("ERROR: [youtube] x: The page needs to be reloaded.", "clears on its own"),
+                ("ERROR: Private video. Sign in if you've been granted access.", "private")):
+            answered = _dlm._friendly(challenge + said)
+            check(f"a challenge warning does not swallow {want!r}",
+                  want in answered, answered[:70])
+        # Kept as a branch at the very bottom as well as used as a lead above,
+        # but only where there is nothing else to say. These lines match far
+        # more stderr than they explain, so an error beside them is the answer
+        # even when this function has no name for it — testing them first hid a
+        # disk that filled up behind "press Update yt-dlp".
+        real = _dlm._friendly(challenge + "ERROR: unable to open for writing: "
+                                          "[Errno 28] No space left on device")
+        check("a real error is not hidden behind an unanswered check",
+              "No space left on device" in real, real[:70])
+        warnings_only = _dlm._friendly(challenge.rstrip())
+        check("but a stderr of nothing but warnings is still explained",
+              warnings_only.startswith("yt-dlp couldn't answer")
+              and "WARNING" not in warnings_only, warnings_only[:70])
+        # "Nothing else" means every line a warning. Asking instead whether any
+        # line *started* with ERROR was too narrow by half — plenty of real
+        # failures announce themselves some other way, and each of these came
+        # back as a failed download check while that was the test.
+        for other in ('Traceback (most recent call last):\n  File "x", line 1\n'
+                      "OSError: [Errno 28] No space left on device",
+                      "yt-dlp: error: unrecognized arguments: --bogus"):
+            answered = _dlm._friendly(challenge + other)
+            check("a failure that does not say ERROR is still not masked",
+                  not answered.startswith("yt-dlp couldn't answer"), answered[:70])
+        # "age" is three letters that also sit inside "package", and the
+        # advisory says "NPM package" every time. It cost nothing while warnings
+        # were suppressed and started answering the moment they were not, so a
+        # restricted video came back as an age-restricted one — a different
+        # thing, with different advice.
+        restricted = _dlm._friendly(
+            "WARNING: [youtube] [jsc] Remote components challenge solver script "
+            "(deno) and NPM package (deno) were skipped.\n"
+            "ERROR: [youtube] x: Video unavailable. This video is restricted.")
+        check("a warning saying 'package' does not make a video age-restricted",
+              restricted.startswith("That video is unavailable"), restricted[:70])
+        for real_age in ("ERROR: Sign in to confirm your age",
+                         "ERROR: [youtube] x: This video is age-restricted.",
+                         "ERROR: This video may be inappropriate for some users."):
+            check("while a real age restriction still is one",
+                  _dlm._friendly(real_age).startswith("That video is age-restricted"),
+                  _dlm._friendly(real_age)[:60])
+        # Never says the copy is old, because it does not know that: the check
+        # is answered by running JavaScript, and a machine with nothing to run
+        # it with fails it while perfectly up to date — where the claim would
+        # be one the user disproves in a click.
+        check("and it does not guess at why, only at what to try",
+              "older copy" not in _dlm._friendly(challenge + "ERROR: HTTP Error 403: Forbidden"))
+        # The one refusal that is never led. Every lead ends in "try again", and
+        # this message exists to say that retrying straight away makes the wait
+        # longer — so a lead here would ask for the one thing the sentence after
+        # it warns against.
+        declined = _dlm._friendly(challenge + "ERROR: [youtube] x: The page needs to be reloaded.")
+        check("the wait-it-out refusal is not told to try again first",
+              declined.startswith("YouTube declined the request"), declined[:70])
+        # The advisory on its own, which is a different line from the failure
+        # and can be the only thing in a stderr. It must not lead a refusal —
+        # it is emitted on runs that succeed — but at the bottom, where nothing
+        # else has matched, it is still a better answer than handing somebody
+        # "WARNING: [youtube] [jsc] Remote components challenge solver script
+        # (deno) …" as the explanation. _tidy() would not even take the
+        # WARNING: off it, knowing only about ERROR:.
+        advisory_only = _dlm._friendly(
+            "WARNING: [youtube] [jsc] Remote components challenge solver script "
+            "(deno) and NPM package (deno) were skipped. These may be required "
+            "to solve JS challenges.")
+        check("a skipped solver is explained rather than shown as a warning",
+              advisory_only.startswith("yt-dlp couldn't answer")
+              and "WARNING" not in advisory_only, advisory_only[:70])
+        check("but it still does not lead a refusal that names its own cause",
+              _dlm._friendly(
+                  "WARNING: [youtube] [jsc] challenge solver script skipped.\n"
+                  "ERROR: HTTP Error 403: Forbidden").startswith("YouTube described"))
     finally:
         _dlm.ytdlp_version = _real_version
     odd = _friendly("ERROR: [youtube] abc: Something nobody anticipated "
@@ -3269,6 +3461,22 @@ def test_translation_qc():
         with _asr._mlx_whisper_progress(lambda f, m: ran2.append(f), 0.05, 0.98):
             ran2.append("body ran")
         check("and so does one that is not imported at all", ran2 == ["body ran"])
+        # The stand-in answers anything the decode loop asks a bar for, not just
+        # the three calls this version of mlx_whisper makes. The requirement is
+        # not pinned, and a method it had never heard of would otherwise raise
+        # inside the transcription — dropping the whole job onto the portable
+        # engine, which is the opposite of the quiet degradation promised above.
+        sys.modules["mlx_whisper.transcribe"] = stand_in
+        stand_in.tqdm = _types.SimpleNamespace(tqdm=object)
+        moved = []
+        with _asr._mlx_whisper_progress(lambda f, m: moved.append(f), 0.05, 0.98):
+            with stand_in.tqdm.tqdm(total=100, unit="frames") as bar:
+                bar.update(50)
+                bar.set_description("a call a later version might make")
+                bar.refresh()
+                bar.update(50)
+        check("a bar method it has never heard of does not stop the transcription",
+              [round(f, 4) for f in moved] == [0.515, 0.98], str(moved))
     finally:
         if was_there is None:
             sys.modules.pop("mlx_whisper.transcribe", None)
@@ -4934,6 +5142,80 @@ def test_local_file():
     check("nor is anything that starts like a path",
           not dl.looks_like_bare_link("/Users/me/a.b.mp4")
           and not dl.looks_like_bare_link("~/a.b.mkv"))
+    # A media suffix argues against a link only when the string is a lone name.
+    # Vetoing on the suffix alone meant a URL pasted without its scheme, whose
+    # last segment is simply named like a video — which is most direct media
+    # links — was reported as "there's no file at
+    # /Users/…/dubbing-studio/cdn.example.com/talks/keynote.mp4": a path the
+    # person never typed, and nothing they can act on.
+    check("a scheme-less link to a media file is still a link",
+          dl.looks_like_bare_link("cdn.example.com/talks/keynote.mp4"))
+    check("and one whose query is what gives it away",
+          dl.looks_like_bare_link("example.com/get?v=clip.mov"))
+    check("while a bare name with dots in it stays a filename",
+          not dl.looks_like_bare_link("my.holiday.video.mp4"))
+    check("and a relative folder path is still not a link",
+          not dl.looks_like_bare_link("Movies/clip.mp4"))
+    # The separator alone was not enough to tell the two apart: a folder with a
+    # dot in its name reads exactly like a host, and calling one a link tells
+    # somebody whose file has moved to put https:// on the front of it. What a
+    # domain ends in is word-shaped; what a season folder ends in is a number.
+    check("a dotted folder name is a path, not a host",
+          not dl.looks_like_bare_link("Season.1/ep01.mkv"))
+    # _BARE_LINK allows a port, so the host test has to take one off before it
+    # looks at what the address ends in — and an address that is numbers all the
+    # way through is a host too, which is how a video on a box on the shelf is
+    # reached.
+    check("a port does not stop it being an address",
+          dl.looks_like_bare_link("example.com:8080/clip.mp4"))
+    check("and neither does being written as numbers",
+          dl.looks_like_bare_link("192.168.1.5/video.mp4"))
+    # No shape-based rule can separate these from a real host — they are words
+    # either side of a dot, exactly like one — and they are how people really
+    # name the folders their videos live in. What the last part is decides it,
+    # and anything unrecognised is read as a folder on purpose.
+    for folder in ("Mr.Robot/s01e01.mkv", "Final.Cut/render.mp4",
+                   "holiday.video/a.mp4",
+                   # The ones this app is actually pointed at. A release folder
+                   # ends in the group's name and a shared drive in a country,
+                   # and "am", "us" and "no" are all real domains — so listing
+                   # the short endings turned the commonest folder names here
+                   # into web addresses.
+                   "The.Movie.2020.1080p.WEB.YTS.AM/movie.mp4",
+                   "Marketing.Assets.US/promo.mp4",
+                   "Some.Show.S01.NO/ep.mkv"):
+        check(f"{folder.split('/')[0]!r} is a folder, not a host",
+              not dl.looks_like_bare_link(folder))
+    check("and a name with a separator but nothing after it is still a name",
+          not dl.looks_like_bare_link("clip.mov/"))
+    # The host test is only consulted for names that look like media, so an
+    # extension missing from that set skipped it entirely and went straight back
+    # to "this is a link". A folder holding an .mp3 is no more a web address
+    # than one holding an .mkv.
+    for other in ("Season.1/ep01.vob", "Mr.Robot/s01e01.mp3",
+                  "Final.Cut/render.m4a"):
+        check(f"{other.rsplit('.', 1)[-1]} is media too, so {other.split('/')[0]!r} is a folder",
+              not dl.looks_like_bare_link(other))
+    check("while the same extension on a real host is still a link",
+          dl.looks_like_bare_link("cdn.example.com/podcast/ep.mp3"))
+    # Case is what makes the two-letter endings safe to recognise at all. The
+    # same letters end a domain and a release tag — anchor.fm against YTS.AM,
+    # example.io against Assets.US — and the difference is that nobody writes a
+    # domain in capitals or a scene tag in lower case. Matching either way round
+    # meant choosing which of the two to get wrong.
+    for link in ("anchor.fm/show/ep.mp3", "example.io/a.mp4", "some.tv/ep.mkv"):
+        check(f"{link.split('/')[0]!r} is a link", dl.looks_like_bare_link(link))
+    for shouty in ("The.Movie.2020.1080p.WEB.YTS.AM/movie.mp4",
+                   "Marketing.Assets.US/promo.mp4", "Some.Show.S01.NO/ep.mkv"):
+        check(f"{shouty.split('/')[0]!r} is not, for all it ends the same way",
+              not dl.looks_like_bare_link(shouty))
+    # Most of the world's links are not .com. Leaving the country codes out sent
+    # "bbc.co.uk/v/clip.mp4" back as "there's no file at /Users/…/bbc.co.uk/v/
+    # clip.mp4" — the invented path this whole test exists to stop printing.
+    for abroad in ("bbc.co.uk/v/clip.mp4", "media.example.de/a.mp4",
+                   "site.com.au/x.mkv"):
+        check(f"{abroad.split('/')[0]!r} is a link too",
+              dl.looks_like_bare_link(abroad))
 
     # ------------------------------------------------------- what ffprobe sees
     clip = work / "local-clip.mp4"

@@ -332,9 +332,28 @@ def _check_local_file(typed: str, path: Path) -> None:
     """
     if not path.exists():
         if download.looks_like_bare_link(typed):
-            raise HTTPException(400, "That looks like a web address with the "
-                                     "https:// missing from the front of it.")
-        raise HTTPException(400, f"There's no file at {path}.")
+            # Both ways round here too, and for the same reason as below: the
+            # guess is not reliable in either direction. A folder called
+            # "Mr.Robot" or "Season.1" reads exactly like a host, so this branch
+            # catches real files as well — and answering one of those with only
+            # "put https:// on the front" leaves somebody whose video has moved
+            # with advice for a problem they do not have.
+            raise HTTPException(400, f"That looks like a web address with the "
+                                     f"https:// missing from the front of it. If "
+                                     f"you meant a file, there's nothing at {path}.")
+        # Says both, because the guess above cannot be made reliable. Telling a
+        # host from a folder means knowing that "bbc.co.uk" is a domain and
+        # "Mr.Robot" is not, and nothing in the string says which — only a list
+        # of domain endings does, and no such list is ever finished: .tech, .ae
+        # and .news are as real as .com, and every one left out came back here
+        # as a path the person never typed and no advice they could act on.
+        #
+        # So the naming of the path — which is the useful half when a file has
+        # genuinely moved — carries the other possibility with it. Being wrong
+        # then costs a sentence rather than the answer, and the list above only
+        # decides which of the two leads.
+        raise HTTPException(400, f"There's no file at {path}. If you meant a web "
+                                 f"address, put https:// on the front of it.")
     if path.is_dir():
         raise HTTPException(400, "That's a folder. Choose the video file inside it.")
     try:
@@ -622,6 +641,16 @@ def run_update(request: Request) -> dict:
     return {"ok": True}
 
 
+# One update at a time. The button that reaches this is disabled while it runs,
+# but that is one page's good manners rather than a guarantee — a second window,
+# a reload mid-update, or a double-click landing before the first render all
+# arrive here as a second request, and two pip installs writing the same files
+# in the same environment is how a working yt-dlp becomes a broken one. Waiting
+# is the right answer rather than refusing: the second caller then reports
+# "already current", which by then it is.
+_YTDLP_UPDATE = threading.Lock()
+
+
 @app.post("/api/ytdlp/update")
 def update_ytdlp(request: Request) -> dict:
     """Refresh just yt-dlp, inside this app's own environment.
@@ -639,16 +668,17 @@ def update_ytdlp(request: Request) -> dict:
     """
     _local_only(request)
     from .steps import download as _dl
-    before = _dl.ytdlp_version()
-    try:
-        out = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
-            capture_output=True, text=True, timeout=300)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise HTTPException(500, f"Couldn't run pip to update yt-dlp: {exc}")
-    # Cached for the life of the process, and it has just changed underneath.
-    _dl.ytdlp_version.cache_clear()
-    after = _dl.ytdlp_version()
+    with _YTDLP_UPDATE:
+        before = _dl.ytdlp_version()
+        try:
+            out = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+                capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(500, f"Couldn't run pip to update yt-dlp: {exc}")
+        # Cached for the life of the process, and it has just changed underneath.
+        _dl.ytdlp_version.cache_clear()
+        after = _dl.ytdlp_version()
     if out.returncode != 0:
         said = (out.stderr or out.stdout or "").strip().splitlines()
         raise HTTPException(500, "Couldn't update yt-dlp. "

@@ -228,6 +228,17 @@ def _mlx_whisper_progress(progress: Progress, first: float, last: float):
         def close(self):
             pass
 
+        def __getattr__(self, _name):
+            # Anything else tqdm is asked for. Only the constructor, the
+            # context manager and update() are used by the decode loop this
+            # stands in for, but that is this version of mlx_whisper's business
+            # and the requirement is not pinned. A method that does nothing
+            # keeps the promise made above — that a shape which no longer
+            # matches costs the progress reporting and nothing else — where an
+            # AttributeError would be raised inside the transcription and drop
+            # the whole job onto the portable engine instead.
+            return lambda *_args, **_kw: None
+
     module.tqdm = types.SimpleNamespace(tqdm=_Meter)
     try:
         yield

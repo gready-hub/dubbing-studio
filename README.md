@@ -281,7 +281,8 @@ not something to do quietly on someone's behalf.
 
 If it still refuses, check yt-dlp is current — **Setup check** flags it when it
 goes stale, and an out-of-date yt-dlp is the single commonest cause. Press
-**Update now** to fetch a current one. YouTube retires the player clients an
+**Update yt-dlp** on that row to fetch a current one; it takes a few seconds and
+does not re-run the rest of the setup. YouTube retires the player clients an
 older copy knows about, and the symptom is specific: the video describes itself
 happily, the download starts, and it stops part way in with a 403.
 

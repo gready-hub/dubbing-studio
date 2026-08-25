@@ -27,13 +27,47 @@ Progress = Optional[Callable[[float, str], None]]
 # has been moved should not be told they forgot to type https://.
 MEDIA_SUFFIXES = frozenset({
     ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".mpg", ".mpeg", ".wmv",
-    ".flv", ".ts", ".m2ts", ".mts", ".3gp", ".ogv", ".mxf",
+    ".flv", ".ts", ".m2ts", ".mts", ".3gp", ".ogv", ".mxf", ".vob", ".divx",
+    ".asf", ".rm", ".rmvb", ".f4v", ".m2v",
+    # Sound as well as picture. Not because a bare recording is what this app is
+    # for, but because this set is what decides whether a name is a name: a
+    # folder called "Mr.Robot" holding "s01e01.mp3" is no more a web address
+    # than one holding "s01e01.mkv", and leaving the audio extensions out meant
+    # the first was told to put https:// on the front and the second was not.
+    ".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".oga", ".opus", ".wma",
+    ".aif", ".aiff", ".alac", ".ape", ".mka",
 })
 
 # A host with at least one dot in it, an optional port, and then the end or the
 # start of a path. Anchored so it cannot match anything that begins the way a
 # path does.
 _BARE_LINK = re.compile(r"^(?![/~.])[\w-]+(\.[\w-]+)+(:\d+)?([/?#]|$)")
+
+# Domain endings, consulted for one question only: whether a string that is
+# *also* named like a video is an address or a folder. Deliberately far short of
+# the real registry — see looks_like_bare_link(), which reads anything unlisted
+# as a folder on purpose, that being the safer of the two wrong answers.
+#
+# Matched as typed, not lowercased, and that is what makes the short ones safe
+# to list. A domain is written in lower case and a release tag in upper: the
+# folders this app gets pointed at are "The.Movie.2020.1080p.WEB.YTS.AM" and
+# "Marketing.Assets.US", where the same two letters that end anchor.fm and
+# example.io end a scene tag instead. Comparing case-insensitively meant every
+# one of those folders was answered with "put https:// on the front".
+_LINK_ENDINGS = frozenset({
+    "com", "net", "org", "info", "biz", "cloud", "online", "edu", "gov", "xyz",
+    "io", "fm", "tv", "co", "me", "gg", "ly", "ai", "cc", "sh", "app", "dev",
+    # Country codes, which is where most of the world's links live: without
+    # them "bbc.co.uk/v/clip.mp4" and "media.example.de/a.mp4" came back as
+    # "there's no file at /Users/…/bbc.co.uk/v/clip.mp4", the invented path this
+    # whole test exists to stop being printed. Safe here for the same reason the
+    # two-letter endings above are: a domain is written in lower case and the
+    # release tags that would collide with these — .AM, .US, .NO — in upper.
+    "uk", "de", "fr", "nl", "au", "jp", "eu", "es", "it", "ca", "br", "in",
+    "se", "no", "dk", "fi", "ch", "at", "be", "pl", "ru", "nz", "za", "ie",
+    "pt", "gr", "cz", "kr", "tw", "hk", "sg", "mx", "ar", "il", "ua", "ro",
+    "hu", "tr", "cn", "us",
+})
 
 
 def normalise_source(raw: str) -> str:
@@ -93,9 +127,45 @@ def looks_like_bare_link(typed: str) -> bool:
     is the difference between advice that works and advice that doesn't.
     """
     text = (typed or "").strip().strip("\"'")
-    if not text or Path(text).suffix.lower() in MEDIA_SUFFIXES:
+    if not text or not _BARE_LINK.match(text):
         return False
-    return bool(_BARE_LINK.match(text))
+    if Path(text).suffix.lower() not in MEDIA_SUFFIXES:
+        return True
+    # Named like a video, which is the one case the pattern above cannot settle
+    # on its own: "clip.mov", "Season.1/ep01.mkv" and
+    # "cdn.example.com/talks/clip.mov" all match it, and only the last is a
+    # link. What separates them is whether the part before the first separator
+    # is a *host*. Vetoing on the suffix alone called the third one a file and
+    # answered "there's no file at /Users/…/cdn.example.com/talks/clip.mov" —
+    # naming a path nobody typed; dropping the veto entirely called the second
+    # one a link and told somebody with a mistyped folder name to add https://.
+    cut = re.search(r"[/?#]", text)
+    if not cut or not text[cut.end():]:
+        # All name and no path, so it is a filename. The emptiness matters as
+        # much as the separator: "clip.mov/" has one and still names nothing
+        # beyond it, and Path() drops the trailing slash before the suffix test
+        # above ever sees it.
+        return False
+    host = text[:cut.start()]
+    # The port belongs to the address rather than to any name in it. _BARE_LINK
+    # allows one, so failing to take it off here rejected the very links that
+    # pattern was written to accept.
+    host = re.sub(r":\d+$", "", host)
+    if re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", host):
+        return True                # nothing is named 192.168.1.5
+    # Whether the last label is a domain ending, rather than merely a word. This
+    # is the only test that separates "cdn.example.com/talks/clip.mov" from
+    # "Mr.Robot/s01e01.mkv", and no shape-based rule can: both are words either
+    # side of a dot, and "Season.1", "Final.Cut" and "Mr.Robot" are all how
+    # people really name the folders their videos are in.
+    #
+    # Anything unlisted is read as a folder, deliberately. That is the safer of
+    # the two wrong answers — it says the file is missing and shows the path it
+    # looked at, where the other tells somebody to put https:// in front of a
+    # filename. Endings that read as ordinary words are left out for the same
+    # reason: .video and .mov exist, and "holiday.video" and "clip.mov" are far
+    # likelier to be a folder and a file than a domain.
+    return host.rsplit(".", 1)[-1] in _LINK_ENDINGS
 
 
 # --------------------------------------------------------- fetching from a site
@@ -296,6 +366,44 @@ def _stale_lead() -> str:
             f"refuses: ")
 
 
+def _why_refused(s: str) -> str:
+    """The sentence a refusal opens with when something here explains it.
+
+    Two things on this machine can cause YouTube to refuse a download that a
+    browser gets: a yt-dlp too old to ask as a player client YouTube still
+    serves, and one that cannot answer the JavaScript challenge its media URLs
+    are signed with. Both are named before the refusal itself, because both are
+    the actual cause and both are fixed by the same click.
+
+    Only ever one of them, and never as a branch of its own. The challenge
+    failure was briefly tested first in _friendly() and had to be taken out
+    again: yt-dlp emits it on every extraction on a machine with no JavaScript
+    runtime, so as a branch it does not tell failures apart at all — it
+    swallowed the one below it, and a download that died because the network
+    dropped was reported as "press Update yt-dlp" instead of "check your
+    internet connection". As a lead it explains the refusals it really causes
+    and leaves every other diagnosis alone.
+    """
+    # Age first, where it is known: it prescribes the same click and has a
+    # number behind it, which is worth more than a diagnosis that has to hedge.
+    stale = _stale_lead()
+    if stale:
+        return stale
+    if "challenge solving failed" in s:
+        # Says what happened rather than why, and does not promise the click.
+        # An old yt-dlp is the commonest reason it cannot answer — but this copy
+        # is not old, or the branch above would have taken it. What is left is
+        # usually a machine with no JavaScript runtime to answer the check with,
+        # which no amount of updating changes, so sending somebody to press a
+        # button that will report "already current" would be advice they can
+        # disprove in one click and would leave the rest of this looking wrong.
+        return ("yt-dlp couldn't answer YouTube's download check, and that is "
+                "the likeliest reason on its own. Setup check will say whether "
+                "it wants updating, and the error details below name what it "
+                "could not load. Otherwise: ")
+    return ""
+
+
 def _friendly(stderr: str) -> str:
     s = stderr.lower()
     if "403" in s and "forbidden" in s:
@@ -303,19 +411,27 @@ def _friendly(stderr: str) -> str:
         # several times. Telling them to try again in a minute at that point is
         # advice that has already been taken on their behalf and failed.
         #
-        # A stale yt-dlp is named first when there is one, because it is both the
-        # commonest cause of this and the only one the user can fix in a click.
-        # The sign-in advice stays either way — it is the right answer when the
-        # copy is current — but it is no longer the *first* answer regardless of
-        # whether it fits.
-        return (_stale_lead() +
+        # What this machine did wrong is named first when it did anything wrong,
+        # because it is the commonest cause of this and the only one the user
+        # can fix in a click. The sign-in advice stays either way — it is the
+        # right answer when there is nothing wrong here — but it is no longer
+        # the *first* answer regardless of whether it fits.
+        return (_why_refused(s) +
                 "YouTube described the video but refused to send it, on every "
                 "attempt. It usually wants a signed-in session: set “Sign in as” "
                 "in Settings to the browser you watch YouTube in. Otherwise the "
                 "video may be private, age-restricted or members-only.")
     if "private video" in s:
         return "That video is private, so it can't be downloaded."
-    if "sign in to confirm your age" in s or "age" in s and "restricted" in s:
+    # Named signals only. This used to be `"age" in s and "restricted" in s`,
+    # which is three letters that occur inside "package", "page" and "message" —
+    # and yt-dlp's advisory about a skipped solver says "NPM package" every
+    # time. Harmless while warnings were suppressed and live the moment they
+    # were not: "Video unavailable. This video is restricted." then came back
+    # as "that video is age-restricted", which is a different thing with
+    # different advice.
+    if ("sign in to confirm your age" in s or "age-restricted" in s
+            or "age restricted" in s or "inappropriate for some users" in s):
         return "That video is age-restricted and can't be fetched without signing in."
     if "video unavailable" in s:
         return "That video is unavailable — check the link is still live."
@@ -328,6 +444,14 @@ def _friendly(stderr: str) -> str:
     # was declined — the player challenge failed, or enough requests have gone
     # out recently that the next one is refused on sight. Both clear on their
     # own, and both come back faster for being left alone.
+    #
+    # Deliberately not led like the 403 above. Every lead _why_refused() offers
+    # ends in "press Update yt-dlp, then try again", and this message exists to
+    # say the opposite — that retrying straight away makes the wait longer — so
+    # the two together tell somebody to do the one thing the sentence after it
+    # asks them not to. A stale copy does provoke this one too, measured, asking
+    # as the retired `tv` client; Setup check is where that is said, without
+    # having to argue with the advice here.
     if "page needs to be reloaded" in s:
         return ("YouTube declined the request rather than the video. This happens "
                 "after a burst of downloads and clears on its own. Wait a few "
@@ -338,9 +462,10 @@ def _friendly(stderr: str) -> str:
     # has never opened a terminal to pass a command-line flag. It also sounds
     # like a fault in the video, and it is not: the video is listed and then
     # nothing in the listing is offered, which on YouTube is a defensive response
-    # to being asked repeatedly.
+    # to being asked repeatedly — or the sign that the formats worth having were
+    # the ones the unanswered challenge withheld.
     if "requested format is not available" in s:
-        return (_stale_lead() +
+        return (_why_refused(s) +
                 "YouTube listed the video but offered no version to download. "
                 "That is usually temporary — wait a few minutes and try again. If "
                 "it persists, set “Sign in as” in Settings to the browser you "
@@ -356,15 +481,33 @@ def _friendly(stderr: str) -> str:
     if ("name or service not known" in s or "nodename nor servname" in s
             or "temporary failure in name resolution" in s):
         return "That address couldn't be reached — check your internet connection."
-    # Now visible, since warnings are no longer suppressed. YouTube keeps a
-    # signed JS challenge in front of its media URLs; a yt-dlp that cannot solve
-    # it is handed a URL that serves a few tens of MB and then 403s — which
-    # reads as a refusal of the video and is nothing of the kind.
-    if "challenge solving failed" in s or "challenge solver" in s:
-        return ("This copy of yt-dlp couldn't answer YouTube's download check, "
-                "which YouTube changes every few weeks. Re-run the installer, or "
-                "press Update now — that fetches a current one and is the fix.")
+    # Last, where this began, and kept alongside the lead above rather than
+    # replaced by it. Above, an unanswered challenge explains a refusal this
+    # function already recognises; here it is the whole explanation, for a
+    # failure that produced no such refusal. Dropping it in favour of the lead
+    # alone sent a challenge failure with any unrecognised error — a connection
+    # reset, a stderr of nothing but warnings — out as raw yt-dlp text.
     tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
+    # Only when there is nothing else at all — every line a warning. Asking
+    # instead whether any line *started* with ERROR was too narrow by half: a
+    # Python traceback ending "OSError: [Errno 28] No space left on device"
+    # starts with none, and neither does "yt-dlp: error: unrecognized
+    # arguments", so both came back as a failed download check. The challenge
+    # lines match far more stderr than they explain — the advisory about a skipped solver is emitted
+    # on every extraction on a machine with no JavaScript runtime, including
+    # runs that succeed — so testing them against a stderr that also carries a
+    # real error hid the error: a disk that filled up came back as "press Update
+    # yt-dlp". Where yt-dlp has said what went wrong, that is the answer, even
+    # unrecognised; this is for the stderr that is warnings the whole way down,
+    # which would otherwise go out as "WARNING: [youtube] [jsc] Remote
+    # components challenge solver script (deno) …" — _tidy() strips ERROR: and
+    # would leave the WARNING: on.
+    if (("challenge solving failed" in s or "challenge solver" in s)
+            and all(ln.lstrip().upper().startswith("WARNING") for ln in tail)):
+        return ("yt-dlp couldn't answer YouTube's download check, which is the "
+                "likeliest reason this failed. Setup check will say whether it "
+                "wants updating, and the error details below name what it could "
+                "not load.")
     return _tidy(tail[-1]) if tail else "The download failed."
 
 
